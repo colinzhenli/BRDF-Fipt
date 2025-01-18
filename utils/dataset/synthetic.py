@@ -57,6 +57,85 @@ def open_exr(file,img_hw):
     img = torch.from_numpy(img.astype(np.float32))
     return img
 
+class SphereDataset(Dataset):
+    """ Simple synthetic dataset for basic scenes like sphere
+    Scene/
+        {SPLIT}/ train or val split
+            Image/{:03d}_0001.exr HDR images
+            transforms.json c2w camera matrix file and fov
+    """
+    def __init__(self, root_dir, split='train', pixel=True):
+        """
+        Args:
+            root_dir: dataset root folder
+            split: train or val
+            pixel: whether load every camera pixel
+        """
+        self.root_dir = os.path.join(root_dir, split)
+        self.pixel = pixel
+        self.split = split
+
+        self.img_hw = cv2.imread(os.path.join(root_dir,'train/Image/000_0001.exr'),-1).shape[:2]
+        
+        with open(os.path.join(self.root_dir, "transforms.json"), 'r') as f:
+            self.meta = json.load(f)
+
+        # camera focal length and ray directions
+        h, w = self.img_hw
+        self.focal = (0.5*w/np.tan(0.5*self.meta['camera_angle_x'])).item()
+        self.directions = get_ray_directions(h, w, self.focal)
+        
+        # load every camera pixels
+        if self.pixel:
+            self.poses = []
+            self.all_rays = []
+            self.all_rgbs = []
+            for cur_idx in range(len(self.meta['frames'])):
+                frame = self.meta['frames'][cur_idx]
+                pose = np.array(frame['transform_matrix'])[:3, :4]
+                self.poses += [pose]
+                c2w = torch.FloatTensor(pose)
+                
+                image_path = os.path.join(self.root_dir, 'Image','{:03d}_0001.exr'.format(cur_idx))
+                img = open_exr(image_path, self.img_hw).reshape(-1, 3)
+                
+                self.all_rgbs += [img]
+                
+                rays_o, rays_d = get_rays(self.directions, c2w)
+                self.all_rays += [torch.cat([rays_o, rays_d], 1)]
+
+            self.all_rays = torch.cat(self.all_rays, 0)
+            self.all_rgbs = torch.cat(self.all_rgbs, 0)
+
+    def __len__(self):
+        if self.pixel:
+            return len(self.all_rays)
+        return len(self.meta['frames'])
+
+    def __getitem__(self, idx):
+        if self.pixel:
+            sample = {
+                'rays': self.all_rays[idx],
+                'rgbs': self.all_rgbs[idx]
+            }
+        else:
+            frame = self.meta['frames'][idx]
+            c2w = torch.FloatTensor(frame['transform_matrix'])[:3, :4]
+            
+            image_path = os.path.join(self.root_dir, 'Image','{:03d}_0001.exr'.format(idx))
+            img = open_exr(image_path, self.img_hw).reshape(-1, 3)
+            
+            rays_o, rays_d = get_rays(self.directions, c2w)
+            rays = torch.cat([rays_o, rays_d], 1)
+
+            sample = {
+                'rays': rays,
+                'rgbs': img,
+                'c2w': c2w
+            }
+
+        return sample
+
 class SyntheticDataset(Dataset):
     """ synthetic dataset in structure:
     Scene/

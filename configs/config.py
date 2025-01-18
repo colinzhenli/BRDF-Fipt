@@ -7,11 +7,11 @@ default_options = {
     'dataset': {
         'type': str,
         'nargs': 3,
-        'default': ['synthetic','../data/indoor_synthetic/kitchen','outputs/kitchen']
+        'default': ['synthetic','/localhome/zla247/theia2_data/fipt_indoor_synthetic/kitchen','/localhome/zla247/theia2_data/output/BRDF-Fipt/fipt_indoor_synthetic/kitchen']
     },
     'voxel_path': {
         'type': str,
-        'default': 'outputs/kitchen/vslf.npz'
+        'default': '/localhome/zla247/theia2_data/output/BRDF-Fipt/fipt_indoor_synthetic/kitchen/vslf.npz'
     },
     'num_workers': {
         'type': int,

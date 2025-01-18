@@ -9,7 +9,7 @@ import os
 os.environ["OPENCV_IO_ENABLE_OPENEXR"]="1"
 import cv2
 
-from utils.dataset import SyntheticDataset,RealDataset, SphereDataset
+from utils.dataset import SyntheticDataset,RealDataset,SphereDataset
 from utils.path_tracing import ray_intersect
 from model.slf import VoxelSLF
 from model.brdf import BaseBRDF
