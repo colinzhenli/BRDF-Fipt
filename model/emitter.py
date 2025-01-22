@@ -247,3 +247,106 @@ class SLFEmitter(nn.Module):
         pdf = pdf0/A1.clamp_min(1e-12)
         return wi,pdf.unsqueeze(-1),triangle_idx
 
+
+class PointEmitter(nn.Module):
+    """ Point light emitter """
+    def __init__(self, position, intensity, radius=0.1):
+        """ 
+        Args:
+            position: 3-element tensor for light position
+            intensity: 3-element tensor for RGB intensity
+            radius: radius of sphere representing point light
+        """
+        super(PointEmitter, self).__init__()
+        self.register_buffer('position', torch.tensor(position))
+        self.register_buffer('intensity', torch.tensor(intensity))
+        self.radius = radius
+
+    def ray_sphere_intersect(self, ray_o, ray_d):
+        """ Ray-sphere intersection test
+        Args:
+            ray_o: Bx3 ray origins
+            ray_d: Bx3 ray directions (normalized)
+        Returns:
+            hit_pos: Bx3 intersection points
+            normals: Bx3 surface normals
+            valid: B whether ray hits sphere
+        """
+        # Solve quadratic equation for ray-sphere intersection
+        oc = ray_o - self.position
+        a = (ray_d * ray_d).sum(-1)
+        b = 2.0 * (oc * ray_d).sum(-1)
+        c = (oc * oc).sum(-1) - self.radius * self.radius
+        disc = b * b - 4 * a * c
+        
+        valid = disc > 0
+        t = torch.zeros_like(disc)
+        t[valid] = (-b[valid] - torch.sqrt(disc[valid])) / (2.0 * a[valid])
+        valid = valid & (t > 0)
+
+        # Compute intersection points and normals
+        hit_pos = ray_o + ray_d * t.unsqueeze(-1)
+        normals = NF.normalize(hit_pos - self.position, dim=-1)
+        
+        return hit_pos, normals, valid
+
+    def eval_emitter(self, position, light_dir, *args):
+        """ Evaluate point light emission
+        Args:
+            position: Bx3 intersection points
+            light_dir: Bx3 light directions
+        Returns:
+            Le: Bx3 radiance
+            pdf: Bx1 pdf (unused for point light)
+            valid: B valid intersections
+        """
+        # Check if ray hits sphere
+        hit_pos, normals, valid = self.ray_sphere_intersect(position, light_dir)
+        
+        # Compute radiance falloff with distance
+        Le = torch.zeros_like(position)
+        if valid.any():
+            dist2 = (position[valid] - self.position).pow(2).sum(-1, keepdim=True)
+            Le[valid] = self.intensity / (4 * math.pi * dist2)
+        
+        # Sphere lights have uniform pdf over surface area
+        pdf = torch.full((position.shape[0], 1), 1.0/(4*math.pi*self.radius*self.radius), device=position.device)
+        pdf[~valid] = 0  # Zero pdf for rays that miss the sphere
+        
+        return Le, pdf, ~valid # Return ~valid since we want to continue tracing for misses
+
+    def sample_emitter(self, sample1, sample2, position):
+        """ Sample point on sphere surface
+        Args:
+            sample1: B uniform samples (unused)
+            sample2: Bx2 uniform samples for sphere surface
+            position: Bx3 surface positions
+        Returns:
+            wi: Bx3 sampled directions
+            pdf: Bx1 sampling pdf
+            idx: B dummy indices (-1)
+        """
+        # Sample uniform direction from sphere surface
+        theta = 2 * math.pi * sample2[...,0]
+        phi = torch.arccos(1 - 2 * sample2[...,1])
+        
+        sin_phi = torch.sin(phi)
+        x = sin_phi * torch.cos(theta) 
+        y = sin_phi * torch.sin(theta)
+        z = torch.cos(phi)
+        
+        # Point on sphere surface
+        sphere_point = self.position + self.radius * torch.stack([x,y,z], dim=-1)
+        
+        # Direction from position to sampled point
+        wi = NF.normalize(sphere_point - position, dim=-1)
+        
+        # Uniform sampling pdf for sphere surface
+        pdf = torch.full((position.shape[0], 1), 1.0/(4*math.pi*self.radius*self.radius), 
+                        device=position.device)
+        
+        # Dummy triangle indices since we don't use mesh
+        idx = torch.full((position.shape[0],), -1, dtype=torch.long, device=position.device)
+        
+        return wi, pdf, idx
+

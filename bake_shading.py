@@ -164,7 +164,6 @@ if __name__ == '__main__':
         for b in range(math.ceil(B*1.0/batch_size)):
             b0 = b*batch_size
             b1 = min(b0+batch_size,B)
-
             # importance sampling wi
             wi,_,_, = material_net.sample_diffuse(torch.rand((b1-b0)*SPP,2,device=device),
                                     normal[b0:b1].repeat_interleave(SPP,0))
