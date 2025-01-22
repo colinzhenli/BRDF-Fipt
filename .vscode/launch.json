@@ -8,13 +8,14 @@
             "name": "Python: Current File",
             "type": "python",
             "request": "launch",
-            "program": "brdf_optimization.py",
+            "program": "brdf-emission.py",
             "console": "integratedTerminal",
             "justMyCode": true,
             "args": [
-                "--scene", "/localhome/zla247/theia2_data/fipt_indoor_synthetic/sphere",
-                "--output", "/localhome/zla247/theia2_data/output/BRDF-Fipt/fipt_indoor_synthetic/sphere",
-                "--dataset", "sphere"
+                // "--scene", "/localhome/zla247/theia2_data/fipt_indoor_synthetic/kitchen",
+                // "--output", "/localhome/zla247/theia2_data/output/BRDF-Fipt/fipt_indoor_synthetic/kitchen",
+                // "--dataset", "synthetic",
+                // "--ckpt", "./checkpoints/indoor_synthetic_kitchen_run_1/last.ckpt",
                 // "--experiment_name", "indoor_synthetic_kitchen_run_1",
                 // "--device", "0"
             ]

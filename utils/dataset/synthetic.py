@@ -64,16 +64,18 @@ class SphereDataset(Dataset):
             Image/{:03d}_0001.exr HDR images
             transforms.json c2w camera matrix file and fov
     """
-    def __init__(self, root_dir, split='train', pixel=True):
+    def __init__(self, root_dir, split='train', pixel=True, ray_diff=False):
         """
         Args:
             root_dir: dataset root folder
             split: train or val
             pixel: whether load every camera pixel
+            ray_diff: whether load ray differentials
         """
         self.root_dir = os.path.join(root_dir, split)
         self.pixel = pixel
         self.split = split
+        self.ray_diff = ray_diff
 
         self.img_hw = cv2.imread(os.path.join(root_dir,'train/Image/000_0001.exr'),-1).shape[:2]
         
@@ -101,8 +103,12 @@ class SphereDataset(Dataset):
                 
                 self.all_rgbs += [img]
                 
-                rays_o, rays_d = get_rays(self.directions, c2w)
-                self.all_rays += [torch.cat([rays_o, rays_d], 1)]
+                if self.ray_diff:
+                    rays_o, rays_d, dxdu, dydv = get_rays(self.directions, c2w, focal=self.focal)
+                    self.all_rays += [torch.cat([rays_o, rays_d, dxdu, dydv], 1)]
+                else:
+                    rays_o, rays_d = get_rays(self.directions, c2w)
+                    self.all_rays += [torch.cat([rays_o, rays_d], 1)]
 
             self.all_rays = torch.cat(self.all_rays, 0)
             self.all_rgbs = torch.cat(self.all_rgbs, 0)
@@ -125,8 +131,12 @@ class SphereDataset(Dataset):
             image_path = os.path.join(self.root_dir, 'Image','{:03d}_0001.exr'.format(idx))
             img = open_exr(image_path, self.img_hw).reshape(-1, 3)
             
-            rays_o, rays_d = get_rays(self.directions, c2w)
-            rays = torch.cat([rays_o, rays_d], 1)
+            if self.ray_diff:
+                rays_o, rays_d, dxdu, dydv = get_rays(self.directions, c2w, focal=self.focal)
+                rays = torch.cat([rays_o, rays_d, dxdu, dydv], 1)
+            else:
+                rays_o, rays_d = get_rays(self.directions, c2w)
+                rays = torch.cat([rays_o, rays_d], 1)
 
             sample = {
                 'rays': rays,
@@ -258,7 +268,6 @@ class SyntheticDataset(Dataset):
             
             if self.ray_diff == False:
                 rays_o, rays_d = get_rays(self.directions, c2w)
-
                 rays = torch.cat([rays_o, rays_d],1)
             else:
                 rays_o, rays_d,dxdu,dydv = get_rays(self.directions, c2w,focal=self.focal)
