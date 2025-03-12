@@ -1,5 +1,6 @@
 import torch
 import torch.nn.functional as NF
+from model.brdf import MLPPBRBRDF
 
 import mitsuba
 mitsuba.set_variant('cuda_ad_rgb')
@@ -240,8 +241,6 @@ def path_tracing(scene,emitter_net,material_net,rays_o,rays_d,dx_du,dy_dv,spp,in
     # obtain surface BRDF
     mat = material_net(position)
 
-
-
     # calculate direct illumination with MIS
     
     
@@ -331,41 +330,43 @@ def path_tracing_fix_emitter(scene,emitter_net,material_net,rays_o,rays_d,dx_du,
     B = len(rays_o)
     device = rays_o.device
     MATERIAL_NET = False
+    BRDF_SAMPLING = False
     
     # sample camera ray
     du,dv = torch.rand(2,len(rays_o),spp,1,device=device)-0.5
     wi = NF.normalize(rays_d[:,None]+dx_du[:,None]*du+dy_dv[:,None]*dv,dim=-1).reshape(-1,3)
+    
+    # Add mask for wi z component
+    half_sphere_mask = wi[..., 2] < 0
     position = rays_o.repeat_interleave(spp,0)
     
     # compute first intersection
     position,normal,_,triangle_idx,vis = ray_intersect(scene,position,wi)
     L,_,valid_next = emitter_net.eval_emitter(position,wi)
     
+    valid_next = vis
     # drop invalid intersection
     if not valid_next.any():
-        return L
+        return L.reshape(B,spp,3).mean(1)
     position = position[valid_next]
     normal = normal[valid_next]
     wo = -wi[valid_next]
     active_next = valid_next.clone()
 
-    # obtain surface BRDF
-    if MATERIAL_NET:
-        mat = material_net(position)
-    else:
-        albedo = torch.full_like(position, 0.8) # Bx3 base color
-        roughness = torch.full_like(position[...,:1], 0.5) # Bx1 roughness in [0.02,1]
-        metallic = torch.full_like(position[...,:1], 0.2) # Bx1 metallic
-        mat = {
-            'albedo': albedo,
-            'roughness': roughness,
-            'metallic': metallic
-        }
-
-
+    # # obtain surface BRDF
+    # if MATERIAL_NET:
+    #     mat = material_net(position)
+    # else:
+    #     albedo = torch.full_like(position, 0.8) # Bx3 base color
+    #     roughness = torch.full_like(position[...,:1], 0.5) # Bx1 roughness in [0.02,1]
+    #     metallic = torch.full_like(position[...,:1], 0.2) # Bx1 metallic
+    #     mat = {
+    #          'albedo': albedo,
+    #         'roughness': roughness,
+    #         'metallic': metallic
+    #     }
 
     # calculate direct illumination with MIS
-    
     
     # sample emitter
     wi,emit_pdf,_ = emitter_net.sample_emitter(
@@ -374,20 +375,19 @@ def path_tracing_fix_emitter(scene,emitter_net,material_net,rays_o,rays_d,dx_du,
         position)
     
     # visibility test
-    emit_position,emit_normal,emit_valid = emitter_net.ray_sphere_intersect(position+mitsuba.math.RayEpsilon*wi, wi)
-    # emit_position,emit_normal,_,triangle_idx,emit_valid = ray_intersect(scene,position+mitsuba.math.RayEpsilon*wi,wi)
-    emit_vis = (~emit_valid)
+    emit_position,emit_normal,emit_valid = emitter_net.ray_sphere_intersect(position+mitsuba.math.RayEpsilon/4*wi, wi)
+    emit_vis = emit_valid
     emit_weight,_,_ = emitter_net.eval_emitter(emit_position,wi)
     
     # goemetry term (assume double sided area light)
     G = (-wi*emit_normal).sum(-1).abs()\
       / (emit_position-position).pow(2).sum(-1).clamp_min(1e-6)
+    
     G = torch.where(emit_valid,G,1).unsqueeze(-1) # env map use angular metric
-    #G[G.isnan()] = 0.0
     emit_weight = emit_weight*emit_vis[...,None]*G/emit_pdf.clamp_min(1e-6)
     
     # emit brdf
-    emit_brdf,brdf_pdf = material_net.eval_brdf(wi,wo,normal,mat)
+    emit_brdf,brdf_pdf = material_net.eval_brdf(wi,wo,normal)
     brdf_pdf = brdf_pdf * G
     w_mis = torch.where((emit_pdf>0)&(~brdf_pdf.isinf()),emit_pdf*emit_pdf/(emit_pdf*emit_pdf+brdf_pdf*brdf_pdf),0)
     w_mis[emit_pdf.isinf()|(brdf_pdf==0)] = 1
@@ -395,18 +395,21 @@ def path_tracing_fix_emitter(scene,emitter_net,material_net,rays_o,rays_d,dx_du,
     
 
     # sample brdf
+    # Skip BRDF sampling if using MLPPBRBRDF
+    if not BRDF_SAMPLING:
+        return L.reshape(B,spp,3).mean(1)
+    
     wi,brdf_pdf,brdf_weight = material_net.sample_brdf(
         torch.rand(len(normal),device=device),
         torch.rand(len(normal),2,device=device),
-        wo,normal,mat)
+        wo,normal)
     
     # find next intersection
     position_next, normal, vis = emitter_net.ray_sphere_intersect(position+mitsuba.math.RayEpsilon*wi, wi)
-    # position_next,normal,_,triangle_idx,vis = ray_intersect(scene,position+mitsuba.math.RayEpsilon*wi,wi)
-    # mat_next = material_net(position_next)
-    
+     
     # evaluate Le
     Le,emit_pdf,valid_next = emitter_net.eval_emitter(position_next,wi)
+    Le[~vis] = 0
     G = (-normal*wi).sum(-1).abs()\
       / (position-position_next).pow(2).sum(-1).clamp_min(1e-6)
     G = torch.where(valid_next,G,1)
@@ -414,97 +417,99 @@ def path_tracing_fix_emitter(scene,emitter_net,material_net,rays_o,rays_d,dx_du,
     
     w_mis = torch.where((brdf_pdf>0)&(~emit_pdf.isinf()),brdf_pdf*brdf_pdf/(emit_pdf*emit_pdf+brdf_pdf*brdf_pdf),0)
     w_mis[brdf_pdf.isinf()|(emit_pdf==0)] = 1
-    #w_mis[w_mis.isnan()] = 0
+    w_mis[w_mis.isnan()] = 0
     L[active_next] += brdf_weight*Le*w_mis
     
     wo = -wi
     position = position_next
-    
-    # mask out unsued element
-    active_next[active_next.clone()] = valid_next
-    position = position[valid_next]
-    wo = wo[valid_next]
-    normal = normal[valid_next]
-    brdf_weight = brdf_weight[valid_next]
 
+    # L[~half_sphere_mask] = 0
 
     L = L.reshape(B,spp,3).mean(1)
     return L
 
-# def path_tracing_fix_emitter(scene, emitter_net, material_net, rays_o, rays_d, dx_du, dy_dv, spp):
-#     """ Path trace with fixed emitter (point light or envmap)
-#     Args:
-#         emitter_net: emitter object (PointEmitter)
-#         rays_o: Bx3 ray origin
-#         rays_d: Bx3 ray direction
-#         dx_du,dy_dv: Bx3 ray differential
-#         spp: sampler per pixel
-#     Return:
-#         L: Bx3 traced results
-#     """
-#     B = len(rays_o)
-#     device = rays_o.device
+def path_tracing_envmap_emitter(scene,emitter_net,material_net,rays_o,rays_d,dx_du,dy_dv,spp,indir_depth):
+    """ Path trace current scene
+    Args:
+        scene: mitsuba scene
+        emitter_net: emitter object
+        material_net: material object
+        rays_o: Bx3 ray origin
+        rays_d: Bx3 ray direction
+        dx_du,dy_dv: Bx3 ray differential
+        spp: sampler per pixel
+        indir_depth: indirect illumination depth
+    Return:
+        L: Bx3 traced results
+    """
+    B = len(rays_o)
+    device = rays_o.device
     
-#     # sample camera ray
-#     du,dv = torch.rand(2,len(rays_o),spp,1,device=device)-0.5
-#     wi = NF.normalize(rays_d[:,None]+dx_du[:,None]*du+dy_dv[:,None]*dv,dim=-1).reshape(-1,3)
-#     position = rays_o.repeat_interleave(spp,0)
+    # sample camera ray
+    du,dv = torch.rand(2,len(rays_o),spp,1,device=device)-0.5
+    wi = NF.normalize(rays_d[:,None]+dx_du[:,None]*du+dy_dv[:,None]*dv,dim=-1).reshape(-1,3)
     
-#     # compute intersection with scene
-#     position, normal, _, triangle_idx, vis = ray_intersect(scene, position, wi)
-#     if not vis.any():
-#         return torch.zeros(B, 3, device=device)
-        
-#     # get material properties at intersection
-#     mat = material_net(position[vis])
-#     wo = -wi[vis]
+    # Add mask for wi z component
+    half_sphere_mask = wi[..., 2] < 0
+    position = rays_o.repeat_interleave(spp,0)
     
-#     # compute direct illumination from emitter sphere
-#     hit_pos, hit_normal, hit_vis = emitter_net.ray_sphere_intersect(position[vis], wo)
-#     L_direct, pdf_direct, valid_direct = emitter_net.eval_emitter(position[vis], wo, None)
+    # compute first intersection
+    position,normal,_, _,vis = ray_intersect(scene,position,wi)
+    L,_,valid_next = emitter_net.eval_emitter(position,wi)
+    L[vis] = 0
+    # L[~vis] = 0
+    valid_next = vis
+    # drop invalid intersection
+    if not valid_next.any():
+        return L.reshape(B,spp,3).mean(1)
+    position = position[valid_next]
+    normal = normal[valid_next]
+    wo = -wi[valid_next]
+    active_next = valid_next.clone()
+
+    # calculate direct illumination with MIS\
     
-#     # sample emitter surface
-#     wi_emit, pdf_emit, _ = emitter_net.sample_emitter(
-#         torch.rand(len(position[vis]), device=device),
-#         torch.rand(len(position[vis]), 2, device=device),
-#         position[vis])
+    # Sample the environment map instead of a point emitter
+    wi, emit_pdf, _ = emitter_net.sample_emitter(None, torch.rand_like(position[..., :2]), position)
+
+    # Evaluate the environment map along sampled directions
+    emit_weight, emit_pdf, _ = emitter_net.eval_emitter(position, wi)
+
+    # No need for geometry term G since env maps use angular metric
+    G = torch.ones_like(emit_weight[..., 0]).unsqueeze(-1)
+
+    # Compute final contribution
+    emit_weight = emit_weight / emit_pdf.clamp_min(1e-6)
     
-#     # evaluate BRDF for emitter sample
-#     brdf_emit, brdf_pdf = material_net.eval_brdf(wi_emit, wo, normal[vis], mat)
+    # emit brdf
+    emit_brdf,brdf_pdf = material_net.eval_brdf(wi,wo,normal)
+    brdf_pdf = brdf_pdf * G
+    w_mis = torch.where((emit_pdf>0)&(~brdf_pdf.isinf()),emit_pdf*emit_pdf/(emit_pdf*emit_pdf+brdf_pdf*brdf_pdf),0)
+    w_mis[emit_pdf.isinf()|(brdf_pdf==0)] = 1
+    L[active_next] += emit_brdf*emit_weight*w_mis
     
-#     # visibility test with emitter sphere
-#     emit_pos, emit_normal, emit_valid = emitter_net.ray_sphere_intersect(
-#         position[vis]+mitsuba.math.RayEpsilon*wi_emit, wi_emit)
+
+    # # sample brdf
+    # wi,brdf_pdf,brdf_weight = material_net.sample_brdf(
+    #     torch.rand(len(normal),device=device),
+    #     torch.rand(len(normal),2,device=device),
+    #     wo,normal)
     
-#     # compute geometry term
-#     G = (-wi_emit*emit_normal).sum(-1).abs()\
-#       / (emit_pos-position[vis]).pow(2).sum(-1).clamp_min(1e-6)
-#     G = torch.where(emit_valid, G, 1).unsqueeze(-1)
+
+    # # Evaluate Le from environment map
+    # Le, emit_pdf, valid_next = emitter_net.eval_emitter(position, wi)
+
+    # # Update BRDF PDF
+    # brdf_pdf = brdf_pdf 
     
-#     # evaluate emitter contribution
-#     Le_emit, _, _ = emitter_net.eval_emitter(position[vis], wi_emit, None)
-#     emit_contrib = Le_emit * brdf_emit * G / pdf_emit.clamp_min(1e-6)
-#     emit_contrib = torch.where(emit_valid.unsqueeze(-1), emit_contrib, 0)
-    
-#     # MIS weights
-#     w_direct = torch.where(
-#         (pdf_direct>0)&(~brdf_pdf.isinf()),
-#         pdf_direct*pdf_direct/(pdf_direct*pdf_direct + brdf_pdf*brdf_pdf),
-#         0)
-#     w_direct[pdf_direct.isinf()|(brdf_pdf==0)] = 1
-    
-#     w_emit = torch.where(
-#         (pdf_emit>0)&(~pdf_direct.isinf()),
-#         pdf_emit*pdf_emit/(pdf_emit*pdf_emit + pdf_direct*pdf_direct),
-#         0)
-#     w_emit[pdf_emit.isinf()|(pdf_direct==0)] = 1
-    
-#     # combine with MIS
-#     L = torch.zeros_like(rays_o)
-#     L[vis] = L_direct * w_direct + emit_contrib * w_emit
-#     L = L.reshape(B,spp,3).mean(1)
-    
-#     return L
+    # w_mis = torch.where((brdf_pdf>0)&(~emit_pdf.isinf()),brdf_pdf*brdf_pdf/(emit_pdf*emit_pdf+brdf_pdf*brdf_pdf),0)
+    # w_mis[brdf_pdf.isinf()|(emit_pdf==0)] = 1
+    # w_mis[w_mis.isnan()] = 0
+    # L[active_next] += brdf_weight*Le*w_mis
+
+    # L = L.reshape(B,spp,3).mean(1)
+    return L
+
 
 
 def trace_indirect(scene,emitter_net,material_net,position,wo,normal,indir_depth):

@@ -8,7 +8,8 @@ parser.add_argument('--output', type=str, default='/localhome/zla247/theia2_data
 args = parser.parse_args()
 
 # Create sphere mesh
-sphere = o3d.geometry.TriangleMesh.create_sphere(radius=2.5)
+sphere = o3d.geometry.TriangleMesh.create_sphere(radius=0.5)
+sphere.translate([-4, 1.0, 0.0])  # Position matches emitter position from brdf-emission.py
 sphere.compute_vertex_normals()
 
 # Save mesh

@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as NF
 import numpy as np
 import math
+import imageio
 
 from .slf import VoxelSLF
 
@@ -350,3 +351,116 @@ class PointEmitter(nn.Module):
         
         return wi, pdf, idx
 
+class EnvMapEmitter(nn.Module):
+    """ Environment map emitter using HDRI """
+    def __init__(self, envmap_path):
+        """
+        Args:
+            envmap_path: Path to the .exr or .hdr environment map
+        """
+        super(EnvMapEmitter, self).__init__()
+        
+        # Load environment map (assumed to be in lat-long format)
+        envmap = imageio.imread(envmap_path).astype('float32')[:,:,:3]  # Shape: (H, W, 3)
+        envmap = torch.from_numpy(envmap).permute(2, 0, 1)  # Convert to (3, H, W)
+        
+        self.register_buffer('envmap', envmap)
+        self.H, self.W = envmap.shape[1:]  # Get resolution
+        self.save_envmap_as_image(self.envmap, 'envmap.png')
+        
+        # Compute importance sampling weights (optional)
+        self.importance_weights = self.compute_importance_weights()
+    
+    def save_envmap_as_image(self, envmap_tensor, filename="envmap.png"):
+        """
+        Convert HDR environment map to an 8-bit RGB image and save it.
+
+        Args:
+            envmap_tensor: (3, H, W) PyTorch tensor in HDR format
+            filename: Output image file name
+        """
+        envmap_np = envmap_tensor.cpu().numpy()  # Convert to NumPy (3, H, W)
+
+        # Normalize to [0,1] using simple exposure adjustment
+        # envmap_np = envmap_np / (envmap_np.max() + 1e-6)  # Avoid division by zero
+        
+        # Apply gamma correction (optional, gamma = 2.2 for display)
+        env_map = np.clip(envmap_np, 0, 1)
+        envmap_np = env_map ** (1 / 2.2)
+
+        # Convert to 8-bit (0-255)
+        envmap_8bit = (envmap_np * 255).astype(np.uint8)
+
+        # Transpose from (3, H, W) to (H, W, 3) for image saving
+        envmap_8bit = np.transpose(envmap_8bit, (1, 2, 0))
+
+        # Save the image
+        imageio.imwrite(filename, envmap_8bit)
+        print(f"Saved environment map as {filename}")
+
+    def compute_importance_weights(self):
+        """ Compute importance sampling weights from HDR map luminance """
+        # Convert RGB to luminance (simple approximation)
+        luminance = 0.2126 * self.envmap[0] + 0.7152 * self.envmap[1] + 0.0722 * self.envmap[2]
+        return luminance / luminance.sum()  # Normalize
+
+    def sample_emitter(self, sample1, sample2, position):
+        """
+        Sample a direction from the environment map
+        Args:
+            sample1: B uniform samples (unused)
+            sample2: Bx2 uniform samples for spherical sampling
+            position: Bx3 surface positions (unused)
+        Returns:
+            wi: Bx3 sampled directions
+            pdf: Bx1 sampling pdf
+            idx: B dummy indices (-1)
+        """
+        # Convert uniform samples to spherical coordinates
+        phi = 2 * math.pi * sample2[..., 0]  # Azimuth
+        theta = torch.acos(1 - 2 * sample2[..., 1])  # Elevation
+        
+        sin_theta = torch.sin(theta)
+        x = sin_theta * torch.cos(phi)
+        y = sin_theta * torch.sin(phi)
+        z = torch.cos(theta)
+        
+        wi = torch.stack([x, y, z], dim=-1)  # Direction vectors
+        
+        # Compute PDF (uniform for now)
+        pdf = torch.full((position.shape[0], 1), 1.0 / (4 * math.pi), device=position.device)
+        
+        idx = torch.full((position.shape[0],), -1, dtype=torch.long, device=position.device)
+        
+        return wi, pdf, idx
+
+    def eval_emitter(self, position, light_dir, *args):
+        """
+        Evaluate environment map radiance along given directions
+        Args:
+            position: Bx3 intersection points (unused)
+            light_dir: Bx3 light directions
+        Returns:
+            Le: Bx3 radiance
+            pdf: Bx1 pdf
+            valid: B valid samples (always True for envmap)
+        """
+        # Convert direction to lat-long coordinates
+        phi = torch.atan2(light_dir[..., 2], light_dir[..., 0])  # [-π, π]
+        theta = torch.asin(-light_dir[..., 1])  # [-π/2, π/2]
+
+        # Normalize to [0, 1] texture coordinates
+        u = (phi / (2 * math.pi)) + 0.5
+        v = theta / math.pi + 0.5
+
+        # Convert to pixel indices
+        u_idx = (u * (self.W - 1)).long().clamp(0, self.W - 1)
+        v_idx = (v * (self.H - 1)).long().clamp(0, self.H - 1)
+
+        # Sample radiance from environment map
+        Le = self.envmap[:, v_idx, u_idx].permute(1, 0)  # (B, 3)
+
+        # Compute PDF (assuming uniform distribution for now)
+        pdf = torch.full((position.shape[0], 1), 1.0 / (4 * math.pi), device=position.device)
+
+        return Le, pdf, torch.ones_like(pdf, dtype=torch.bool)  # Always valid

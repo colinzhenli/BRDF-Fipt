@@ -38,7 +38,9 @@ def specular_sampler(sample2,roughness,wo,normal):
     Return:
         wi: Bx3 sampled direction in world space
     """
+    # roughness = torch.ones_like(normal)
     alpha = (roughness*roughness).squeeze(-1).data
+    alpha = torch.ones_like(sample2[:,0])
     
     # sample half vector
     theta = (1-sample2[...,0])/(sample2[...,0]*(alpha*alpha-1)+1)
@@ -132,7 +134,7 @@ class BaseBRDF(nn.Module):
         brdf_weight1 = F1*fac
         return wi,pdf,brdf_weight0,brdf_weight1
     
-    def eval_brdf(self,wi,wo,normal,mat):
+    def eval_brdf(self,wi,wo,normal,mat, half_sphere_mask):
         """ evaluate BRDF and pdf
         Args:
             wi: Bx3 light direction
@@ -143,14 +145,22 @@ class BaseBRDF(nn.Module):
             brdf: Bx3
             pdf: Bx1
         """
+        # Check if both directions are on the same side
+        NoL = (wi*normal).sum(-1,keepdim=True)
+        NoV = (wo*normal).sum(-1,keepdim=True)
+        valid_geometry = (NoL > 0) & (NoV > 0)
+        
+        # Early return for invalid geometry
+        if not valid_geometry.any():
+            return torch.zeros_like(wi), torch.zeros(wi.shape[0], 1, device=wi.device)
+
         albedo,roughness,metallic = mat['albedo'],mat['roughness'],mat['metallic']
 
         h = NF.normalize(wi+wo,dim=-1)
-        NoL = (wi*normal).sum(-1,keepdim=True).relu()
-        NoV = (wo*normal).sum(-1,keepdim=True).relu()
+        NoL = NoL.relu()  # Now safe to relu after check
+        NoV = NoV.relu()
         VoH = (wo*h).sum(-1,keepdim=True).relu()
         NoH = (normal*h).sum(-1,keepdim=True).relu()
-
 
         # get pdf
         D = D_GGX(NoH,roughness)
@@ -168,10 +178,14 @@ class BaseBRDF(nn.Module):
         brdf_spec = D*G*F/4.0*NoL
 
         brdf = brdf_diff + brdf_spec
+        
+        # Zero out invalid geometry cases
+        # brdf = torch.where(valid_geometry, brdf, 0.0)
+        # pdf = torch.where(valid_geometry, pdf, 0.0)
 
         return brdf,pdf 
     
-    def sample_brdf(self,sample1,sample2,wo,normal,mat):
+    def sample_brdf(self,sample1,sample2,wo,normal,mat, half_sphere_mask):
         """ importance sampling brdf and get brdf/pdf
         Args:
             sample1: B unifrom samples
@@ -200,13 +214,280 @@ class BaseBRDF(nn.Module):
         wi[mask] = specular_sampler(sample2[mask],mat['roughness'][mask],wo[mask],normal[mask])
 
         # get brdf,pdf
-        brdf,pdf = self.eval_brdf(wi,wo,normal,mat)
+        brdf,pdf = self.eval_brdf(wi,wo,normal,mat, half_sphere_mask)
 
         brdf_weight = torch.where(pdf>0,brdf/pdf,0)
         brdf_weight[brdf_weight.isnan()] = 0
         return wi,pdf,brdf_weight
     
+class PBRBRDF(nn.Module):
+    """ Base BRDF class """
+    def __init__(self, albedo=torch.ones(1, 3), roughness=0.2, metallic=0.5):
+        super(PBRBRDF,self).__init__()
+        # Initialize learnable material parameters
+        self.albedo = nn.Parameter(albedo)  # RGB albedo
+        self.roughness = nn.Parameter(torch.full((1, 1), roughness))  # Scalar roughness 
+        self.metallic = nn.Parameter(torch.full((1, 1), metallic))  # Scalar metallic
+        # Initialize parameters as dictionary
+        self.mat = {
+            'albedo': self.albedo,
+            'roughness': self.roughness, 
+            'metallic': self.metallic
+        }
+        return
     
+    def forward(self,):
+        pass
+    
+    def eval_diffuse(self,wi,normal):
+        """ evaluate diffuse shading 
+            and pdf
+        """
+        pdf = (normal*wi).sum(-1,keepdim=True).relu()/math.pi
+        brdf = pdf.expand(len(wi),3) 
+        return brdf,pdf
+    
+    def sample_diffuse(self,sample2,normal):
+        """ sample diffuse shading
+            and get sampled weight
+        """
+        # get wi
+        wi = diffuse_sampler(sample2,normal)
+        
+        # get brdf/pdf, pdf
+        brdf_weight = torch.ones(normal.shape,device=normal.device)
+        pdf = (normal*wi).sum(-1,keepdim=True).relu()/math.pi
+        return wi,pdf,brdf_weight
+    
+    def eval_specular(self,wi,wo,normal,roughness):
+        """" evaluate specular shadings
+            and pdf
+        """
+        h = NF.normalize(wi+wo,dim=-1)
+        NoL = (wi*normal).sum(-1,keepdim=True).relu()
+        NoV = (wo*normal).sum(-1,keepdim=True).relu()
+        VoH = (wo*h).sum(-1,keepdim=True).relu()
+        NoH = (normal*h).sum(-1,keepdim=True).relu()
+
+        D = D_GGX(NoH,roughness)
+        pdf = D.data/(4*VoH.clamp_min(1e-4))*NoH
+
+        G = G_Smith(NoV,NoL,roughness)
+        F0,F1 = fresnelSchlick_sep(VoH)
+        
+        # two term corresponds to two fresnel components
+        brdf_spec0 = D*G*F0/4.0*NoL
+        brdf_spec1 = D*G*F1/4.0*NoL
+
+        return brdf_spec0,brdf_spec1,pdf 
+
+    def sample_specular(self,sample2,wo,normal,roughness):
+        """ evaluate specular shadings
+            and get sampled weight
+        """
+        # get wi
+        wi = specular_sampler(sample2,roughness,wo,normal)
+        
+        # get brdf/pdf, pdf
+        h = NF.normalize(wi+wo,dim=-1)
+        NoL = (wi*normal).sum(-1,keepdim=True).relu()
+        NoV = (wo*normal).sum(-1,keepdim=True).relu()
+        VoH = (wo*h).sum(-1,keepdim=True).relu()
+        NoH = (normal*h).sum(-1,keepdim=True).relu()
+        
+        D = D_GGX(NoH,roughness)
+        pdf = D.data/(4*VoH.clamp_min(1e-4))*NoH
+
+        G = G_Smith(NoV,NoL,roughness)
+        F0,F1 = fresnelSchlick_sep(VoH)
+        
+        fac = G*VoH*NoL/NoH.clamp_min(1e-4)
+        
+        brdf_weight0 = F0*fac
+        brdf_weight1 = F1*fac
+        return wi,pdf,brdf_weight0,brdf_weight1
+    
+    def eval_brdf(self,wi,wo,normal):
+        """ evaluate BRDF and pdf
+            wi: Bx3 light direction
+            wo: Bx3 viewing direction
+            normal: Bx3 normal
+            mat: surface BRDF dict
+        Return:
+            brdf: Bx3
+            pdf: Bx1
+        """
+        # Check if both directions are on the same side
+        NoL = (wi*normal).sum(-1,keepdim=True)
+        NoV = (wo*normal).sum(-1,keepdim=True)
+        valid_geometry = (NoL > 0) & (NoV > 0)
+        
+        # Early return for invalid geometry
+        if not valid_geometry.any():
+            return torch.zeros_like(wi), torch.zeros(wi.shape[0], 1, device=wi.device)
+        # Reshape albedo tensor to match expected dimensions
+        albedo = self.mat['albedo'].view(1, 3).expand(normal.shape[0], 3)
+        roughness = self.mat['roughness'].view(1, 1).expand(normal.shape[0], 1)
+        metallic = self.mat['metallic'].view(1, 1).expand(normal.shape[0], 1)
+
+        h = NF.normalize(wi+wo,dim=-1)
+        NoL = NoL.relu()  # Now safe to relu after check
+        NoV = NoV.relu()
+        VoH = (wo*h).sum(-1,keepdim=True).relu()
+        NoH = (normal*h).sum(-1,keepdim=True).relu()
+
+        # get pdf
+        D = D_GGX(NoH,roughness)
+        pdf_spec = D.data/(4*VoH.clamp_min(1e-4))*NoH
+        pdf_diff = NoL/math.pi
+        pdf = 0.5*pdf_spec + 0.5*pdf_diff
+
+        # get brdf
+        kd = albedo*(1-metallic)
+        ks = 0.04*(1-metallic) + albedo*metallic
+
+        G = G_Smith(NoV,NoL,roughness)
+        F = fresnelSchlick(VoH,ks)
+        brdf_diff = kd/math.pi*NoL
+        brdf_spec = D*G*F/4.0*NoL
+
+        brdf = brdf_diff + brdf_spec
+
+
+        return brdf,pdf 
+    
+    def sample_brdf(self,sample1,sample2,wo,normal):
+        """ importance sampling brdf and get brdf/pdf
+        Args:
+            sample1: B unifrom samples
+            sample2: Bx2 uniform samples
+            wo: Bx3 viewing direction
+            normal: Bx3 normal
+            mat: material dict
+        Return:
+            wi: Bx3 sampled direction
+            pdf: Bx1
+            brdf_weight: Bx3 brdf/pdf
+        """
+        B = sample1.shape[0]
+        device = sample1.device
+
+        pdf = torch.zeros(B,device=device)
+        brdf = torch.zeros(B,3,device=device)
+        wi = torch.zeros(B,3,device=device)
+
+
+        mask = (sample1 > 0.)
+        # sample diffuse
+        wi[mask] = diffuse_sampler(sample2[mask],normal[mask])
+        mask = ~mask
+        # sample specular
+        wi[mask] = specular_sampler(sample2[mask],self.mat['roughness'].view(1, 1).expand(normal.shape[0], 1)[mask],wo[mask],normal[mask])
+        # get brdf,pdf
+        brdf,pdf = self.eval_brdf(wi,wo,normal)
+
+        brdf_weight = torch.where(pdf>0,brdf/pdf,0)
+        brdf_weight[brdf_weight.isnan()] = 0
+        return wi,pdf,brdf_weight
+
+class MLPPBRBRDF(nn.Module):
+    """ MLP-based BRDF class """
+    def __init__(self):
+        super(MLPPBRBRDF, self).__init__()
+        
+        # Simple 3-layer MLP
+        self.mlp = nn.Sequential(
+            nn.Linear(9, 16),
+            nn.ReLU(),
+            nn.Linear(16, 32),
+            nn.ReLU(),
+            nn.Linear(32, 16),
+            nn.ReLU(),
+            nn.Linear(16, 1),
+            nn.ReLU()  # Ensure non-negative BRDF values
+        )
+        
+    def forward(self, wi, wo, normal):
+        """
+        Evaluate BRDF using MLP
+        Args:
+            wi: Bx3 incoming light direction 
+            wo: Bx3 outgoing view direction
+        Returns:
+            brdf: Bx1 BRDF values
+        """
+        x = torch.cat([wi, wo, normal], dim=-1)  # Concatenate to Bx6
+        return self.mlp(x)
+
+    # def eval_brdf(self, wi, wo, normal):
+    #     """
+    #     Evaluate BRDF and pdf
+    #     Args:
+    #         wi: Bx3 light direction
+    #         wo: Bx3 viewing direction 
+    #         normal: Bx3 normal
+    #     Returns:
+    #         brdf: Bx3 BRDF values
+    #         pdf: Bx1 probability
+    #     """
+    #     # Check if both directions are on the same side
+    #     NoL = (wi*normal).sum(-1,keepdim=True)
+    #     NoV = (wo*normal).sum(-1,keepdim=True)
+    #     # valid_geometry = (NoL > 0) & (NoV > 0)
+        
+    #     # Get BRDF from MLP
+    #     brdf_val = self.forward(wi, wo, normal)
+        
+    #     # Expand to RGB channels
+    #     brdf = brdf_val.expand(-1, 3)
+        
+    #     # Simple cosine pdf
+    #     pdf = NoL / math.pi
+
+    #     return brdf, pdf
+    
+    def eval_brdf(self, wi, wo, normal):
+        """
+        Evaluate BRDF and pdf after transforming world-space vectors to local space.
+        Args:
+            wi: Bx3 light direction in world space
+            wo: Bx3 viewing direction in world space
+            normal: Bx3 normal in world space
+        Returns:
+            brdf: Bx3 BRDF values
+            pdf: Bx1 probability
+        """
+        # Ensure normal is normalized
+        normal = normal / normal.norm(dim=-1, keepdim=True)
+
+        # Construct an orthonormal basis (T, B, N)
+        up = torch.tensor([0.0, 1.0, 0.0], device=normal.device).expand_as(normal)
+        tangent = torch.cross(up, normal)
+        tangent = tangent / (tangent.norm(dim=-1, keepdim=True) + 1e-8)  # Avoid division by zero
+
+        bitangent = torch.cross(normal, tangent)  # Ensure orthogonality
+
+        # Create rotation matrix [T | B | N]
+        local_matrix = torch.stack([tangent, bitangent, normal], dim=-1)  # Bx3x3
+
+        # Transform wi and wo into the local frame
+        wi_local = torch.einsum('bij,bj->bi', local_matrix.transpose(-2, -1), wi)
+        wo_local = torch.einsum('bij,bj->bi', local_matrix.transpose(-2, -1), wo)
+
+        # Get BRDF from MLP using local-space vectors and normal in local space
+        local_normal = torch.zeros_like(wi_local)
+        local_normal[..., 2] = 1.0  # Normal is always (0,0,1) in local space
+        brdf_val = self.forward(wi_local, wo_local, local_normal)
+
+        # Expand to RGB channels
+        brdf = brdf_val.expand(-1, 3)
+
+        # Compute PDF (cosine-weighted hemisphere sampling)
+        NoL = wi_local[:, 2:3]  # Z-component in local space
+        pdf = NoL / math.pi
+
+        return brdf, pdf
+        
 class NGPBRDF(BaseBRDF):
     """ Hash Grid based brdf paramterization """
     def __init__(self,voxel_min,voxel_max):
