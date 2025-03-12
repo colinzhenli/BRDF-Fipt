@@ -7,8 +7,31 @@ default_options = {
     'dataset': {
         'type': str,
         'nargs': 3,
-        'default': ['synthetic','/localhome/zla247/theia2_data/fipt_indoor_synthetic/kitchen','/localhome/zla247/theia2_data/output/BRDF-Fipt/fipt_indoor_synthetic/kitchen']
+        'default': ['sphere','/localhome/zla247/theia2_data/fipt_indoor_synthetic/sphere','/localhome/zla247/theia2_data/output/BRDF-Fipt/fipt_indoor_synthetic/sphere', './images/point_sphere.png']
     },
+
+    # 'scene': {
+    #     'type': dict,
+    #     'default': {
+    #         'material': {
+                
+    #             'albedo': None,
+    #             'roughness': None,
+    #             'metallic': None
+    #         },
+    #         'emitter': {
+    #             'point': {
+    #                 'position': None,
+    #                 'intensity': None,
+    #                 'radius': None
+    #             },
+    #             'envmap': {
+    #                 'path': './envmap.exr'
+    #             }
+    #         },
+    #     }
+    # },
+
     'voxel_path': {
         'type': str,
         'default': '/localhome/zla247/theia2_data/output/BRDF-Fipt/fipt_indoor_synthetic/kitchen/vslf.npz'
@@ -23,7 +46,6 @@ default_options = {
         'type': int,
         'default': 1
     },
-    
 
     # optimizer config
     'optimizer': {
@@ -37,7 +59,7 @@ default_options = {
     },
     'weight_decay': {
         'type': float,
-        'default': 0
+        'default': 1e-4
     },
 
     'scheduler_rate':{

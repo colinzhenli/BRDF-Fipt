@@ -9,7 +9,7 @@ from PIL import Image
 from torchvision import transforms as T
 import cv2
 import math
-
+import matplotlib.pyplot as plt
 
 def get_ray_directions(H, W, focal):
     """ get camera ray direction
@@ -64,88 +64,126 @@ class SphereDataset(Dataset):
             Image/{:03d}_0001.exr HDR images
             transforms.json c2w camera matrix file and fov
     """
-    def __init__(self, root_dir, split='train', pixel=True, ray_diff=False):
+    def __init__(self, root_dir, gt_image, gt_path, split='train', pixel=True, ray_diff=False):
         """
         Args:
             root_dir: dataset root folder
+            gt_path: path to ground truth RGB image
             split: train or val
             pixel: whether load every camera pixel
             ray_diff: whether load ray differentials
         """
-        self.root_dir = os.path.join(root_dir, split)
-        self.pixel = pixel
+        self.pixel = False
         self.split = split
-        self.ray_diff = ray_diff
+        self.ray_diff = True
+        self.custom_c2w = True
+        self.gt_path = gt_path
+        self.gt_image = gt_image
+        self.camera_dict = {
+            "position": [0.0, 0.0, -2],
+            "look_at": [0.0, 0.0, 1.0],
+            "up": [0.0, 1.0, 0.0]
+        }
 
-        self.img_hw = cv2.imread(os.path.join(root_dir,'train/Image/000_0001.exr'),-1).shape[:2]
-        
-        with open(os.path.join(self.root_dir, "transforms.json"), 'r') as f:
-            self.meta = json.load(f)
+        self.img_hw = (1024, 1024)
+        if gt_image is not None:
+            self.img = gt_image
+            assert self.img.shape[0] == self.img_hw[0]
+            assert self.img.shape[1] == self.img_hw[1]
+        if gt_path is not None:
+            self.img = plt.imread(gt_path)[...,:3]
+            assert self.img.shape[0] == self.img_hw[0]
+            assert self.img.shape[1] == self.img_hw[1]
+            self.img = torch.from_numpy(self.img.astype(np.float32))
+
 
         # camera focal length and ray directions
         h, w = self.img_hw
-        self.focal = (0.5*w/np.tan(0.5*self.meta['camera_angle_x'])).item()
+        self.camera_angle_x = 0.5
+        self.focal = (0.5*w/np.tan(0.5*self.camera_angle_x)).item()
+        # self.focal = 1000
         self.directions = get_ray_directions(h, w, self.focal)
         
-        # load every camera pixels
-        if self.pixel:
-            self.poses = []
-            self.all_rays = []
-            self.all_rgbs = []
-            for cur_idx in range(len(self.meta['frames'])):
-                frame = self.meta['frames'][cur_idx]
-                pose = np.array(frame['transform_matrix'])[:3, :4]
-                self.poses += [pose]
-                c2w = torch.FloatTensor(pose)
-                
-                image_path = os.path.join(self.root_dir, 'Image','{:03d}_0001.exr'.format(cur_idx))
-                img = open_exr(image_path, self.img_hw).reshape(-1, 3)
-                
-                self.all_rgbs += [img]
-                
-                if self.ray_diff:
-                    rays_o, rays_d, dxdu, dydv = get_rays(self.directions, c2w, focal=self.focal)
-                    self.all_rays += [torch.cat([rays_o, rays_d, dxdu, dydv], 1)]
-                else:
-                    rays_o, rays_d = get_rays(self.directions, c2w)
-                    self.all_rays += [torch.cat([rays_o, rays_d], 1)]
-
-            self.all_rays = torch.cat(self.all_rays, 0)
-            self.all_rgbs = torch.cat(self.all_rgbs, 0)
-
     def __len__(self):
-        if self.pixel:
-            return len(self.all_rays)
-        return len(self.meta['frames'])
+        # if self.pixel:
+        #     return len(self.all_rays)
+        if self.split == 'val' or self.split == 'test':
+            return 1
+        return 50
 
-    def __getitem__(self, idx):
-        if self.pixel:
-            sample = {
-                'rays': self.all_rays[idx],
-                'rgbs': self.all_rgbs[idx]
-            }
+    def __getitem__(self, idx):          
+        # Handle different ways of specifying custom camera transform
+        if self.custom_c2w:
+            if 'rotation' in self.camera_dict:
+                # Compute c2w from position and rotation
+                position = torch.tensor(self.camera_dict['position'])
+                rotation = torch.tensor(self.camera_dict.get('rotation', [0,0,0]))
+                
+                # Convert euler angles to rotation matrix
+                Rx = torch.tensor([[1, 0, 0],
+                                    [0, torch.cos(rotation[0]), -torch.sin(rotation[0])],
+                                    [0, torch.sin(rotation[0]), torch.cos(rotation[0])]])
+                Ry = torch.tensor([[torch.cos(rotation[1]), 0, torch.sin(rotation[1])],
+                                    [0, 1, 0],
+                                    [-torch.sin(rotation[1]), 0, torch.cos(rotation[1])]])
+                Rz = torch.tensor([[torch.cos(rotation[2]), -torch.sin(rotation[2]), 0],
+                                    [torch.sin(rotation[2]), torch.cos(rotation[2]), 0],
+                                    [0, 0, 1]])
+                R = Rz @ Ry @ Rx
+                
+                c2w = torch.eye(4)
+                c2w[:3,:3] = R
+                c2w[:3,3] = position
+                c2w = c2w[:3,:4]
+                
+            elif 'look_at' in self.camera_dict:
+                # Compute c2w from look direction
+                position = torch.tensor(self.camera_dict['position'])
+                target = torch.tensor(self.camera_dict['look_at'])
+                up = torch.tensor(self.camera_dict.get('up', [0,1,0]))
+                
+                forward = target - position
+                forward = forward / torch.norm(forward)
+                # Ensure `up` is not parallel to `forward`
+                if torch.abs(torch.dot(forward, up)) > 0.99:  # Too parallel, adjust up
+                    up = torch.tensor([1.0, 0.0, 0.0]) if torch.abs(forward[0]) < 0.99 else torch.tensor([0.0, 1.0, 0.0])
+                """ right hand coordinate system """
+                right = torch.cross(up, forward)
+                right = right / torch.norm(right)
+                up = torch.cross(forward, right)
+                
+                c2w = torch.eye(4)
+                c2w[:3,:3] = torch.stack([right, up, forward], dim=1)
+                c2w[:3,3] = position
+                c2w = c2w[:3,:4]
+        
+        
+        if self.ray_diff:
+            rays_o, rays_d, dxdu, dydv = get_rays(self.directions, c2w, focal=self.focal)
+            rays = torch.cat([rays_o, rays_d, dxdu, dydv], 1)
         else:
-            frame = self.meta['frames'][idx]
-            c2w = torch.FloatTensor(frame['transform_matrix'])[:3, :4]
-            
-            image_path = os.path.join(self.root_dir, 'Image','{:03d}_0001.exr'.format(idx))
-            img = open_exr(image_path, self.img_hw).reshape(-1, 3)
-            
-            if self.ray_diff:
-                rays_o, rays_d, dxdu, dydv = get_rays(self.directions, c2w, focal=self.focal)
-                rays = torch.cat([rays_o, rays_d, dxdu, dydv], 1)
-            else:
-                rays_o, rays_d = get_rays(self.directions, c2w)
-                rays = torch.cat([rays_o, rays_d], 1)
+            rays_o, rays_d = get_rays(self.directions, c2w)
+            rays = torch.cat([rays_o, rays_d], 1)
 
+        if self.gt_image is not None:
             sample = {
                 'rays': rays,
-                'rgbs': img,
-                'c2w': c2w
+                'c2w': c2w,
+                'rgbs': self.img
             }
-
+        elif self.gt_path is not None:
+            sample = {
+                'rays': rays,
+                'c2w': c2w,
+                'rgbs': self.img
+            }
+        else:
+            sample = {
+                'rays': rays,
+                'c2w': c2w,
+            }
         return sample
-
+    
 class SyntheticDataset(Dataset):
     """ synthetic dataset in structure:
     Scene/
@@ -171,6 +209,17 @@ class SyntheticDataset(Dataset):
                       else os.path.join(root_dir,'val')
         self.pixel=pixel
         self.split = split
+        self.custom_c2w = True
+        self.camera_dict = {
+            "position": [3.0, 1.0, 0.0],
+            "look_at": [-2.0, 1.0, 0.0],
+            "up": [0.0, 0.0, 1.0]
+        }
+        # self.camera_dict = {
+        #     "position": [0.0, 0.0, 0.0],
+        #     "look_at": [0.0, 0.0, 1.0],
+        #     "up": [0.0, 0.0, 1.0]
+        # }
 
         self.img_hw = cv2.imread(os.path.join(root_dir,'train/Image/000_0001.exr'),-1).shape[:2]
 
@@ -183,6 +232,7 @@ class SyntheticDataset(Dataset):
         # camera focal length and ray directions
         h,w = self.img_hw
         self.focal = (0.5*w/np.tan(0.5*self.meta['camera_angle_x'])).item()
+        # self.focal = 500
         self.directions = \
             get_ray_directions(h, w, self.focal)
         
@@ -255,7 +305,47 @@ class SyntheticDataset(Dataset):
 
         else:
             frame = self.meta['frames'][idx]
-            c2w = torch.FloatTensor(frame['transform_matrix'])[:3, :4]
+            if self.custom_c2w:
+                if 'rotation' in self.camera_dict:
+                    # Compute c2w from position and rotation
+                    position = torch.tensor(self.camera_dict['position'])
+                    rotation = torch.tensor(self.camera_dict.get('rotation', [0,0,0]))
+                    
+                    # Convert euler angles to rotation matrix
+                    Rx = torch.tensor([[1, 0, 0],
+                                     [0, torch.cos(rotation[0]), -torch.sin(rotation[0])],
+                                     [0, torch.sin(rotation[0]), torch.cos(rotation[0])]])
+                    Ry = torch.tensor([[torch.cos(rotation[1]), 0, torch.sin(rotation[1])],
+                                     [0, 1, 0],
+                                     [-torch.sin(rotation[1]), 0, torch.cos(rotation[1])]])
+                    Rz = torch.tensor([[torch.cos(rotation[2]), -torch.sin(rotation[2]), 0],
+                                     [torch.sin(rotation[2]), torch.cos(rotation[2]), 0],
+                                     [0, 0, 1]])
+                    R = Rz @ Ry @ Rx
+                    
+                    c2w = torch.eye(4)
+                    c2w[:3,:3] = R
+                    c2w[:3,3] = position
+                    c2w = c2w[:3,:4]
+                    
+                elif 'look_at' in self.camera_dict:
+                    # Compute c2w from look direction
+                    position = torch.tensor(self.camera_dict['position'])
+                    target = torch.tensor(self.camera_dict['look_at'])
+                    up = torch.tensor(self.camera_dict.get('up', [0,1,0]))
+                    
+                    forward = target - position
+                    forward = forward / torch.norm(forward)
+                    right = torch.cross(forward, up)
+                    right = right / torch.norm(right)
+                    up = torch.cross(right, forward)
+                    
+                    c2w = torch.eye(4)
+                    c2w[:3,:3] = torch.stack([right, up, forward], dim=1)
+                    c2w[:3,3] = position
+                    c2w = c2w[:3,:4]
+            else:
+                c2w = torch.FloatTensor(np.array(frame['transform_matrix'])[:3, :4])
 
             cur_idx = idx
             

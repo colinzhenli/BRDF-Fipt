@@ -8,16 +8,13 @@
             "name": "Python: Current File",
             "type": "python",
             "request": "launch",
-            "program": "brdf-emission.py",
+            "program": "train_brdf.py",
             "console": "integratedTerminal",
             "justMyCode": true,
             "args": [
-                // "--scene", "/localhome/zla247/theia2_data/fipt_indoor_synthetic/kitchen",
-                // "--output", "/localhome/zla247/theia2_data/output/BRDF-Fipt/fipt_indoor_synthetic/kitchen",
-                // "--dataset", "synthetic",
-                // "--ckpt", "./checkpoints/indoor_synthetic_kitchen_run_1/last.ckpt",
-                // "--experiment_name", "indoor_synthetic_kitchen_run_1",
-                // "--device", "0"
+                "--experiment_name", "Over_fit_MLP_local-coords_0.2-0.2_run_1",
+                "--device", "0",
+                "--max_epochs", "2"
             ]
         }
     ]
