@@ -395,9 +395,19 @@ class MLPPBRBRDF(nn.Module):
     def __init__(self):
         super(MLPPBRBRDF, self).__init__()
         
-        # Simple 3-layer MLP
+        # # Simple 3-layer MLP
+        # self.mlp = nn.Sequential(
+        #     nn.Linear(9, 16),
+        #     nn.ReLU(),
+        #     nn.Linear(16, 32),
+        #     nn.ReLU(),
+        #     nn.Linear(32, 16),
+        #     nn.ReLU(),
+        #     nn.Linear(16, 1),
+        #     nn.ReLU()  # Ensure non-negative BRDF values
+        # )
         self.mlp = nn.Sequential(
-            nn.Linear(9, 16),
+            nn.Linear(6, 16),
             nn.ReLU(),
             nn.Linear(16, 32),
             nn.ReLU(),
@@ -416,77 +426,80 @@ class MLPPBRBRDF(nn.Module):
         Returns:
             brdf: Bx1 BRDF values
         """
-        x = torch.cat([wi, wo, normal], dim=-1)  # Concatenate to Bx6
+        x = torch.cat([wi, wo], dim=-1)  # Concatenate to Bx9
         return self.mlp(x)
 
-    # def eval_brdf(self, wi, wo, normal):
-    #     """
-    #     Evaluate BRDF and pdf
-    #     Args:
-    #         wi: Bx3 light direction
-    #         wo: Bx3 viewing direction 
-    #         normal: Bx3 normal
-    #     Returns:
-    #         brdf: Bx3 BRDF values
-    #         pdf: Bx1 probability
-    #     """
-    #     # Check if both directions are on the same side
-    #     NoL = (wi*normal).sum(-1,keepdim=True)
-    #     NoV = (wo*normal).sum(-1,keepdim=True)
-    #     # valid_geometry = (NoL > 0) & (NoV > 0)
-        
-    #     # Get BRDF from MLP
-    #     brdf_val = self.forward(wi, wo, normal)
-        
-    #     # Expand to RGB channels
-    #     brdf = brdf_val.expand(-1, 3)
-        
-    #     # Simple cosine pdf
-    #     pdf = NoL / math.pi
-
-    #     return brdf, pdf
-    
     def eval_brdf(self, wi, wo, normal):
         """
-        Evaluate BRDF and pdf after transforming world-space vectors to local space.
+        Evaluate BRDF and pdf
         Args:
-            wi: Bx3 light direction in world space
-            wo: Bx3 viewing direction in world space
-            normal: Bx3 normal in world space
+            wi: Bx3 light direction
+            wo: Bx3 viewing direction 
+            normal: Bx3 normal
         Returns:
             brdf: Bx3 BRDF values
             pdf: Bx1 probability
         """
-        # Ensure normal is normalized
-        normal = normal / normal.norm(dim=-1, keepdim=True)
-
-        # Construct an orthonormal basis (T, B, N)
-        up = torch.tensor([0.0, 1.0, 0.0], device=normal.device).expand_as(normal)
-        tangent = torch.cross(up, normal)
-        tangent = tangent / (tangent.norm(dim=-1, keepdim=True) + 1e-8)  # Avoid division by zero
-
-        bitangent = torch.cross(normal, tangent)  # Ensure orthogonality
-
-        # Create rotation matrix [T | B | N]
-        local_matrix = torch.stack([tangent, bitangent, normal], dim=-1)  # Bx3x3
-
-        # Transform wi and wo into the local frame
-        wi_local = torch.einsum('bij,bj->bi', local_matrix.transpose(-2, -1), wi)
-        wo_local = torch.einsum('bij,bj->bi', local_matrix.transpose(-2, -1), wo)
-
-        # Get BRDF from MLP using local-space vectors and normal in local space
-        local_normal = torch.zeros_like(wi_local)
-        local_normal[..., 2] = 1.0  # Normal is always (0,0,1) in local space
-        brdf_val = self.forward(wi_local, wo_local, local_normal)
-
+        # Check if both directions are on the same side
+        NoL = (wi*normal).sum(-1,keepdim=True)
+        NoV = (wo*normal).sum(-1,keepdim=True)
+        # valid_geometry = (NoL > 0) & (NoV > 0)
+        
+        # Get BRDF from MLP
+        brdf_val = self.forward(wi, wo, normal)
+        
         # Expand to RGB channels
         brdf = brdf_val.expand(-1, 3)
-
-        # Compute PDF (cosine-weighted hemisphere sampling)
-        NoL = wi_local[:, 2:3]  # Z-component in local space
+        
+        # Simple cosine pdf
         pdf = NoL / math.pi
 
         return brdf, pdf
+    
+    # def eval_brdf(self, wi, wo, normal):
+    #     """
+    #     Evaluate BRDF and pdf after transforming world-space vectors to local space.
+    #     Args:
+    #         wi: Bx3 light direction in world space
+    #         wo: Bx3 viewing direction in world space
+    #         normal: Bx3 normal in world space
+    #     Returns:
+    #         brdf: Bx3 BRDF values
+    #         pdf: Bx1 probability
+    #     """
+    #     # Ensure normal is normalized
+    #     NoL = (wi*normal).sum(-1,keepdim=True)
+    #     NoV = (wo*normal).sum(-1,keepdim=True)
+    #     normal = normal / normal.norm(dim=-1, keepdim=True)
+
+    #     # Construct an orthonormal basis (T, B, N)
+    #     up = torch.tensor([0.0, 1.0, 0.0], device=normal.device).expand_as(normal)
+    #     tangent = torch.cross(up, normal)
+    #     tangent = tangent / (tangent.norm(dim=-1, keepdim=True) + 1e-8)  # Avoid division by zero
+
+    #     bitangent = torch.cross(normal, tangent)  # Ensure orthogonality
+
+    #     # Create rotation matrix [T | B | N]
+    #     local_matrix = torch.stack([tangent, bitangent, normal], dim=-1)  # Bx3x3
+
+    #     # Transform wi and wo into the local frame
+    #     wi_local = torch.einsum('bij,bj->bi', local_matrix.transpose(-2, -1), wi)
+    #     wo_local = torch.einsum('bij,bj->bi', local_matrix.transpose(-2, -1), wo)
+
+    #     # Get BRDF from MLP using local-space vectors and normal in local space
+    #     local_normal = torch.zeros_like(wi_local)
+    #     local_normal[..., 2] = 1.0  # Normal is always (0,0,1) in local space
+    #     brdf_val = self.forward(wi_local, wo_local, local_normal)
+
+    #     # Expand to RGB channels
+    #     brdf = brdf_val.expand(-1, 3)
+
+    #     # Compute PDF (cosine-weighted hemisphere sampling)
+    #     # NoL = wi_local[:, 2:3]  # Z-component in local space
+
+    #     pdf = NoL / math.pi
+
+    #     return brdf, pdf
         
 class NGPBRDF(BaseBRDF):
     """ Hash Grid based brdf paramterization """

@@ -1,0 +1,4 @@
+dataset_root_path: data
+
+batch_size: 1
+num_workers: 4

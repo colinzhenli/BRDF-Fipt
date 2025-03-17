@@ -12,9 +12,9 @@
             "console": "integratedTerminal",
             "justMyCode": true,
             "args": [
-                "--experiment_name", "Over_fit_MLP_local-coords_0.2-0.2_run_1",
+                "--experiment_name", "Over_fit-no-weight-decay_MLP_With-normal_0.2-0.2_run_2",
                 "--device", "0",
-                "--max_epochs", "2"
+                "--max_epochs", "50"
             ]
         }
     ]
