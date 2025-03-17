@@ -75,7 +75,7 @@ class ForwardRenderer():
         })
 
         # initiallize BRDF
-        self.material = PBRBRDF(albedo=torch.tensor([[0.8, 0.8, 0.8]]), roughness=args['roughness'], metallic=args['metallic']).to(self.device)
+        self.material = PBRBRDF(albedo=torch.tensor([[1.0, 1.0, 1.0]]), roughness=args['roughness'], metallic=args['metallic']).to(self.device)
         if args['emitter'] == 'point':
             self.emitter = PointEmitter(position=torch.tensor([-2, 2.0, 0.0]),
                         intensity=torch.tensor([50.0, 50.0, 50.0]),
@@ -268,7 +268,7 @@ class ModelTrainer(pl.LightningModule):
         self.log('test/psnr', psnr)
         torchvision.utils.save_image(
             gamma(rgbs.permute(2, 0, 1)),
-            os.path.join('./Over-fit_experiments/Mar12_results', f'results_output_{self.hparams.roughness:.2f}_{self.hparams.metallic:.2f}.png'),
+            os.path.join('./Over-fit_experiments/Mar12_results_new', f'results_no-normal_output_{self.hparams.roughness:.2f}_{self.hparams.metallic:.2f}.png'),
         )   
         
         return psnr
@@ -326,11 +326,11 @@ if __name__ == '__main__':
     
     # Generate Rendered Images for Different Roughness & Metallic Values
     rendered_image_paths = {}
-    output_dir = "./Over-fit_experiments/Mar12_results"
+    output_dir = "./Over-fit_experiments/Mar12_results_new"
     os.makedirs(output_dir, exist_ok=True)
     
-    for roughness in torch.linspace(0.2, 0.8, args.parameter_num):
-        for metallic in torch.linspace(0.2, 0.8, args.parameter_num):
+    for roughness in torch.linspace(0.20, 0.20, args.parameter_num):
+        for metallic in torch.linspace(0.20, 0.20, args.parameter_num):
             renderer_args = {'roughness': roughness.item(), 'metallic': metallic.item(), 'emitter': args.emitter}
             renderer = ForwardRenderer(hparams, renderer_args)
             img = renderer.render()
@@ -345,7 +345,7 @@ if __name__ == '__main__':
             rendered_image_paths[(roughness.item(), metallic.item())] = output_path
             
             # Save gamma-corrected PNG for visualization only
-            vis_filename = f'output_gamma_{roughness:.2f}_{metallic:.2f}.png'
+            vis_filename = f'output_No-normal_gamma_{roughness:.2f}_{metallic:.2f}.png'
             vis_path = os.path.join(output_dir, vis_filename)
             torchvision.utils.save_image(
                 gamma(img.permute(2, 0, 1)),
@@ -360,7 +360,7 @@ if __name__ == '__main__':
         with open(psnr_file, 'r') as f:
             psnr_results = json.load(f)
     
-    for (roughness, metallic), gt_path in rendered_image_paths.items():
+    for (roughness, metallic), gt_path in tqdm(rendered_image_paths.items(), desc="Training models"):
         hparams.gt_path = gt_path  # Set path to ground truth image
         hparams.emitter = args.emitter
         hparams.roughness = roughness
@@ -373,7 +373,7 @@ if __name__ == '__main__':
             callbacks=[checkpoint_callback, lr_logger],
             log_every_n_steps=50,
             max_epochs=args.max_epochs, 
-            check_val_every_n_epoch=50
+            check_val_every_n_epoch=25
         )
         trainer.fit(model, ckpt_path=last_ckpt)
         

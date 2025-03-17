@@ -55,11 +55,11 @@ default_options = {
     },
     'learning_rate': {
         'type': float,
-        'default': 1e-3
+        'default': 1e-2
     },
     'weight_decay': {
         'type': float,
-        'default': 1e-4
+        'default': 0
     },
 
     'scheduler_rate':{
