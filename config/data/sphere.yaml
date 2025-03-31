@@ -1,0 +1,15 @@
+defaults:
+  - base
+
+dataset_name: "sphere"
+dataset_path: None
+# cache_path: "./cache/sphere"
+# gt_path: "./ground_truth/sphere_gt.exr"
+shape:
+  type: "sphere"
+  center: [0.0, 0.0, 0.0]
+  radius: 0.2
+
+pixel: False
+ray_diff: True
+custom_c2w: True

@@ -1,18 +1,12 @@
-# Managed by Hydra
-
-hydra:
-  output_subdir: null
-  run:
-    dir: .
-
 defaults:
-  - _self_
-  - data: base
-  - model: base
+  - data: sphere
+  - renderer: point_emitter
+  - material: mlp_pbr
+  - model: direct
 
-experiment_name: run_1
-output_folder: output
-exp_output_root_path: ${output_folder}/${data.dataset}/${experiment_name}
+# experiment_name: Refactor_Over_fit_MLP-LeakyReLU_Multiple-BRDFs_local-coords_run_1
+experiment_name: Fixed_gradient_Optimized-PBR-PROXY_run_1
+output_folder: ./Over-fit_experiments
+exp_output_root_path: ${output_folder}/${data.dataset_name}/${experiment_name}
 
-global_train_seed: 12345
-global_test_seed: 32102
+global_train_seed: 42

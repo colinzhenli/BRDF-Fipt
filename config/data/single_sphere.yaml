@@ -1,6 +1,0 @@
-# Managed by Hydra
-
-defaults:
-  - base
-
-dataset: SingleSphere

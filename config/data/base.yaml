@@ -1,4 +1,2 @@
-dataset_root_path: data
-
-batch_size: 1
-num_workers: 4
+num_workers: 8
+batch_num: 50 # steps per epoch
