@@ -9,7 +9,7 @@ trainer:
   accelerator: gpu #cpu or gpu
   devices: auto
   num_nodes: 1
-  max_epochs: 20
+  max_epochs: 40
   max_steps: 20000
   check_val_every_n_epoch: 50
 
@@ -24,8 +24,8 @@ checkpoint_monitor:
 optimizer:
   name: Adam # SGD or Adam
   weight_decay: 0.0
-  lr: 0.01
+  lr: 0.004
   warmup_steps_ratio: 0.0
 
 lr_decay: # for Adam
-  decay_start_epoch: 35
+  decay_start_epoch: 100

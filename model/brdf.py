@@ -336,7 +336,7 @@ class PhongBRDF(nn.Module):
 
 class PBRBRDF(nn.Module):
     """ Base BRDF class """
-    def __init__(self, albedo=torch.ones(1, 3), roughness=0.1, metallic=0.5):
+    def __init__(self, albedo=torch.ones(1, 3), roughness=0.2, metallic=0.5):
         super(PBRBRDF,self).__init__()
         # Initialize learnable material parameters
         self.albedo = nn.Parameter(albedo)
@@ -435,11 +435,11 @@ class PBRBRDF(nn.Module):
         alpha = (roughness * roughness).squeeze(-1)
         
         # sample half vector
-        theta = (1-sample2[...,0])/((sample2[...,0]*(alpha*alpha-1)+1) + 1e-6)
-        # theta = safe_acos.apply(theta)
-        EPS = 0.1
-        theta = torch.acos(theta.clamp(min=0.0 + EPS, max=1.0 - EPS).sqrt())
-        theta[theta.isnan()] = 0.0
+        theta = (1-sample2[...,0])/((sample2[...,0]*(alpha*alpha-1)+1))
+        # # theta = safe_acos.apply(theta)
+        # EPS = 0.1
+        # theta = torch.acos(theta.clamp(min=0.0 + EPS, max=1.0 - EPS).sqrt())
+        theta = torch.acos(theta.sqrt())
 
         phi = 2*math.pi*sample2[...,1]
         wh = angle2xyz(theta,phi)
@@ -531,7 +531,7 @@ class PBRBRDF(nn.Module):
 
         # get pdf
         D = D_GGX(NoH,roughness)
-        pdf_spec = D.data/(4*VoH.clamp_min(1e-4))*NoH
+        pdf_spec = D/((4*VoH.clamp_min(1e-4))*NoH + 1e-8)
         pdf_diff = NoL/math.pi
         pdf = 0.5*pdf_spec + 0.5*pdf_diff
 
@@ -547,7 +547,7 @@ class PBRBRDF(nn.Module):
         brdf = brdf_diff + brdf_spec
 
 
-        return brdf,pdf 
+        return brdf,pdf_diff 
     
     def sample_brdf(self,sample1,sample2,wo,normal):
         """ importance sampling brdf and get brdf/pdf
@@ -585,36 +585,258 @@ class PBRBRDF(nn.Module):
         brdf_weight[brdf_weight.isnan()] = 0
         return wi,pdf,brdf_weight
 
+class ProxyPBRBRDF(nn.Module):
+    def __init__(self, roughness):
+        super(ProxyPBRBRDF, self).__init__()
+        self.roughness = nn.Parameter(torch.full((1, 1), roughness).cuda())  # Scalar roughness 
+
+    def eval_pdf(self,wi,wo,normal):
+        """ evaluate BRDF and pdf
+            wi: Bx3 light direction
+            wo: Bx3 viewing direction
+            normal: Bx3 normal
+            mat: surface BRDF dict
+        Return:
+            brdf: Bx3
+            pdf: Bx1
+        """
+        # Check if both directions are on the same side
+        NoL = (wi*normal).sum(-1,keepdim=True)
+        NoV = (wo*normal).sum(-1,keepdim=True)
+        valid_geometry = (NoL > 0) & (NoV > 0)
+        
+        # Early return for invalid geometry
+        if not valid_geometry.any():
+            return torch.zeros_like(wi), torch.zeros(wi.shape[0], 1, device=wi.device)
+
+        h = NF.normalize(wi+wo,dim=-1)
+        NoL = NoL.relu()  # Now safe to relu after check
+        NoV = NoV.relu()
+        VoH = (wo*h).sum(-1,keepdim=True).relu()
+        NoH = (normal*h).sum(-1,keepdim=True).relu()
+
+        # get pdf
+        D = D_GGX(NoH, self.roughness.expand(normal.shape[0], 1))
+        pdf_spec = D/((4*VoH.clamp_min(1e-4))*NoH)
+        pdf_diff = NoL/math.pi
+        pdf = 0.5*pdf_spec + 0.5*pdf_diff
+
+        # # debug
+        # # pdf = self.roughness.expand(normal.shape[0], 3)
+        # alpha = self.roughness.expand(normal.shape[0], 1)
+        # alpha2 = alpha*alpha    
+        # denom = (NoH*NoH*(alpha2-1.0)+1.0)
+        # denom = math.pi * denom*denom
+        # # if torch.any(denom==0):
+        # #     print("denom is nan")
+        # #     print(denom)
+        # #     print(pdf)
+        # #     print(pdf.shape)
+        # #     print(pdf.device)
+        # #     print(pdf.isnan())
+        # pdf = alpha2 / denom
+        return pdf
+
+    def specular_sampler(self, sample2,roughness, wo, normal):
+        """ sampling ggx lobe: h ~ D/(VoH*4)*NoH
+        Args:
+            sample2: Bx3 uniform samples
+            roughness: Bx1 roughness
+            wo: Bx3 viewing direction
+            normal: Bx3 normal
+        Return:
+            wi: Bx3 sampled direction in world space
+        """
+        alpha = (roughness * roughness).squeeze(-1)
+        theta = (1-sample2[...,0])/((sample2[...,0]*(alpha*alpha-1)+1))
+        theta = torch.acos(theta.sqrt())
+
+        phi = 2*math.pi*sample2[...,1]
+        wh = angle2xyz(theta,phi)
+
+        # half vector to wi
+        Nmat = get_normal_space(normal)
+        wh = (wh[:,None]@Nmat.permute(0,2,1)).squeeze(1)
+        wi = 2*(wo*wh).sum(-1,keepdim=True)*wh-wo
+        wi = NF.normalize(wi,dim=-1)
+        return wi
+    
+    def sample_brdf(self,sample1,sample2,wo,normal):
+        """ importance sampling brdf and get brdf/pdf
+        Args:
+            sample1: B unifrom samples
+            sample2: Bx2 uniform samples
+            wo: Bx3 viewing direction
+            normal: Bx3 normal
+            mat: material dict
+        Return:
+            wi: Bx3 sampled direction
+            pdf: Bx1
+            brdf_weight: Bx3 brdf/pdf
+        """
+        B = sample1.shape[0]
+        device = sample1.device
+
+        pdf = torch.zeros(B,device=device)
+        brdf = torch.zeros(B,3,device=device)
+        # wi = torch.zeros(B,3,device=device)
+
+
+        mask = (sample1 > 0.5)
+        wi_diffuse = diffuse_sampler(sample2[mask], normal[mask])
+        wi_specular = self.specular_sampler(sample2[~mask], self.roughness.expand(normal.shape[0], 1)[~mask], wo[~mask], normal[~mask])
+
+        # Construct wi without gradient-breaking assignment
+        wi = torch.zeros(B, 3, device=device)
+        wi = wi.clone()  # explicitly ensures gradients
+        wi[mask] = wi_diffuse
+        wi[~mask] = wi_specular
+        # get brdf,pdf
+        pdf = self.eval_pdf(wi,wo,normal)
+        return wi, pdf
+
 class MLPPBRBRDF(nn.Module):
     """ MLP-based BRDF class """
-    def __init__(self, cfg):
+    def __init__(self, cfg, gt_roughness, gt_metallic):
         super(MLPPBRBRDF, self).__init__()
         
-        # layers = []
-        # prev_dim = cfg.input_channels
-        # for hidden_dim in cfg.hidden_layers:
-        #     layers.append(nn.Linear(prev_dim, hidden_dim))
-        #     if cfg.activation.lower() == "relu":
-        #         layers.append(nn.ReLU())
-        #     prev_dim = hidden_dim
+        layers = []
+        prev_dim = cfg.input_channels
+        for hidden_dim in cfg.hidden_layers:
+            layers.append(nn.Linear(prev_dim, hidden_dim))
+            if cfg.activation.lower() == "relu":
+                layers.append(nn.ReLU())
+            prev_dim = hidden_dim
             
-        # layers.append(nn.Linear(prev_dim, cfg.output_channels))
-        # layers.append(nn.ReLU())
+        layers.append(nn.Linear(prev_dim, cfg.output_channels))
+        layers.append(nn.LeakyReLU(0.2))
         
-        # self.mlp = nn.Sequential(*layers)
-        self.mlp = nn.Sequential(
-            nn.Linear(9, 16),
-            nn.ReLU(),
-            nn.Linear(16, 32),
-            nn.ReLU(),
-            nn.Linear(32, 16),
-            nn.ReLU(),
-            nn.Linear(16, 1),
-            nn.LeakyReLU(0.2)  # Ensure non-negative BRDF values
-        )
+        self.mlp = nn.Sequential(*layers)
 
         # self.proxy_brdf = PhongBRDF()
-        self.proxy_brdf = PBRBRDF(albedo=torch.ones(1, 3), roughness=0.1, metallic=0.5)
+        self.proxy_brdf = ProxyPBRBRDF(roughness=gt_roughness)
+
+
+    def forward(self, wi, wo, normal):
+        """
+        Evaluate BRDF using MLP
+        Args:
+            wi: Bx3 incoming light direction 
+            wo: Bx3 outgoing view direction
+        Returns:
+            brdf: Bx1 BRDF values
+        """
+        x = torch.cat([wi, wo, normal], dim=-1)  # Concatenate to Bx9
+        return self.mlp(x)
+
+    
+    def eval_brdf(self, wi, wo, normal):
+        """
+        Evaluate BRDF and pdf after transforming world-space vectors to local space.
+        Args:
+            wi: Bx3 light direction in world space
+            wo: Bx3 viewing direction in world space
+            normal: Bx3 normal in world space
+        Returns:
+            brdf: Bx3 BRDF values
+            pdf: Bx1 probability
+        """
+        # Ensure normal is normalized
+        NoL = (wi*normal).sum(-1,keepdim=True)
+        NoV = (wo*normal).sum(-1,keepdim=True)
+        normal = normal / normal.norm(dim=-1, keepdim=True)
+
+        # Construct an orthonormal basis (T, B, N)
+        up = torch.tensor([0.0, 1.0, 0.0], device=normal.device).expand_as(normal)
+        tangent = torch.cross(up, normal)
+        tangent = tangent / (tangent.norm(dim=-1, keepdim=True) + 1e-8)  # Avoid division by zero
+
+        bitangent = torch.cross(normal, tangent)  # Ensure orthogonality
+
+        # Create rotation matrix [T | B | N]
+        local_matrix = torch.stack([tangent, bitangent, normal], dim=-1)  # Bx3x3
+
+        # Transform wi and wo into the local frame
+        wi_local = torch.einsum('bij,bj->bi', local_matrix.transpose(-2, -1), wi)
+        wo_local = torch.einsum('bij,bj->bi', local_matrix.transpose(-2, -1), wo)
+
+        # Get BRDF from MLP using local-space vectors and normal in local space
+        local_normal = torch.zeros_like(wi_local)
+        local_normal[..., 2] = 1.0  # Normal is always (0,0,1) in local space
+        brdf_val = self.forward(wi_local, wo_local, local_normal)
+
+        # Expand to RGB channels
+        brdf = brdf_val.expand(-1, 3)
+
+        # Compute PDF (cosine-weighted hemisphere sampling)
+        # NoL = wi_local[:, 2:3]  # Z-component in local space
+
+        pdf = NoL / math.pi
+
+        return brdf, pdf
+        
+    def sample_brdf(self, sample1, sample2, wo, normal):
+        """
+        Importance sampling BRDF using proxy (PBRBRDF) and evaluating MLP BRDF.
+        
+        Args:
+            sample1: B uniform samples [0,1] to select diffuse or specular sampling
+            sample2: Bx2 uniform samples for hemisphere sampling
+            wo: Bx3 viewing direction in world space
+            normal: Bx3 normal in world space
+            proxy_brdf: instance of PBRBRDF to guide sampling (importance sampling proxy)
+
+        Returns:
+            wi: Bx3 sampled incoming directions (world space)
+            pdf: Bx1 sampling pdf values from proxy_brdf
+            brdf_weight: Bx3 ratio (MLP evaluated BRDF / pdf)
+        """
+        B = sample1.shape[0]
+        device = sample1.device
+
+        # Step 1: Sample direction wi from proxy BRDF
+        wi_proxy, pdf_proxy = self.proxy_brdf.sample_brdf(sample1, sample2, wo, normal)
+        stop_gradient_pdf_proxy = pdf_proxy.detach()
+        wi_proxy = wi_proxy.detach()
+        
+        # Step 2: Evaluate the MLP-based BRDF at these sampled directions
+        mlp_brdf, _ = self.eval_brdf(wi_proxy, wo, normal)
+
+        # Step 3: Compute brdf_weight (importance sampling ratio)
+        # mlp_brdf = mlp_brdf * pdf_proxy / stop_gradient_pdf_proxy
+        brdf_weight = torch.where(pdf_proxy > 0, mlp_brdf / stop_gradient_pdf_proxy, torch.zeros_like(mlp_brdf))
+
+        return wi_proxy, stop_gradient_pdf_proxy, brdf_weight
+class LatentBRDF(nn.Module):
+    """ MLP-based BRDF class """
+    def __init__(self, cfg, gt_roughness, gt_metallic):
+        super(LatentBRDF, self).__init__()
+        
+        layers = []
+        prev_dim = cfg.input_channels
+        for hidden_dim in cfg.hidden_layers:
+            layers.append(nn.Linear(prev_dim, hidden_dim))
+            if cfg.activation.lower() == "relu":
+                layers.append(nn.ReLU())
+            prev_dim = hidden_dim
+            
+        layers.append(nn.Linear(prev_dim, cfg.output_channels))
+        layers.append(nn.LeakyReLU(0.2))
+        
+        self.mlp = nn.Sequential(*layers)
+        # self.mlp = nn.Sequential(
+        #     nn.Linear(9, 16),
+        #     nn.ReLU(),
+        #     nn.Linear(16, 32),
+        #     nn.ReLU(),
+        #     nn.Linear(32, 16),
+        #     nn.ReLU(),
+        #     nn.Linear(16, 1),
+        #     nn.LeakyReLU(0.2)  # Ensure non-negative BRDF values
+        # )
+
+        # self.proxy_brdf = PhongBRDF()
+        self.proxy_brdf = PBRBRDF(albedo=torch.ones(1, 3), roughness=gt_roughness, metallic=gt_metallic)
 
 
     def forward(self, wi, wo, normal):
@@ -696,6 +918,8 @@ class MLPPBRBRDF(nn.Module):
 
         # Step 1: Sample direction wi from proxy BRDF
         wi_proxy, pdf_proxy, _ = self.proxy_brdf.sample_brdf(sample1, sample2, wo, normal)
+        pdf_proxy = pdf_proxy.detach() # Stop gradient
+        wi_proxy = wi_proxy.detach()
         
         # Step 2: Evaluate the MLP-based BRDF at these sampled directions
         mlp_brdf, _ = self.eval_brdf(wi_proxy, wo, normal)
@@ -706,85 +930,3 @@ class MLPPBRBRDF(nn.Module):
         brdf_weight = torch.where(pdf_proxy > eps, mlp_brdf / pdf_proxy, torch.zeros_like(mlp_brdf))
 
         return wi_proxy, pdf_proxy, brdf_weight
-class NGPBRDF(BaseBRDF):
-    """ Hash Grid based brdf paramterization """
-    def __init__(self,voxel_min,voxel_max):
-        """ 
-        voxel_min,voxel_max: scene bounding box
-        """
-        super(NGPBRDF,self).__init__()
-        self.voxel_min = voxel_min
-        self.voxel_max = voxel_max
-        hash_encoding={
-                "otype": "HashGrid",
-                "n_levels": 32,
-                "n_features_per_level": 2,
-                "log2_hashmap_size": 19,
-                "base_resolution": 16,
-                "per_level_scale": 1.3
-         }
-        
-        hash_network={
-            "otype": "FullyFusedMLP",
-            "activation": "ReLU",
-            "output_activation": "None",
-            "n_neurons": 64,
-            "n_hidden_layers": 2
-        }
-
-        self.mlp =  tcnn.NetworkWithInputEncoding(
-            3, 5, hash_encoding, hash_network)
-
-        
-    def forward(self,position):
-        """ query brdf parameters at given location
-        Args:
-            position: Bx3 queried location
-        Return:
-            Bx3 base color
-            Bx1 roughness in [0.02,1]
-            Bx1 metallic
-        """
-        # map to [0,1]
-        position = (position-self.voxel_min)/(self.voxel_max-self.voxel_min)
-        
-        mat = self.mlp(position*2-1).sigmoid()
-        return {
-            'albedo': mat[...,:3].float(),
-            'roughness': mat[...,3:4].float()*0.98+0.02, # avoid nan
-            'metallic': mat[...,4:5].float()
-        }
-
-
-
-class TextureBRDF(BaseBRDF):
-    """ Textured mesh based brdf parameterization (unsued) """
-    def __init__(self,res):
-        super(TextureBRDF,self).__init__()
-        self.res = res
-        self.register_parameter('textures',nn.Parameter(torch.randn(self.res,self.res,3+2)*1e-2))
-        
-    def forward(self,uv):
-        uv = (uv*(self.res-1)).clamp(0,self.res-1)
-        uv0 = uv.floor().long()
-        uv1 = uv.ceil().long()
-        uv_ = uv-uv0
-        
-        u0,v0 = uv0.T
-        u1,v1 = uv1.T
- 
-        
-        t00,t01 = self.textures[v0,u0].sigmoid(),self.textures[v0,u1].sigmoid()
-        t10,t11 = self.textures[v1,u0].sigmoid(),self.textures[v1,u1].sigmoid()
-        
-        u_,v_ = uv_.T
-        u_,v_ = u_.unsqueeze(-1),v_.unsqueeze(-1)
-        
-        t = t00*(1-u_)*(1-v_) + t01*u_*(1-v_)\
-          + t10*(1-u_)*v_ + t11*u_*v_
-        
-        return {
-            'albedo': t[...,:3],
-            'roughness': t[...,3:4]*0.98+0.02, # avoid nan
-            'metallic': t[...,4:5]
-        }  

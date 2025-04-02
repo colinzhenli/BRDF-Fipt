@@ -86,7 +86,7 @@ def main(cfg):
 
     for (roughness, metallic), gt_path in tqdm(rendered_image_paths.items(), desc="Training models"):
         material_module = importlib.import_module('model.brdf')
-        material = getattr(material_module, cfg.material.type)(cfg.material)
+        material = getattr(material_module, cfg.material.type)(cfg.material, roughness, metallic)
         model = BRDFTrainer(cfg, material, roughness, metallic)
 
         print("==> initializing data ...")          
@@ -123,6 +123,8 @@ def main(cfg):
 
         with open(psnr_file, 'w') as f:
             json.dump(psnr_results, f, indent=4)
+
+        torch.cuda.empty_cache()
 
     print('Training and Testing Complete!')
 

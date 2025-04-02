@@ -16,6 +16,7 @@ class BRDFTrainer(pl.LightningModule):
         self.metallic = metallic
 
         self.material = material
+        self.material_latents = {}
         self.renderer = ForwardRenderer(cfg, self.material)
         self.img_hw = cfg.renderer.resolution
 
@@ -74,8 +75,18 @@ class BRDFTrainer(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
         _, loss, psnr = self.render_step(batch, self.cfg.renderer.spp.train)
-        self.log('train/loss', loss)
-        self.log('train/psnr', psnr)
+        # self.log('train/loss', loss)
+        # self.log('train/psnr', psnr)
+        loss = loss.sum()
+        loss.backward(retain_graph=True)
+
+        # Print gradients explicitly
+        print(f"Gradient w.r.t roughness: {self.material.proxy_brdf.roughness.grad}")
+        # # Gradient Visualization
+        # dot = make_dot(loss, params={
+        #     'roughness': self.material.proxy_brdf.roughness,
+        # })
+        # dot.render(f"New_gradient_flow_batch_{batch_idx}", format="png")
         return loss
     # def training_step(self, batch, batch_idx):
     #     rays, rgbs_gt = batch['rays'], batch['rgbs']

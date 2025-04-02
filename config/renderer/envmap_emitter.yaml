@@ -14,9 +14,9 @@ emitter:
   envmap_path: "./envmap.exr"
 
 spp:
-  train: 64
+  train: 64 
   val: 1024
-  test: 4096
+  test: 64
 SPP_chunk: 16
 
 resolution: [1024, 1024]

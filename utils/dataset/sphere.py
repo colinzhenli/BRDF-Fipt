@@ -11,6 +11,36 @@ import cv2
 import math
 import matplotlib.pyplot as plt
 
+def pose_spherical(theta, phi, radius):
+    c2w = trans_t(radius)
+    c2w = rot_phi(phi/180.*np.pi) @ c2w
+    c2w = rot_theta(theta/180.*np.pi) @ c2w
+    c2w = np.array([[-1,0,0,0],[0,0,1,0],[0,1,0,0],[0,0,0,1]]) @ c2w
+    c2w = c2w #@ np.array([[1, 0, 0, 0], [0, -1, 0, 0], [0, 0, -1, 0], [0, 0, 0, 1]])
+    return c2w
+
+trans_t = lambda t : np.asarray([
+    [1,0,0,0],
+    [0,1,0,0],
+    [0,0,1,t],
+    [0,0,0,1],
+], dtype=np.float32)
+
+rot_phi = lambda phi : np.asarray([
+    [1,0,0,0],
+    [0,np.cos(phi),-np.sin(phi),0],
+    [0,np.sin(phi), np.cos(phi),0],
+    [0,0,0,1],
+], dtype=np.float32)
+
+rot_theta = lambda th : np.asarray([
+    [np.cos(th),0,-np.sin(th),0],
+    [0,1,0,0],
+    [np.sin(th),0, np.cos(th),0],
+    [0,0,0,1],
+], dtype=np.float32)
+
+
 def get_ray_directions(H, W, focal):
     """ get camera ray direction
     Args:
@@ -89,7 +119,33 @@ class SphereDataset(Dataset):
         self.camera_angle_x = cfg.renderer.camera.camera_angle_x
         self.focal = (0.5*w/np.tan(0.5*self.camera_angle_x)).item()
         self.directions = get_ray_directions(h, w, self.focal)
-        
+
+        # if self.pixel:
+        #     self.all_rays = []
+        #     self.all_rgbs = []
+        #     self.get_render_poses()
+        #     for cur_idx in range(self.total):
+        #         c2w = torch.from_numpy(self.render_poses[cur_idx][:3, :4])
+        #         img = open_exr(os.path.join(self.root_dir, 'Image', '{:03d}_0001.exr'.format(cur_idx)), self.img_hw).reshape(-1,3)
+        #         self.all_rgbs += [img]
+        #         rays_o, rays_d,dxdu,dydv = get_rays(self.directions, c2w, focal=self.focal) # both (h*w, 3)
+
+        #         self.all_rays += [torch.cat([rays_o, rays_d,
+        #                                      dxdu,
+        #                                      dydv,
+        #                                     ],1)] 
+        #     self.all_rays = torch.cat(self.all_rays, 0)
+        #     self.all_rgbs = torch.cat(self.all_rgbs, 0)
+        #     # number of camera ray batches
+        #     self.batch_num = math.ceil(len(self.all_rays)*1.0/self.batch_size)
+        #     self.idxs = torch.randperm(len(self.all_rays)) 
+
+    def get_render_poses(self):
+        stride = 20 #self.opt.render_stride
+        radius = 4 #self.opt.render_radius
+        self.render_poses = np.stack([pose_spherical(angle, -30.0, radius) @ self.blender2opencv for angle in np.linspace(-180, 180, stride + 1)[:-1]], 0)
+        self.total = len(self.render_poses)
+
     def __len__(self):
         if self.split == 'val' or self.split == 'test':
             return 1

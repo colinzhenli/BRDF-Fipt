@@ -4,8 +4,7 @@ defaults:
   - material: mlp_pbr
   - model: direct
 
-# experiment_name: Refactor_Over_fit_MLP-LeakyReLU_Multiple-BRDFs_local-coords_run_1
-experiment_name: Fixed_gradient_Optimized-PBR-PROXY_run_1
+experiment_name: Point-Emitter-Larger-MLP-Brdf-sampling_Non-Optimized-PBR-PROXY_run_1
 output_folder: ./Over-fit_experiments
 exp_output_root_path: ${output_folder}/${data.dataset_name}/${experiment_name}
 
