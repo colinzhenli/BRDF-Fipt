@@ -441,7 +441,7 @@ def path_tracing_envmap_emitter(scene,emitter_net,material_net,rays_o,rays_d,dx_
     # compute first intersection
     position,normal,_, _,vis = ray_intersect(scene,position,wi)
     L,_,valid_next = emitter_net.eval_emitter(position,wi)
-    L[vis] = 0
+    L[vis] = 0 # set the radiance to 0 for the valid intersection
     # L[~vis] = 0
     valid_next = vis
     # drop invalid intersection
@@ -497,6 +497,62 @@ def path_tracing_envmap_emitter(scene,emitter_net,material_net,rays_o,rays_d,dx_
     return L
 
 
+def path_tracing_multipoint_emitter(scene,emitter_net,material_net,rays_o,rays_d,dx_du,dy_dv,spp,indir_depth, brdf_sampling, emitter_sampling):
+    """ Path trace current scene
+    Args:
+        scene: mitsuba scene
+        emitter_net: emitter object
+        material_net: material object
+        rays_o: Bx3 ray origin
+        rays_d: Bx3 ray direction
+        dx_du,dy_dv: Bx3 ray differential
+        spp: sampler per pixel
+        indir_depth: indirect illumination depth
+    Return:
+        L: Bx3 traced results
+    """
+    B = len(rays_o)
+    device = rays_o.device
+    
+    # sample camera ray
+    du,dv = torch.rand(2,len(rays_o),spp,1,device=device)-0.5
+    wi = NF.normalize(rays_d[:,None]+dx_du[:,None]*du+dy_dv[:,None]*dv,dim=-1).reshape(-1,3)
+    
+    # Add mask for wi z component
+    half_sphere_mask = wi[..., 2] < 0
+    position = rays_o.repeat_interleave(spp,0)
+    
+    # compute first intersection
+    position,normal,_,triangle_idx,vis = ray_intersect(scene,position,wi)
+    L = torch.zeros(vis.shape[0],3,device=device)
+    valid_next = vis
+    # drop invalid intersection
+    if not valid_next.any():
+        return L.reshape(B,spp,3).mean(1)
+    position = position[valid_next]
+    normal = normal[valid_next]
+    wo = -wi[valid_next]
+    active_next = valid_next.clone()
+    
+    # only emitter sampling
+    wi,emit_pdf, emit_position, idx = emitter_net.sample_emitter(
+        torch.rand(len(position),device=device),
+        torch.rand(len(position),2,device=device),
+        position)
+    
+    # visibility test
+    emit_weight,_,_ = emitter_net.eval_emitter(emit_position, idx)
+    emit_vis = (wi*normal).sum(-1,keepdim=True) > 0 # B, 1
+    
+    # goemetry term (assume double sided area light)
+    G = 1 / (emit_position-position).pow(2).sum(-1).clamp_min(1e-6) # B, 1
+    emit_weight = emit_weight*emit_vis*G[...,None]/emit_pdf.clamp_min(1e-6)
+    
+    # emit brdf
+    emit_brdf,_ = material_net.eval_brdf(wi,wo,normal)
+    L[active_next] += emit_brdf*emit_weight
+    L = L.reshape(B,spp,3).mean(1)
+    return L
 
 def trace_indirect(scene,emitter_net,material_net,position,wo,normal,indir_depth):
     """ trace indirect illumination
@@ -516,6 +572,7 @@ def trace_indirect(scene,emitter_net,material_net,position,wo,normal,indir_depth
     active_next = torch.ones(B,dtype=bool,device=device)# how many active rays
     throughput = torch.ones(B,3,device=device)
     L = torch.zeros(B,3,device=device)
+    
     
     for depth in range(indir_depth):
         if not active_next.any():
@@ -592,3 +649,4 @@ def trace_indirect(scene,emitter_net,material_net,position,wo,normal,indir_depth
             'metallic': mat_next['metallic'][valid_next],
         }
     return L
+

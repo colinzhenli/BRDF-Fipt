@@ -1,7 +1,7 @@
 import torch
-from utils.path_tracing import path_tracing_fix_emitter, path_tracing_envmap_emitter
+from utils.path_tracing import path_tracing_fix_emitter, path_tracing_envmap_emitter, path_tracing_multipoint_emitter
 from mitsuba import load_dict
-from model.emitter import EnvMapEmitter, PointEmitter
+from model.emitter import EnvMapEmitter, PointEmitter, MultiPointsEmitter
 class ForwardRenderer:
     def __init__(self, cfg, material):
         self.cfg = cfg
@@ -19,6 +19,8 @@ class ForwardRenderer:
 
         if cfg.renderer.emitter.type == 'point':
             self.ray_tracer = path_tracing_fix_emitter
+        elif cfg.renderer.emitter.type == 'multipoint':
+            self.ray_tracer = path_tracing_multipoint_emitter
         else:
             self.ray_tracer = path_tracing_envmap_emitter
         emitter_cfg = cfg.renderer.emitter
@@ -27,6 +29,13 @@ class ForwardRenderer:
                 torch.tensor(emitter_cfg.position),
                 torch.tensor(emitter_cfg.intensity),
                 emitter_cfg.radius
+            ).to(self.device)
+
+        elif cfg.renderer.emitter.type == 'multipoint':
+            self.emitter = MultiPointsEmitter(
+                dist=emitter_cfg.dist,
+                n_theta=emitter_cfg.n_theta,
+                n_phi=emitter_cfg.n_phi
             ).to(self.device)
         else:
             self.emitter = EnvMapEmitter(emitter_cfg.envmap_path).to(self.device)
@@ -41,5 +50,5 @@ class ForwardRenderer:
                 rays_x, rays_d, dxdu, dydv, 
                 self.SPP_chunk, indir_depth=0, brdf_sampling=self.cfg.renderer.brdf_sampling, emitter_sampling=self.cfg.renderer.emitter_sampling
             )
-        rgbs = L.reshape(*img_hw, -1) / (spp // self.SPP_chunk)
+        rgbs = L / (spp // self.SPP_chunk)
         return rgbs

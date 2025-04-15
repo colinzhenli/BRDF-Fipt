@@ -73,7 +73,7 @@ def D_GGX(cos_h,eta):
     alpha2 = alpha*alpha
     denom = (cos_h*cos_h*(alpha2-1.0)+1.0)
     denom = math.pi * denom*denom
-    return alpha2/(denom + 1e-8)
+    return alpha2/denom
 
 
 def double_sided(V,N):

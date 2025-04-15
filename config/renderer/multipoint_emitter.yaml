@@ -1,0 +1,25 @@
+type: "path_tracing_multipoint_emitter"
+brdf_sampling: True # not actually used
+emitter_sampling: False # not actually used
+indir_depth: 0
+
+camera:
+  distance: 2.0
+  number_of_views: 1
+  look_at: [0.0, 0.0, 0.0]
+  up: [0.0, 1.0, 0.0]
+  camera_angle_x: 0.5
+
+emitter:
+  type: "multipoint"
+  dist: 4.0
+  n_theta: 2
+  n_phi: 2
+
+spp:
+  train: 32
+  val: 128
+  test: 128
+SPP_chunk: 8
+
+resolution: [1024, 1024]

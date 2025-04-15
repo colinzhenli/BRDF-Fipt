@@ -4,8 +4,9 @@ emitter_sampling: True
 indir_depth: 0
 
 camera:
-  position: [0.0, 0.0, -2.0]
-  look_at: [0.0, 0.0, 1.0]
+  distance: 2.0
+  number_of_views: 32
+  look_at: [0.0, 0.0, 0.0]
   up: [0.0, 1.0, 0.0]
   camera_angle_x: 0.5
 
@@ -14,9 +15,9 @@ emitter:
   envmap_path: "./envmap.exr"
 
 spp:
-  train: 64 
-  val: 1024
-  test: 64
+  train: 2048
+  val: 2048
+  test: 2048
 SPP_chunk: 16
 
 resolution: [1024, 1024]

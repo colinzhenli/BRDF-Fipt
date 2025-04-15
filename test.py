@@ -12,7 +12,7 @@ from model.brdf import MLPPBRBRDF, PBRBRDF, PhongBRDF, ProxyPBRBRDF
 from torch.utils.data import DataLoader
 from utils.dataset import SphereDataset
 import hydra
-from omegaconf import DictConfig
+
 from pytorch_lightning.strategies import DDPStrategy
 import importlib
 import warnings
@@ -44,6 +44,7 @@ def init_callbacks(cfg):
 @hydra.main(version_base=None, config_path="config", config_name="config")
 def main(cfg):
     # fix the seed
+
     pl.seed_everything(cfg.global_train_seed, workers=True)
     rendered_image_paths = {}
     os.makedirs(cfg.exp_output_root_path, exist_ok=True)
@@ -84,7 +85,7 @@ def main(cfg):
             
 
 
-    # Training
+    # Test
     psnr_results = {}
     psnr_file = os.path.join(cfg.exp_output_root_path, 'psnr_results.json')
 
@@ -93,40 +94,34 @@ def main(cfg):
             psnr_results = json.load(f)
 
     for (roughness, metallic), gt_folder in tqdm(rendered_image_paths.items(), desc="Training models"):
-        # material_module = importlib.import_module('model.brdf')
-        # material = getattr(material_module, cfg.material.type)(cfg.material, roughness, metallic)
         material = MLPPBRBRDF(cfg.material, roughness, metallic)
-        # material = PBRBRDF(albedo=torch.tensor([[1.0, 1.0, 1.0]]), roughness=roughness, metallic=metallic)
-
         model = BRDFTrainer(cfg, material, roughness, metallic)
+        # model = BRDFTrainer.load_from_checkpoint(cfg.model.ckpt_path,  weights_only=False)
+        # Load checkpoint
+        if os.path.isfile(cfg.model.ckpt_path):
+            print(f"=> loading model checkpoint '{cfg.model.ckpt_path}'")
+            checkpoint = torch.load(cfg.model.ckpt_path, map_location=model.device, weights_only=False)
 
+            model.load_state_dict(checkpoint['state_dict'])
+            print("=> loaded checkpoint successfully.")
+        else:
+            raise FileNotFoundError(f"No checkpoint found at '{cfg.model.ckpt_path}'. Please ensure the path is correct.")
+        
         print("==> initializing data ...")          
-        train_loader = DataLoader(get_dataset(cfg, 'train', gt_folder), batch_size=None, num_workers=cfg.data.num_workers)
-        val_loader = DataLoader(get_dataset(cfg, 'val', gt_folder), batch_size=None, num_workers=cfg.data.num_workers)
         test_loader = DataLoader(get_dataset(cfg, 'test', gt_folder), batch_size=None, num_workers=cfg.data.num_workers)
-
-        print("==> initializing logger ...")
-        logger = hydra.utils.instantiate(cfg.model.logger, save_dir=cfg.exp_output_root_path)
-
-        print("==> initializing monitor ...")
-        checkpoint_callback = ModelCheckpoint(
-            dirpath=os.path.join(cfg.model.checkpoint_monitor.dirpath, f'model_{roughness:.2f}_{metallic:.2f}'),
-            filename=cfg.model.checkpoint_monitor.filename,
-            save_top_k=cfg.model.checkpoint_monitor.save_top_k, 
-            every_n_epochs=cfg.model.checkpoint_monitor.every_n_epochs,
-            monitor='val/loss',
-            save_last=True
-        )
-
-        lr_monitor = LearningRateMonitor(logging_interval='step')
 
         print("==> initializing trainer ...")
 
+        # trainer = pl.Trainer(
+        #     callbacks=None, logger=None, max_epochs=1, inference_mode=True
+        # )
         trainer = pl.Trainer(
-            callbacks=[checkpoint_callback, lr_monitor], logger=logger, **cfg.model.trainer, strategy=DDPStrategy(find_unused_parameters=True)
+            accelerator='gpu',
+            devices=1,
+            inference_mode=True
         )
 
-        trainer.fit(model, train_loader, val_loader)
+
         test_results = trainer.test(model, dataloaders=test_loader)
 
         test_psnr = sum(result['test/psnr'] for result in test_results) / len(test_results)

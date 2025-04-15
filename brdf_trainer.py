@@ -69,25 +69,28 @@ class BRDFTrainer(pl.LightningModule):
         dxdu, dydv = rays[..., 6:9], rays[..., 9:12]
 
         rgbs = self.renderer.render(rays_x, rays_d, dxdu, dydv, self.img_hw, spp)
-        loss = NF.mse_loss(self.gamma(rgbs), self.gamma(rgbs_gt))
+        loss = NF.mse_loss(rgbs, rgbs_gt)
+        # loss = NF.mse_loss(self.gamma(rgbs), self.gamma(rgbs_gt))
         psnr = -10.0 * torch.log10(loss.clamp_min(1e-5))
         return rgbs, loss, psnr
 
     def training_step(self, batch, batch_idx):
         _, loss, psnr = self.render_step(batch, self.cfg.renderer.spp.train)
-        # self.log('train/loss', loss)
-        # self.log('train/psnr', psnr)
-        loss = loss.sum()
-        loss.backward(retain_graph=True)
+        self.log('train/loss', loss)
+        self.log('train/psnr', psnr)
+        # self.log('train/roughness', self.material.proxy_brdf.roughness)
+        # loss = loss.sum()
+        # loss.backward(retain_graph=True)
 
-        # Print gradients explicitly
-        print(f"Gradient w.r.t roughness: {self.material.proxy_brdf.roughness.grad}")
+        # # Print gradients explicitly
+        # print(f"Gradient w.r.t roughness: {self.material.proxy_brdf.roughness.grad}")
         # # Gradient Visualization
         # dot = make_dot(loss, params={
         #     'roughness': self.material.proxy_brdf.roughness,
         # })
         # dot.render(f"New_gradient_flow_batch_{batch_idx}", format="png")
         return loss
+    
     # def training_step(self, batch, batch_idx):
     #     rays, rgbs_gt = batch['rays'], batch['rgbs']
     #     rays_x, rays_d = rays[..., :3], rays[..., 3:6]
@@ -128,9 +131,12 @@ class BRDFTrainer(pl.LightningModule):
 
     def test_step(self, batch, batch_idx):
         rgbs, loss, psnr = self.render_step(batch, self.cfg.renderer.spp.test)
+        rgbs = rgbs.reshape(*self.img_hw, -1)
+        os.makedirs(os.path.join(self.cfg.exp_output_root_path,f'roughness_{self.roughness:.2f}_metallic_{self.metallic:.2f}'), exist_ok=True)
         torchvision.utils.save_image(
             self.gamma(rgbs.permute(2, 0, 1)),
-            os.path.join(self.cfg.exp_output_root_path, f'test_{batch_idx}_{self.roughness:.2f}_{self.metallic:.2f}.png')
+            os.path.join(self.cfg.exp_output_root_path,f'roughness_{self.roughness:.2f}_metallic_{self.metallic:.2f}', f'result_view_{batch_idx}.png')
         )
         self.log('test/psnr', psnr)
-        return
+        # self.log('test/roughness', self.material.proxy_brdf.roughness)
+        return 

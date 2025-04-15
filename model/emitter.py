@@ -370,6 +370,29 @@ class EnvMapEmitter(nn.Module):
         
         # Compute importance sampling weights (optional)
         self.importance_weights = self.compute_importance_weights()
+
+    def get_emitter_dicts(self):
+        # Initialize camera dicts list
+        self.emitter_dict = []
+        
+        # Keep look_at and up vectors fixed from initial camera settings
+        look_at = self.initial_camera_dict["look_at"]
+        up = self.initial_camera_dict["up"]
+        dist = self.distance
+        
+        # Parameters to control sampling density
+        n_theta = 8  # number of theta samples 
+        n_phi = 4    # number of phi samples
+        self.total = n_theta * n_phi
+        
+        # Generate uniform samples for spherical coordinates
+        thetas = np.linspace(0, np.pi, n_theta)
+        phis = np.linspace(0, 2*np.pi, n_phi)
+        
+        # Create grid of angles
+        theta_grid, phi_grid = np.meshgrid(thetas, phis)
+        thetas_flat = theta_grid.flatten()
+        phis_flat = phi_grid.flatten()
     
     def save_envmap_as_image(self, envmap_tensor, filename="envmap.png"):
         """
@@ -433,6 +456,81 @@ class EnvMapEmitter(nn.Module):
         idx = torch.full((position.shape[0],), -1, dtype=torch.long, device=position.device)
         
         return wi, pdf, idx
+    def importance_sample_emitter(self, sample1, sample2, position):
+        """
+        Sample a direction from the environment map using weighted sampling.
+        """
+        B = position.shape[0]
+        
+        # Flatten PDF and get CDF
+        flat_pdf = self.envmap_pdf.flatten()
+        flat_cdf = torch.cumsum(flat_pdf, dim=0)
+        
+        # Invert CDF sampling using sample2[..., 0]
+        u = sample2[..., 0].clamp(0, 1 - 1e-6)
+        indices = torch.searchsorted(flat_cdf, u)
+
+        # Convert 1D index to 2D pixel (v, u)
+        v_idx = indices // self.W
+        u_idx = indices % self.W
+
+        # Convert to [0, 1] continuous UV (center of pixel)
+        u = (u_idx.float() + 0.5) / self.W
+        v = (v_idx.float() + 0.5) / self.H
+
+        # Map [u,v] in [0,1]² to 3D direction using Equal-Area Octahedral Mapping
+        # Shift to [-1, 1]
+        u_ = 2 * u - 1
+        v_ = 2 * v - 1
+
+        abs_u = u_.abs()
+        abs_v = v_.abs()
+        signed_dist = 1 - (abs_u + abs_v)
+        d = signed_dist.abs()
+        r = 1 - d
+        phi = (v_ - u_) / (r + 1e-6) + 1
+        phi = phi * math.pi / 4
+        z = torch.sign(signed_dist) * (1 - r * r)
+
+        cos_phi = torch.cos(phi)
+        sin_phi = torch.sin(phi)
+        x = cos_phi * r * torch.sqrt(torch.clamp(2 - r * r, min=1e-6))
+        y = sin_phi * r * torch.sqrt(torch.clamp(2 - r * r, min=1e-6))
+        
+        wi = torch.stack([x, y, z], dim=-1)  # (B, 3)
+        wi = torch.nn.functional.normalize(wi, dim=-1)
+
+        # PDF from envmap
+        pdf_vals = flat_pdf[indices].unsqueeze(-1)  # (B, 1)
+
+        idx = torch.full((B,), -1, dtype=torch.long, device=position.device)
+        return wi, pdf_vals, idx
+
+    def ochmap_eval_emitter(self, position, light_dir, *args):
+        """
+        Evaluate environment map radiance along a given direction using Octahedral Mapping.
+        """
+        B = light_dir.shape[0]
+
+        v = light_dir / (light_dir.abs().sum(dim=-1, keepdim=True) + 1e-6)
+
+        is_upper = v[..., 2] >= 0
+
+        x = torch.where(is_upper, v[..., 0], (1 - v[..., 1].abs()) * v[..., 0].sign())
+        y = torch.where(is_upper, v[..., 1], (1 - v[..., 0].abs()) * v[..., 1].sign())
+
+        # Map from [-1,1] to [0,1]
+        u = ((x + 1) * 0.5 * (self.W - 1)).clamp(0, self.W - 1).long()
+        v = ((y + 1) * 0.5 * (self.H - 1)).clamp(0, self.H - 1).long()
+
+        # Fetch radiance from envmap
+        Le = self.envmap[:, v, u].permute(1, 0)  # (B, 3)
+
+        # PDF from envmap_pdf
+        pdf = self.envmap_pdf[v, u].unsqueeze(-1)  # (B, 1)
+
+        return Le, pdf, torch.ones_like(pdf, dtype=torch.bool)
+
 
     def eval_emitter(self, position, light_dir, *args):
         """
@@ -464,3 +562,105 @@ class EnvMapEmitter(nn.Module):
         pdf = torch.full((position.shape[0], 1), 1.0 / (4 * math.pi), device=position.device)
 
         return Le, pdf, torch.ones_like(pdf, dtype=torch.bool)  # Always valid
+
+class MultiPointsEmitter(nn.Module):
+    def __init__(self, dist=4.0, n_theta=8, n_phi=4):
+        """
+        Args:
+            dist: Radius of the sphere
+            n_theta: Number of samples in theta (latitude)
+            n_phi: Number of samples in phi (longitude)
+        """
+        super(MultiPointsEmitter, self).__init__()
+
+        self.dist = dist
+        self.n_theta = n_theta
+        self.n_phi = n_phi
+        self.total = n_theta * n_phi
+
+        # Generate light positions on sphere
+        thetas = np.linspace(0, np.pi, n_theta)
+        phis = np.linspace(0, 2 * np.pi, n_phi)
+        theta_grid, phi_grid = np.meshgrid(thetas, phis)
+        thetas_flat = theta_grid.flatten()
+        phis_flat = phi_grid.flatten()
+
+        positions = []
+        intensities = []
+
+        # Set fixed random seed for reproducible intensities
+        np.random.seed(42)
+        fixed_intensities = np.random.uniform(1.0, 20.0, size=len(thetas_flat))
+
+        for i, (theta, phi) in enumerate(zip(thetas_flat, phis_flat)):
+            x = dist * np.sin(theta) * np.cos(phi)
+            y = dist * np.sin(theta) * np.sin(phi)
+            z = dist * np.cos(theta)
+            positions.append([x, y, z])
+            intensities.append(fixed_intensities[i])  # Use pre-generated intensity
+
+        # Add some manually specified light positions and intensities
+        manual_positions = [
+            [2.0, 2.0, 0.0],    # Top front right
+            [-2.0, 2.0, 0.0],   # Top front left  
+            [2.0, -2.0, 2.0],   # Bottom front right
+            [-2.0, -2.0, 2.0],  # Bottom front left
+            [0.0, 4.0, 0.0],    # Top center
+            [0.0, -4.0, 0.0],   # Bottom center
+            [4.0, 0.0, 0.0],    # Middle right
+            [-4.0, 0.0, 0.0],   # Middle left
+        ]
+        manually_intensities = [10, 50, 30, 40, 50, 60, 70, 80]
+        
+        # Extend the positions and intensities lists
+        self.register_buffer('light_positions', torch.tensor(manual_positions[:2], dtype=torch.float32))  # [N, 3]
+        self.register_buffer('light_intensities', torch.tensor(manually_intensities[:2], dtype=torch.float32).unsqueeze(-1))  # [N, 1]
+
+    def sample_emitter(self, sample1, sample2, position):
+        """
+        Sample one of the point lights and compute direction to it.
+        Args:
+            sample1: B (unused)
+            sample2: Bx2 (unused)
+            position: Bx3 surface positions
+        Returns:
+            wi: Bx3 directions toward lights
+            pdf: Bx1 uniform sampling pdf (1/N)
+            idx: B indices of selected lights
+        """
+        B = position.shape[0]
+        N = self.light_positions.shape[0]
+
+        # Randomly select a point light per ray
+        idx = torch.randint(0, N, (B,), device=position.device)
+        light_pos = self.light_positions[idx]  # [B, 3]
+
+        # Compute direction
+        vec = light_pos - position  # [B, 3]
+        wi = nn.functional.normalize(vec, dim=-1)
+
+        pdf = torch.full((B, 1), 1.0 / N, device=position.device)
+
+        return wi, pdf, light_pos, idx
+
+    def eval_emitter(self, position, idx):
+        """
+        Evaluate radiance from point lights in given directions.
+        Args:
+            position: Bx3 surface points
+            light_dir: Bx3 incoming light directions
+            idx: B indices of selected lights
+        Returns:
+            Le: Bx3 radiance
+            pdf: Bx1 pdf (1/N)
+            valid: B boolean mask (True if a match found)
+        """
+        B = position.shape[0]
+        N = self.light_positions.shape[0]
+
+        # Get selected light intensities
+        Le = self.light_intensities[idx].expand(-1, 3)   # [B, 1]
+        pdf = torch.full((B, 1), 1.0 / N, device=position.device)
+        valid = torch.ones(B, dtype=torch.bool, device=position.device)
+
+        return Le, pdf, valid

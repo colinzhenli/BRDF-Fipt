@@ -1,11 +1,14 @@
 defaults:
   - data: sphere
-  - renderer: point_emitter
+  - renderer: multipoint_emitter
   - material: mlp_pbr
   - model: direct
 
-experiment_name: Point-Emitter-Larger-MLP-Brdf-sampling_Non-Optimized-PBR-PROXY_run_1
-output_folder: ./Over-fit_experiments
+# experiment_name: Smaller-MLPLearnable-sampling_Max-Epoch-10_Lr-0.001_Positional-encoding_Envmap-Emitter_32-views-4-views-per-batch_run_1
+experiment_name: Position_debug
+output_folder: /localhome/zla247/theia2_data/output/BRDF-Fipt/Over-fit_experiments_2
 exp_output_root_path: ${output_folder}/${data.dataset_name}/${experiment_name}
+# gt_folder: ${output_folder}/${data.dataset_name}/GT_roughness_0.20_metallic_0.20
+gt_folder: 
 
 global_train_seed: 42

@@ -12,10 +12,11 @@
             "console": "integratedTerminal",
             "justMyCode": true,
             "args": [
-                // "--experiment_name", "Refactor_Over_fit_MLP_local-coords_run_1",
-                // // "--device", "0",
-                // "--max_epochs",
-                // "20"
+                "renderer=multipoint_emitter",
+                "material=mlp_pbr",
+                "experiment_name=Correct-local-space-debug",
+                // "gt_folder=/localhome/zla247/theia2_data/output/BRDF-Fipt/Over-fit_experiments/sphere/MLP_Multi-point-emitter_test/roughness_0.20_metallic_0.20",
+                // "model.ckpt_path=/localhome/zla247/theia2_data/output/BRDF-Fipt/Over-fit_experiments/sphere/MLP_Multi-point-emitter_test/training/model_0.20_0.20/last.ckpt"
             ]
         }
     ]
