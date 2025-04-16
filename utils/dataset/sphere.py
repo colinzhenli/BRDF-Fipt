@@ -10,6 +10,8 @@ from torchvision import transforms as T
 import cv2
 import math
 import matplotlib.pyplot as plt
+from nerfstudio.cameras.camera_paths import get_spiral_path
+from nerfstudio.cameras.cameras import Cameras
 
 def pose_spherical(theta, phi, radius):
     c2w = trans_t(radius)
@@ -159,7 +161,7 @@ class SphereDataset(Dataset):
             self.all_rays = []
             self.all_rgbs = []
             for cur_idx in range(self.total):
-                c2w = get_c2w(self.camera_dict [cur_idx])
+                c2w = get_c2w(self.camera_dict[cur_idx])
                 img = open_exr(os.path.join(self.gt_folder, f'output_view_{cur_idx}.exr'), self.img_hw).reshape(-1,3)
                 self.all_rgbs += [img]
                 rays_o, rays_d,dxdu,dydv = get_rays(self.directions, c2w, focal=self.focal) # both (h*w, 3)
@@ -178,6 +180,39 @@ class SphereDataset(Dataset):
         self.render_poses = np.stack([pose_spherical(angle, -30.0, self.radius) for angle in np.linspace(-180, 180, self.stride + 1)[:-1]], 0)
         self.total = len(self.render_poses)
 
+    def get_spiral_camera_dicts(camera: Cameras, steps: int = 30, radius: float = 4.0, rots: int = 2, zrate: float = 0.5):
+        """
+        Generate a list of camera dictionaries from a Nerfstudio spiral path.
+        
+        Args:
+            camera (Cameras): Nerfstudio Cameras object (starting camera).
+            steps (int): Number of steps in the spiral path.
+            radius (float): Radius of spiral.
+            rots (int): Number of full rotations.
+            zrate (float): Vertical rate of change.
+            
+        Returns:
+            List[Dict]: List of camera dictionaries with 'position', 'look_at', and 'up'.
+        """
+        spiral_cameras = get_spiral_path(camera, steps=steps, radius=radius, rots=rots, zrate=zrate)
+        c2ws = spiral_cameras.camera_to_worlds  # shape: [steps, 3, 4]
+
+        camera_dicts = []
+        for i in range(c2ws.shape[0]):
+            c2w = c2ws[i]
+            position = c2w[:, 3].tolist()
+            forward = c2w[:, 2]
+            look_at = (c2w[:, 3] + forward).tolist()
+            up = c2w[:, 1].tolist()
+
+            camera_dicts.append({
+                "position": position,
+                "look_at": look_at,
+                "up": up
+            })
+        
+        return camera_dicts
+
     def get_camera_dicts(self):
         # Initialize camera dicts list
         self.camera_dict = []
@@ -188,13 +223,16 @@ class SphereDataset(Dataset):
         dist = self.distance
         
         # Parameters to control sampling density
-        n_theta = 4  # number of theta samples 
-        n_phi = 8    # number of phi samples
-        self.total = n_theta * n_phi
+        n_theta = 7  # number of theta samples (excluding poles)
+        n_phi = 6    # number of phi samples
+        self.total = (n_theta-2) * n_phi + 2  # Add 2 for poles
         
-        # Generate uniform samples for spherical coordinates
-        thetas = np.linspace(0, np.pi, n_theta)
+        # Generate uniform samples for spherical coordinates, excluding poles
+        thetas = np.linspace(0, np.pi, n_theta)  # Exclude 0 and pi
+        thetas = thetas[1:-1]  # Remove the first and last elements
         phis = np.linspace(0, 2*np.pi, n_phi)
+        
+        # Add poles separately - they only need one phi value since they're at top/bottom
         
         # Create grid of angles
         theta_grid, phi_grid = np.meshgrid(thetas, phis)
@@ -216,6 +254,19 @@ class SphereDataset(Dataset):
             }
             
             self.camera_dict.append(camera_dict)
+        north_pole = {
+            "position": [0, 0, dist],  # x=0, y=0, z=dist
+            "look_at": look_at,
+            "up": up
+        }
+        self.camera_dict.append(north_pole)
+
+        south_pole = {
+            "position": [0, 0, -dist],  # x=0, y=0, z=-dist
+            "look_at": look_at,
+            "up": up
+        }
+        self.camera_dict.append(south_pole)
 
     def __len__(self):
         if self.pixel==True:

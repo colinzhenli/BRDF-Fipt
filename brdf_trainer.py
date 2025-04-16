@@ -69,7 +69,7 @@ class BRDFTrainer(pl.LightningModule):
         dxdu, dydv = rays[..., 6:9], rays[..., 9:12]
 
         rgbs = self.renderer.render(rays_x, rays_d, dxdu, dydv, self.img_hw, spp)
-        loss = NF.mse_loss(rgbs, rgbs_gt)
+        loss = NF.l1_loss(rgbs, rgbs_gt)
         # loss = NF.mse_loss(self.gamma(rgbs), self.gamma(rgbs_gt))
         psnr = -10.0 * torch.log10(loss.clamp_min(1e-5))
         return rgbs, loss, psnr

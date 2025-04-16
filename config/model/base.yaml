@@ -30,4 +30,4 @@ optimizer:
   warmup_steps_ratio: 0.0
 
 lr_decay: # for Adam
-  decay_start_epoch: 6
+  decay_start_epoch: 3

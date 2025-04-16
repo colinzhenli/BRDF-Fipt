@@ -4,9 +4,9 @@ import torch.nn.functional as NF
 import numpy as np
 import math
 import imageio
-
+import cv2
 from .slf import VoxelSLF
-
+from openexr_numpy import imread, imwrite
 
 class AreaEmitter(nn.Module):
     """ triangle mesh emitters """
@@ -362,6 +362,7 @@ class EnvMapEmitter(nn.Module):
         
         # Load environment map (assumed to be in lat-long format)
         envmap = imageio.imread(envmap_path).astype('float32')[:,:,:3]  # Shape: (H, W, 3)
+        test = imread(envmap_path).astype('float32')
         envmap = torch.from_numpy(envmap).permute(2, 0, 1)  # Convert to (3, H, W)
         
         self.register_buffer('envmap', envmap)
@@ -601,20 +602,38 @@ class MultiPointsEmitter(nn.Module):
 
         # Add some manually specified light positions and intensities
         manual_positions = [
-            [2.0, 2.0, 0.0],    # Top front right
-            [-2.0, 2.0, 0.0],   # Top front left  
-            [2.0, -2.0, 2.0],   # Bottom front right
-            [-2.0, -2.0, 2.0],  # Bottom front left
-            [0.0, 4.0, 0.0],    # Top center
-            [0.0, -4.0, 0.0],   # Bottom center
-            [4.0, 0.0, 0.0],    # Middle right
-            [-4.0, 0.0, 0.0],   # Middle left
+            [4.0, 0.0, 0.0],     # Right
+            [-4.0, 0.0, 0.0],    # Left
+            [0.0, 4.0, 0.0],     # Top 
+            [0.0, -4.0, 0.0],    # Bottom
+            [0.0, 0.0, 4.0],     # Front
+            [0.0, 0.0, -4.0],    # Back
+            [2.3, 2.3, 2.3],     # Top-Front-Right diagonal
+            [-2.3, -2.3, -2.3],  # Bottom-Back-Left diagonal
         ]
-        manually_intensities = [10, 50, 30, 40, 50, 60, 70, 80]
+        manually_intensities = [10, 20, 30, 40, 50, 60, 70, 80]
+        # Define different colors for each light
+        light_colors = [
+            [1.0, 0.2, 0.2],  # Red
+            [0.2, 1.0, 0.2],  # Green
+            [0.2, 0.2, 1.0],  # Blue
+            [1.0, 1.0, 0.2],  # Yellow
+            [1.0, 0.2, 1.0],  # Magenta
+            [0.2, 1.0, 1.0],  # Cyan
+            [1.0, 0.5, 0.0],  # Orange
+            [0.5, 0.0, 1.0],  # Purple
+        ]
+
+        # Convert intensities to colored intensities by multiplying with colors
+        manually_colored_intensities = []
+        for intensity, color in zip(manually_intensities, light_colors):
+            colored_intensity = [intensity * c for c in color]
+            manually_colored_intensities.append(colored_intensity)
+        manually_intensities = manually_colored_intensities
         
         # Extend the positions and intensities lists
-        self.register_buffer('light_positions', torch.tensor(manual_positions[:2], dtype=torch.float32))  # [N, 3]
-        self.register_buffer('light_intensities', torch.tensor(manually_intensities[:2], dtype=torch.float32).unsqueeze(-1))  # [N, 1]
+        self.register_buffer('light_positions', torch.tensor(manual_positions[0:8], dtype=torch.float32))  # [N, 3]
+        self.register_buffer('light_intensities', torch.tensor(manually_intensities[0:8], dtype=torch.float32).unsqueeze(-1))  # [N, 1]
 
     def sample_emitter(self, sample1, sample2, position):
         """
@@ -659,7 +678,7 @@ class MultiPointsEmitter(nn.Module):
         N = self.light_positions.shape[0]
 
         # Get selected light intensities
-        Le = self.light_intensities[idx].expand(-1, 3)   # [B, 1]
+        Le = self.light_intensities[idx].squeeze(-1)   # [B, 3]
         pdf = torch.full((B, 1), 1.0 / N, device=position.device)
         valid = torch.ones(B, dtype=torch.bool, device=position.device)
 

@@ -12,12 +12,13 @@ camera:
 
 emitter:
   type: "envmap"
-  envmap_path: "./envmap.exr"
+  # envmap_path: "./envmap.exr"
+  envmap_path: "/localhome/zla247/theia2_zla247/projects/BRDF-Fipt/envmap.exr"
 
 spp:
-  train: 2048
-  val: 2048
-  test: 2048
+  train: 1024
+  val: 1024
+  test: 1024
 SPP_chunk: 16
 
 resolution: [1024, 1024]

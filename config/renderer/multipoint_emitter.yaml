@@ -17,7 +17,7 @@ emitter:
   n_phi: 2
 
 spp:
-  train: 32
+  train: 64
   val: 128
   test: 128
 SPP_chunk: 8

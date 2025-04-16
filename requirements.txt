@@ -2,7 +2,7 @@
 # torchvision==0.14.1
 pytorch-lightning==1.9
 lightning-bolts
-mitsuba==3.2.1
+mitsuba==3.5.1
 
 opencv-python==4.7.0.72
 Pillow==9.5.0
