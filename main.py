@@ -65,18 +65,21 @@ def main(cfg):
                 output_folder = os.path.join(cfg.exp_output_root_path, f'roughness_{roughness:.2f}_metallic_{metallic:.2f}')
                 os.makedirs(output_folder, exist_ok=True)
                 for idx, batch in tqdm(enumerate(dataset)):
+                    camera_idx = idx // dataset.num_lights
+                    light_idx = idx % dataset.num_lights
                     rays = batch['rays'].to(renderer.device)
+                    light_indices = torch.tensor([light_idx]).repeat(len(rays)).to(renderer.device)
                     rays_x,rays_d = rays[...,:3],rays[...,3:6]
                     dxdu, dydv = rays[..., 6:9], rays[..., 9:12]
                     with torch.no_grad():
-                        img = renderer.render(rays_x, rays_d, dxdu, dydv, cfg.renderer.resolution, cfg.renderer.spp.test)
+                        img = renderer.render(rays_x, rays_d, dxdu, dydv, cfg.renderer.resolution, cfg.renderer.spp.test, light_indices)
                         img = img.reshape(*cfg.renderer.resolution, -1)
 
-                    filename = f'output_view_{idx}.exr'
+                    filename = f'output_view_{camera_idx}_light_{light_idx}.exr'
                     output_path = os.path.join(output_folder, filename)
                     cv2.imwrite(output_path, img[...,[2,1,0]].cpu().numpy())
 
-                    vis_filename = f'output_gamma_view_{idx}.png'
+                    vis_filename = f'output_gamma_view_{camera_idx}_light_{light_idx}.png'
                     vis_path = os.path.join(output_folder, vis_filename)
                     torchvision.utils.save_image(gamma(img.permute(2, 0, 1)), vis_path)
 

@@ -565,7 +565,7 @@ class EnvMapEmitter(nn.Module):
         return Le, pdf, torch.ones_like(pdf, dtype=torch.bool)  # Always valid
 
 class MultiPointsEmitter(nn.Module):
-    def __init__(self, dist=4.0, n_theta=8, n_phi=4):
+    def __init__(self, dist=4.0, num_lights=8, n_theta=6, n_phi=8):
         """
         Args:
             dist: Radius of the sphere
@@ -577,6 +577,7 @@ class MultiPointsEmitter(nn.Module):
         self.dist = dist
         self.n_theta = n_theta
         self.n_phi = n_phi
+        self.num_lights = num_lights
         self.total = n_theta * n_phi
 
         # Generate light positions on sphere
@@ -591,7 +592,7 @@ class MultiPointsEmitter(nn.Module):
 
         # Set fixed random seed for reproducible intensities
         np.random.seed(42)
-        fixed_intensities = np.random.uniform(1.0, 20.0, size=len(thetas_flat))
+        fixed_intensities = np.random.uniform(1.0, 50.0, size=len(thetas_flat))
 
         for i, (theta, phi) in enumerate(zip(thetas_flat, phis_flat)):
             x = dist * np.sin(theta) * np.cos(phi)
@@ -600,42 +601,42 @@ class MultiPointsEmitter(nn.Module):
             positions.append([x, y, z])
             intensities.append(fixed_intensities[i])  # Use pre-generated intensity
 
-        # Add some manually specified light positions and intensities
-        manual_positions = [
-            [4.0, 0.0, 0.0],     # Right
-            [-4.0, 0.0, 0.0],    # Left
-            [0.0, 4.0, 0.0],     # Top 
-            [0.0, -4.0, 0.0],    # Bottom
-            [0.0, 0.0, 4.0],     # Front
-            [0.0, 0.0, -4.0],    # Back
-            [2.3, 2.3, 2.3],     # Top-Front-Right diagonal
-            [-2.3, -2.3, -2.3],  # Bottom-Back-Left diagonal
-        ]
-        manually_intensities = [10, 20, 30, 40, 50, 60, 70, 80]
-        # Define different colors for each light
-        light_colors = [
-            [1.0, 0.2, 0.2],  # Red
-            [0.2, 1.0, 0.2],  # Green
-            [0.2, 0.2, 1.0],  # Blue
-            [1.0, 1.0, 0.2],  # Yellow
-            [1.0, 0.2, 1.0],  # Magenta
-            [0.2, 1.0, 1.0],  # Cyan
-            [1.0, 0.5, 0.0],  # Orange
-            [0.5, 0.0, 1.0],  # Purple
-        ]
+        # # Add some manually specified light positions and intensities
+        # manual_positions = [
+        #     [4.0, 0.0, 0.0],     # Right
+        #     [-4.0, 0.0, 0.0],    # Left
+        #     [0.0, 4.0, 0.0],     # Top 
+        #     [0.0, -4.0, 0.0],    # Bottom
+        #     [0.0, 0.0, 4.0],     # Front
+        #     [0.0, 0.0, -4.0],    # Back
+        #     [2.3, 2.3, 2.3],     # Top-Front-Right diagonal
+        #     [-2.3, -2.3, -2.3],  # Bottom-Back-Left diagonal
+        # ]
+        # manually_intensities = [10, 20, 30, 40, 50, 60, 70, 80]
+        # # Define different colors for each light
+        # light_colors = [
+        #     [1.0, 0.2, 0.2],  # Red
+        #     [0.2, 1.0, 0.2],  # Green
+        #     [0.2, 0.2, 1.0],  # Blue
+        #     [1.0, 1.0, 0.2],  # Yellow
+        #     [1.0, 0.2, 1.0],  # Magenta
+        #     [0.2, 1.0, 1.0],  # Cyan
+        #     [1.0, 0.5, 0.0],  # Orange
+        #     [0.5, 0.0, 1.0],  # Purple
+        # ]
 
-        # Convert intensities to colored intensities by multiplying with colors
-        manually_colored_intensities = []
-        for intensity, color in zip(manually_intensities, light_colors):
-            colored_intensity = [intensity * c for c in color]
-            manually_colored_intensities.append(colored_intensity)
-        manually_intensities = manually_colored_intensities
+        # # Convert intensities to colored intensities by multiplying with colors
+        # manually_colored_intensities = []
+        # for intensity, color in zip(manually_intensities, light_colors):
+        #     colored_intensity = [intensity * c for c in color]
+        #     manually_colored_intensities.append(colored_intensity)
+        # manually_intensities = manually_colored_intensities
         
         # Extend the positions and intensities lists
-        self.register_buffer('light_positions', torch.tensor(manual_positions[0:8], dtype=torch.float32))  # [N, 3]
-        self.register_buffer('light_intensities', torch.tensor(manually_intensities[0:8], dtype=torch.float32).unsqueeze(-1))  # [N, 1]
+        self.register_buffer('light_positions', torch.tensor(positions[0:self.num_lights], dtype=torch.float32))  # [N, 3]
+        self.register_buffer('light_intensities', torch.tensor(intensities[0:self.num_lights], dtype=torch.float32).unsqueeze(-1))  # [N, 1]
 
-    def sample_emitter(self, sample1, sample2, position):
+    def sample_emitter(self, sample1, sample2, position, light_indices):
         """
         Sample one of the point lights and compute direction to it.
         Args:
@@ -650,15 +651,15 @@ class MultiPointsEmitter(nn.Module):
         B = position.shape[0]
         N = self.light_positions.shape[0]
 
-        # Randomly select a point light per ray
-        idx = torch.randint(0, N, (B,), device=position.device)
+        # Use provided light indices
+        idx = light_indices
         light_pos = self.light_positions[idx]  # [B, 3]
 
         # Compute direction
         vec = light_pos - position  # [B, 3]
         wi = nn.functional.normalize(vec, dim=-1)
 
-        pdf = torch.full((B, 1), 1.0 / N, device=position.device)
+        pdf = torch.full((B, 1), 1.0, device=position.device)
 
         return wi, pdf, light_pos, idx
 
@@ -678,7 +679,7 @@ class MultiPointsEmitter(nn.Module):
         N = self.light_positions.shape[0]
 
         # Get selected light intensities
-        Le = self.light_intensities[idx].squeeze(-1)   # [B, 3]
+        Le = self.light_intensities[idx].expand(-1, 3)  # [B, 3]
         pdf = torch.full((B, 1), 1.0 / N, device=position.device)
         valid = torch.ones(B, dtype=torch.bool, device=position.device)
 

@@ -15,9 +15,9 @@
                 "renderer=envmap_emitter",
                 "material=mlp_pbr",
                 // "experiment_name=Eight-point-lights_Larger-MLP_pos-enc_Local-coordinate_Evenly-camera-views_L1-loss_point-emitter_run_1",
-                "experiment_name=Eight-point-light-test_1",
-                // "gt_folder=/localhome/zla247/theia2_data/output/BRDF-Fipt/Over-fit_experiments_2/sphere/Different_color_debug/roughness_0.20_metallic_0.20",
-                "model.ckpt_path=/localhome/zla247/theia2_data/output/BRDF-Fipt/Over-fit_experiments_2/sphere/Eight-point-lights_Larger-MLP_pos-enc_Local-coordinate_Evenly-camera-views_L1-loss_point-emitter_run_1/training/model_0.20_0.20/last-v1.ckpt"
+                "experiment_name=Envmap_Seperately-render-each-light_16-lights_spp-4_test_1",
+                // "gt_folder=/localhome/zla247/theia2_data/output/BRDF-Fipt/Over-fit_experiments_2/sphere/Seperately-render-each-light_16-lights_spp-4_run_1/roughness_0.20_metallic_0.20",
+                "model.ckpt_path=/localhome/zla247/theia2_data/output/BRDF-Fipt/Over-fit_experiments_2/sphere/Seperately-render-each-light_16-lights_spp-4_run_1/training/model_0.20_0.20/last.ckpt"
             ]
         }
     ]

@@ -413,7 +413,7 @@ def path_tracing_fix_emitter(scene,emitter_net,material_net, rays_o,rays_d,dx_du
     L = L.reshape(B,spp,3).mean(1)
     return L
 
-def path_tracing_envmap_emitter(scene,emitter_net,material_net,rays_o,rays_d,dx_du,dy_dv,spp,indir_depth, brdf_sampling, emitter_sampling):
+def path_tracing_envmap_emitter(scene,emitter_net,material_net,rays_o,rays_d,dx_du,dy_dv,spp,indir_depth, brdf_sampling, emitter_sampling, light_indices):
     """ Path trace current scene
     Args:
         scene: mitsuba scene
@@ -497,7 +497,7 @@ def path_tracing_envmap_emitter(scene,emitter_net,material_net,rays_o,rays_d,dx_
     return L
 
 
-def path_tracing_multipoint_emitter(scene,emitter_net,material_net,rays_o,rays_d,dx_du,dy_dv,spp,indir_depth, brdf_sampling, emitter_sampling):
+def path_tracing_multipoint_emitter(scene,emitter_net,material_net,rays_o,rays_d,dx_du,dy_dv,spp,indir_depth, brdf_sampling, emitter_sampling, light_indices):
     """ Path trace current scene
     Args:
         scene: mitsuba scene
@@ -521,6 +521,7 @@ def path_tracing_multipoint_emitter(scene,emitter_net,material_net,rays_o,rays_d
     # Add mask for wi z component
     half_sphere_mask = wi[..., 2] < 0
     position = rays_o.repeat_interleave(spp,0)
+    light_indices = light_indices.repeat_interleave(spp,0)
     
     # compute first intersection
     position,normal,_,triangle_idx,vis = ray_intersect(scene,position,wi)
@@ -531,6 +532,7 @@ def path_tracing_multipoint_emitter(scene,emitter_net,material_net,rays_o,rays_d
         return L.reshape(B,spp,3).mean(1)
     position = position[valid_next]
     normal = normal[valid_next]
+    light_indices = light_indices[valid_next]
     wo = -wi[valid_next]
     active_next = valid_next.clone()
     
@@ -538,7 +540,9 @@ def path_tracing_multipoint_emitter(scene,emitter_net,material_net,rays_o,rays_d
     wi,emit_pdf, emit_position, idx = emitter_net.sample_emitter(
         torch.rand(len(position),device=device),
         torch.rand(len(position),2,device=device),
-        position)
+        position,
+        light_indices
+    )
     
     # visibility test
     emit_weight,_,_ = emitter_net.eval_emitter(emit_position, idx)

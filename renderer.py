@@ -35,20 +35,21 @@ class ForwardRenderer:
             self.emitter = MultiPointsEmitter(
                 dist=emitter_cfg.dist,
                 n_theta=emitter_cfg.n_theta,
-                n_phi=emitter_cfg.n_phi
+                n_phi=emitter_cfg.n_phi,
+                num_lights=emitter_cfg.num_lights
             ).to(self.device)
         else:
             self.emitter = EnvMapEmitter(emitter_cfg.envmap_path).to(self.device)
 
         self.SPP_chunk = cfg.renderer.SPP_chunk
     
-    def render(self, rays_x, rays_d, dxdu, dydv, img_hw, spp):
+    def render(self, rays_x, rays_d, dxdu, dydv, img_hw, spp, light_indices=None):
         L = torch.zeros_like(rays_x)
         for _ in range(spp // self.SPP_chunk):
             L += self.ray_tracer(
                 self.scene, self.emitter, self.material,
                 rays_x, rays_d, dxdu, dydv, 
-                self.SPP_chunk, indir_depth=0, brdf_sampling=self.cfg.renderer.brdf_sampling, emitter_sampling=self.cfg.renderer.emitter_sampling
+                self.SPP_chunk, indir_depth=0, brdf_sampling=self.cfg.renderer.brdf_sampling, emitter_sampling=self.cfg.renderer.emitter_sampling, light_indices=light_indices
             )
         rgbs = L / (spp // self.SPP_chunk)
         return rgbs

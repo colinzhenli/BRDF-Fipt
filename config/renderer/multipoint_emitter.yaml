@@ -13,13 +13,14 @@ camera:
 emitter:
   type: "multipoint"
   dist: 4.0
-  n_theta: 2
-  n_phi: 2
+  n_theta: 4
+  n_phi: 4
+  num_lights: 16
 
 spp:
-  train: 64
-  val: 128
-  test: 128
-SPP_chunk: 8
+  train: 4
+  val: 32
+  test: 32
+SPP_chunk: 4
 
 resolution: [1024, 1024]

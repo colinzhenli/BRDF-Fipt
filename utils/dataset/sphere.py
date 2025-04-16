@@ -141,6 +141,7 @@ class SphereDataset(Dataset):
         self.gt_folder = gt_folder  
         self.distance = cfg.renderer.camera.distance
         self.number_of_views = cfg.renderer.camera.number_of_views
+        self.num_lights = cfg.renderer.emitter.num_lights
         self.initial_camera_dict = {
             "look_at": cfg.renderer.camera.look_at,
             "up": cfg.renderer.camera.up
@@ -160,20 +161,23 @@ class SphereDataset(Dataset):
         if self.pixel:
             self.all_rays = []
             self.all_rgbs = []
-            for cur_idx in range(self.total):
-                c2w = get_c2w(self.camera_dict[cur_idx])
-                img = open_exr(os.path.join(self.gt_folder, f'output_view_{cur_idx}.exr'), self.img_hw).reshape(-1,3)
-                self.all_rgbs += [img]
-                rays_o, rays_d,dxdu,dydv = get_rays(self.directions, c2w, focal=self.focal) # both (h*w, 3)
+            for light_idx in range(self.num_lights):
+                rays_per_light = []
+                rgbs_per_light = []
+                for cur_idx in range(self.total):
+                    c2w = get_c2w(self.camera_dict[cur_idx])
+                    img = open_exr(os.path.join(self.gt_folder, f'output_view_{cur_idx}_light_{light_idx}.exr'), self.img_hw).reshape(-1,3)
+                    rgbs_per_light.append(img)
+                    
+                    rays_o, rays_d, dxdu, dydv = get_rays(self.directions, c2w, focal=self.focal) # both (h*w, 3)
+                    rays = torch.cat([rays_o, rays_d, dxdu, dydv], 1) # [h*w, 12]
+                    rays_per_light.append(rays)
 
-                self.all_rays += [torch.cat([rays_o, rays_d,
-                                             dxdu,
-                                             dydv,
-                                            ],1)] 
-            self.all_rays = torch.cat(self.all_rays, 0)
-            self.all_rgbs = torch.cat(self.all_rgbs, 0)
-            # number of camera ray batches
-            # self.batch_num = math.ceil(len(self.all_rays/2)*1.0/self.batch_size)
+                self.all_rays.append(torch.cat(rays_per_light, 0))  # [total*h*w, 12] 
+                self.all_rgbs.append(torch.cat(rgbs_per_light, 0))  # [total*h*w, 3]
+
+            self.all_rays = torch.stack(self.all_rays, 0)  # [num_lights, total*h*w, 12]
+            self.all_rgbs = torch.stack(self.all_rgbs, 0)  # [num_lights, total*h*w, 3]
             self.batch_num = cfg.data.batch_num
 
     def get_render_poses(self):
@@ -273,13 +277,14 @@ class SphereDataset(Dataset):
             return self.batch_num
         if self.split == 'val':
             return 1
-        return len(self.camera_dict)
+        return len(self.camera_dict) * self.num_lights
 
     def __getitem__(self, idx):          
         # Handle different ways of specifying custom camera transform
         if self.pixel:
             # Randomly select num_view_batch views
             view_indices = torch.randperm(self.number_of_views)[:self.num_view_batch]
+
             
             # Get indices for all rays from selected views
             rays_per_view = self.img_hw[0] * self.img_hw[1]
@@ -298,22 +303,32 @@ class SphereDataset(Dataset):
             
             # find camera ray indices in the batch
             idx = self.idxs[:self.batch_size]
-            tmp = self.all_rays[idx]
+
+            # Randomly select light indices for each ray
+            light_indices = torch.randint(0, self.num_lights, (self.all_rays.shape[1],))
             
-            sample = {'rays': tmp[...,:12],
-                      'rgbs': self.all_rgbs[idx]}
+            # Index rays and rgbs using both ray indices and light indices
+            rays = torch.gather(self.all_rays, 0, light_indices[None, :, None].expand(-1, -1, self.all_rays.shape[2]))[0]
+            rgbs = torch.gather(self.all_rgbs, 0, light_indices[None, :, None].expand(-1, -1, self.all_rgbs.shape[2]))[0]
+            
+            sample = {'rays': rays[idx][...,:12],
+                      'rgbs': rgbs[idx],
+                      'light_indices': light_indices[idx]}
         else:
-            c2w = get_c2w(self.camera_dict[idx])
+            camera_idx = idx // self.num_lights
+            light_idx = idx % self.num_lights
+            c2w = get_c2w(self.camera_dict[camera_idx])
             rays_o,rays_d,dxdu,dydv = get_rays(self.directions, c2w, focal=self.focal)
 
             rays = torch.cat([rays_o, rays_d,
                               dxdu,
                               dydv],-1)
             if self.gt_folder is not None:
-                img = open_exr(os.path.join(self.gt_folder, f'output_view_{idx}.exr'), self.img_hw).reshape(-1,3)
+                img = open_exr(os.path.join(self.gt_folder, f'output_view_{camera_idx}_light_{light_idx}.exr'), self.img_hw).reshape(-1,3)
+                light_indices = torch.tensor([light_idx]).repeat(len(rays))
                 sample = {'rays': rays,
-                          'rgbs': img}
+                          'rgbs': img,
+                          'light_indices': light_indices}
             else:
                 sample = {'rays': rays}
-
         return sample

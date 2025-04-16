@@ -64,11 +64,11 @@ class BRDFTrainer(pl.LightningModule):
             logging.error('Optimizer type not supported')
 
     def render_step(self, batch, spp):
-        rays, rgbs_gt = batch['rays'], batch['rgbs']
+        rays, rgbs_gt, light_indices = batch['rays'], batch['rgbs'], batch['light_indices']
         rays_x, rays_d = rays[..., :3], rays[..., 3:6]
         dxdu, dydv = rays[..., 6:9], rays[..., 9:12]
 
-        rgbs = self.renderer.render(rays_x, rays_d, dxdu, dydv, self.img_hw, spp)
+        rgbs = self.renderer.render(rays_x, rays_d, dxdu, dydv, self.img_hw, spp, light_indices)
         loss = NF.l1_loss(rgbs, rgbs_gt)
         # loss = NF.mse_loss(self.gamma(rgbs), self.gamma(rgbs_gt))
         psnr = -10.0 * torch.log10(loss.clamp_min(1e-5))
@@ -90,38 +90,6 @@ class BRDFTrainer(pl.LightningModule):
         # })
         # dot.render(f"New_gradient_flow_batch_{batch_idx}", format="png")
         return loss
-    
-    # def training_step(self, batch, batch_idx):
-    #     rays, rgbs_gt = batch['rays'], batch['rgbs']
-    #     rays_x, rays_d = rays[..., :3], rays[..., 3:6]
-    #     dxdu, dydv = rays[..., 6:9], rays[..., 9:12]
-        
-    #     B = rays_x.shape[0]
-    #     device = rays_x.device
-
-    #     sample1 = torch.rand(B, device=device)
-    #     sample2 = torch.rand(B, 2, device=device)
-    #     wo = torch.rand(B, 3, device=device).requires_grad_()
-    #     normal = torch.nn.functional.normalize(torch.rand(B, 3, device=device), dim=-1)
-
-    #     wi_proxy, pdf_proxy, brdf_weight = self.material.sample_brdf(sample1, sample2, wo, normal)
-
-    #     loss = pdf_proxy.sum()
-    #     loss.backward(retain_graph=True)
-
-    #     # Print gradients explicitly
-    #     print(f"Gradient w.r.t roughness: {self.material.proxy_brdf.roughness.grad}")
-    #     # print(f"Gradient w.r.t debug_params: {self.material.proxy_brdf.debug_params.grad}")
-    #     # Gradient Visualization
-    #     dot = make_dot(loss, params={
-    #         'roughness': self.material.proxy_brdf.roughness,
-    #         'debug_params': self.material.proxy_brdf.debug_params
-    #     })
-    #     # dot.render(f"gradient_flow_batch_{batch_idx}", format="png")
-
-    #     self.log('train/loss', loss.item())
-
-    #     return loss
 
     def validation_step(self, batch, batch_idx):
         _, loss, psnr = self.render_step(batch, self.cfg.renderer.spp.val)
@@ -130,12 +98,14 @@ class BRDFTrainer(pl.LightningModule):
         return
 
     def test_step(self, batch, batch_idx):
+        camera_idx = batch_idx // self.cfg.renderer.emitter.num_lights
+        light_idx = batch_idx % self.cfg.renderer.emitter.num_lights
         rgbs, loss, psnr = self.render_step(batch, self.cfg.renderer.spp.test)
         rgbs = rgbs.reshape(*self.img_hw, -1)
         os.makedirs(os.path.join(self.cfg.exp_output_root_path,f'roughness_{self.roughness:.2f}_metallic_{self.metallic:.2f}'), exist_ok=True)
         torchvision.utils.save_image(
             self.gamma(rgbs.permute(2, 0, 1)),
-            os.path.join(self.cfg.exp_output_root_path,f'roughness_{self.roughness:.2f}_metallic_{self.metallic:.2f}', f'result_view_{batch_idx}.png')
+            os.path.join(self.cfg.exp_output_root_path,f'roughness_{self.roughness:.2f}_metallic_{self.metallic:.2f}', f'result_view_{camera_idx}_light_{light_idx}.png')
         )
         self.log('test/psnr', psnr)
         # self.log('test/roughness', self.material.proxy_brdf.roughness)
