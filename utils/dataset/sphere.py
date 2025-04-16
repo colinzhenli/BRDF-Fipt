@@ -139,12 +139,14 @@ class SphereDataset(Dataset):
         self.split = split
         self.custom_c2w = cfg.data.custom_c2w
         self.gt_folder = gt_folder  
+        self.spiral_path = cfg.renderer.camera.spiral_path
         self.distance = cfg.renderer.camera.distance
         self.number_of_views = cfg.renderer.camera.number_of_views
         self.num_lights = cfg.renderer.emitter.num_lights
         self.initial_camera_dict = {
             "look_at": cfg.renderer.camera.look_at,
-            "up": cfg.renderer.camera.up
+            "up": cfg.renderer.camera.up,
+            "position": cfg.renderer.camera.position
         }
 
         self.img_hw = cfg.renderer.resolution
@@ -155,7 +157,11 @@ class SphereDataset(Dataset):
         self.focal = (0.5*w/np.tan(0.5*self.camera_angle_x)).item()
         self.directions = get_ray_directions(h, w, self.focal)
         # self.get_render_poses()
-        self.get_camera_dicts()
+        if self.spiral_path:
+            # self.get_spiral_camera_dicts()
+            self.get_camera_rotation_dicts()
+        else:
+            self.get_camera_dicts()
         
 
         if self.pixel:
@@ -184,7 +190,7 @@ class SphereDataset(Dataset):
         self.render_poses = np.stack([pose_spherical(angle, -30.0, self.radius) for angle in np.linspace(-180, 180, self.stride + 1)[:-1]], 0)
         self.total = len(self.render_poses)
 
-    def get_spiral_camera_dicts(camera: Cameras, steps: int = 30, radius: float = 4.0, rots: int = 2, zrate: float = 0.5):
+    def get_spiral_camera_dicts(self, steps: int = 30, radius: float = 4.0, rots: int = 2, zrate: float = 0.5):
         """
         Generate a list of camera dictionaries from a Nerfstudio spiral path.
         
@@ -198,24 +204,45 @@ class SphereDataset(Dataset):
         Returns:
             List[Dict]: List of camera dictionaries with 'position', 'look_at', and 'up'.
         """
+        # Initialize camera parameters
+        h, w = self.img_hw
+        fx = fy = self.focal
+        cx = w * 0.5
+        cy = h * 0.5
+
+        # Get initial camera pose
+        c2w = get_c2w(self.initial_camera_dict)
+        c2w = c2w.unsqueeze(0)  # Add batch dimension [1, 3, 4]
+        look_at = self.initial_camera_dict["look_at"]
+        up = self.initial_camera_dict["up"]
+
+        # Create Nerfstudio camera
+        camera = Cameras(
+            camera_to_worlds=c2w,
+            fx=fx,
+            fy=fy, 
+            cx=cx,
+            cy=cy,
+            width=w,
+            height=h
+        )
+        self.camera_dict = []
         spiral_cameras = get_spiral_path(camera, steps=steps, radius=radius, rots=rots, zrate=zrate)
         c2ws = spiral_cameras.camera_to_worlds  # shape: [steps, 3, 4]
 
-        camera_dicts = []
         for i in range(c2ws.shape[0]):
             c2w = c2ws[i]
             position = c2w[:, 3].tolist()
-            forward = c2w[:, 2]
-            look_at = (c2w[:, 3] + forward).tolist()
-            up = c2w[:, 1].tolist()
+            # forward = c2w[:, 2]
+            # look_at = (c2w[:, 3] + forward).tolist()
+            # up = c2w[:, 1].tolist()
 
-            camera_dicts.append({
+            self.camera_dict.append({
                 "position": position,
                 "look_at": look_at,
                 "up": up
             })
         
-        return camera_dicts
 
     def get_camera_dicts(self):
         # Initialize camera dicts list
@@ -271,6 +298,42 @@ class SphereDataset(Dataset):
             "up": up
         }
         self.camera_dict.append(south_pole)
+
+
+    def get_camera_rotation_dicts(self):
+        # Initialize camera dicts list
+        self.camera_dict = []
+        
+        # Keep look_at and up vectors fixed from initial camera settings
+        look_at = self.initial_camera_dict["look_at"]
+        up = self.initial_camera_dict["up"]
+        dist = self.distance
+        
+        # Fixed phi at 0 (vertical circle)
+        phi = np.pi
+        
+        # Number of steps for rotation around vertical circle
+        n_steps = 36  # Can be adjusted for more/fewer views
+        self.total = n_steps
+        
+        # Generate evenly spaced theta angles for full rotation
+        thetas = np.linspace(0, 2*np.pi, n_steps, endpoint=False)
+        
+        # Convert spherical to cartesian coordinates
+        for theta in thetas:
+            # Calculate camera position
+            x = dist * np.sin(theta) * np.cos(phi)  # Using cos(0)=1 for fixed phi
+            y = dist * np.sin(theta) * np.sin(phi)  # Using sin(0)=0 for fixed phi
+            z = dist * np.cos(theta)
+            
+            # Create camera dict for this position
+            camera_dict = {
+                "position": [x, y, z],
+                "look_at": look_at,
+                "up": up
+            }
+            
+            self.camera_dict.append(camera_dict)
 
     def __len__(self):
         if self.pixel==True:

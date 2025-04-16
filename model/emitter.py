@@ -507,30 +507,30 @@ class EnvMapEmitter(nn.Module):
         idx = torch.full((B,), -1, dtype=torch.long, device=position.device)
         return wi, pdf_vals, idx
 
-    def ochmap_eval_emitter(self, position, light_dir, *args):
-        """
-        Evaluate environment map radiance along a given direction using Octahedral Mapping.
-        """
-        B = light_dir.shape[0]
+    # def eval_emitter(self, position, light_dir, *args):
+    #     """
+    #     Evaluate environment map radiance along a given direction using Octahedral Mapping.
+    #     """
+    #     B = light_dir.shape[0]
 
-        v = light_dir / (light_dir.abs().sum(dim=-1, keepdim=True) + 1e-6)
+    #     v = light_dir / (light_dir.abs().sum(dim=-1, keepdim=True) + 1e-6)
 
-        is_upper = v[..., 2] >= 0
+    #     is_upper = v[..., 2] >= 0
 
-        x = torch.where(is_upper, v[..., 0], (1 - v[..., 1].abs()) * v[..., 0].sign())
-        y = torch.where(is_upper, v[..., 1], (1 - v[..., 0].abs()) * v[..., 1].sign())
+    #     x = torch.where(is_upper, v[..., 0], (1 - v[..., 1].abs()) * v[..., 0].sign())
+    #     y = torch.where(is_upper, v[..., 1], (1 - v[..., 0].abs()) * v[..., 1].sign())
 
-        # Map from [-1,1] to [0,1]
-        u = ((x + 1) * 0.5 * (self.W - 1)).clamp(0, self.W - 1).long()
-        v = ((y + 1) * 0.5 * (self.H - 1)).clamp(0, self.H - 1).long()
+    #     # Map from [-1,1] to [0,1]
+    #     u = ((x + 1) * 0.5 * (self.W - 1)).clamp(0, self.W - 1).long()
+    #     v = ((y + 1) * 0.5 * (self.H - 1)).clamp(0, self.H - 1).long()
 
-        # Fetch radiance from envmap
-        Le = self.envmap[:, v, u].permute(1, 0)  # (B, 3)
+    #     # Fetch radiance from envmap
+    #     Le = self.envmap[:, v, u].permute(1, 0)  # (B, 3)
 
-        # PDF from envmap_pdf
-        pdf = self.envmap_pdf[v, u].unsqueeze(-1)  # (B, 1)
-
-        return Le, pdf, torch.ones_like(pdf, dtype=torch.bool)
+    #     # PDF from envmap_pdf
+    #     # pdf = self.envmap_pdf[v, u].unsqueeze(-1)  # (B, 1)
+    #     pdf = torch.full((position.shape[0], 1), 1.0 / (4 * math.pi), device=position.device)
+    #     return Le, pdf, torch.ones_like(pdf, dtype=torch.bool)
 
 
     def eval_emitter(self, position, light_dir, *args):

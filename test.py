@@ -20,6 +20,31 @@ import logging
 import cv2
 warnings.filterwarnings("ignore")
 logging.getLogger("pytorch_lightning").setLevel(logging.ERROR)
+def generate_video_from_results(output_folder, video_name="results_video.mp4", path_string="result_view_*_light_0.png", fps=10):
+    import cv2
+    import os
+    from glob import glob
+
+    # Collect all gamma-corrected PNGs
+    img_paths = sorted(glob(os.path.join(output_folder, path_string)))
+    if len(img_paths) == 0:
+        print(f"No PNG images found in {output_folder}")
+        return
+
+    # Read first image to get video resolution
+    frame = cv2.imread(img_paths[0])
+    height, width, _ = frame.shape
+
+    # Create VideoWriter
+    out_path = os.path.join(output_folder, video_name)
+    writer = cv2.VideoWriter(out_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (width, height))
+
+    for img_path in img_paths:
+        frame = cv2.imread(img_path)
+        writer.write(frame)
+
+    writer.release()
+    print(f"Saved video to {out_path}")
 
 def gamma(x):
     mask = x <= 0.0031308
@@ -35,6 +60,7 @@ def get_dataset(cfg, split, gt_path=None):
         gt_path,
         split
     )
+
 
 def init_callbacks(cfg):
     checkpoint_monitor = hydra.utils.instantiate(cfg.model.checkpoint_monitor)
@@ -137,6 +163,11 @@ def main(cfg):
         torch.cuda.empty_cache()
 
     print('Training and Testing Complete!')
+
+    # Generate video for each output folder
+    for output_folder in rendered_image_paths.values():
+        generate_video_from_results(output_folder, video_name="results_video_light_0.mp4", path_string="result_view_*_light_0.png", fps=10)
+        generate_video_from_results(output_folder, video_name="gt_video_light_0.mp4", path_string="output_gamma_view_*_light_0.png", fps=10)
 
 
 if __name__ == "__main__":
