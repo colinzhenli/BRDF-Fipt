@@ -40,6 +40,36 @@ def ray_intersect(scene,xs,ds):
     normals = double_sided(-ds,normals)
     return positions,normals,ret.uv.torch(),idx,valid
 
+def ray_sphere_intersect(self, ray_o, ray_d):
+    """ Ray-sphere intersection test
+    Args:
+        ray_o: Bx3 ray origins
+        ray_d: Bx3 ray directions (normalized)
+    Returns:
+        hit_pos: Bx3 intersection points
+        normals: Bx3 surface normals
+        valid: B whether ray hits sphere
+    """
+    # Solve quadratic equation for ray-sphere intersection
+    position = torch.tensor([0, 0, 0], device=ray_o.device)
+    radius = 0.2
+    oc = ray_o - position
+    a = (ray_d * ray_d).sum(-1)
+    b = 2.0 * (oc * ray_d).sum(-1)
+    c = (oc * oc).sum(-1) - radius * radius
+    disc = b * b - 4 * a * c
+    
+    valid = disc > 0
+    t = torch.zeros_like(disc)
+    t[valid] = (-b[valid] - torch.sqrt(disc[valid])) / (2.0 * a[valid])
+    valid = valid & (t > 0)
+
+    # Compute intersection points and normals
+    hit_pos = ray_o + ray_d * t.unsqueeze(-1)
+    normals = NF.normalize(hit_pos - position, dim=-1)
+    
+    return hit_pos, normals, valid
+
 def path_tracing_det_diff(scene,emitter_net,material_net,
                           positions,wis,normals,uvs,triangle_idxs,
                           spp,indir_depth):
@@ -524,7 +554,8 @@ def path_tracing_multipoint_emitter(scene,emitter_net,material_net,rays_o,rays_d
     light_indices = light_indices.repeat_interleave(spp,0)
     
     # compute first intersection
-    position,normal,_,triangle_idx,vis = ray_intersect(scene,position,wi)
+    # position,normal,_,triangle_idx,vis = ray_intersect(scene,position,wi)
+    position, normal, vis = ray_sphere_intersect(scene,position,wi)
     L = torch.zeros(vis.shape[0],3,device=device)
     valid_next = vis
     # drop invalid intersection
@@ -555,6 +586,64 @@ def path_tracing_multipoint_emitter(scene,emitter_net,material_net,rays_o,rays_d
     # emit brdf
     emit_brdf,_ = material_net.eval_brdf(wi,wo,normal)
     L[active_next] += emit_brdf*emit_weight
+    L = L.reshape(B,spp,3).mean(1)
+    return L
+
+def path_tracing_dynamic_emitter(scene,emitter_net,material_net,rays_o,rays_d,dx_du,dy_dv,spp,indir_depth, brdf_sampling, emitter_sampling, light_indices):
+    """ Path trace current scene
+    Args:
+        scene: mitsuba scene
+        emitter_net: emitter object
+        material_net: material object
+        rays_o: Bx3 ray origin
+        rays_d: Bx3 ray direction
+        dx_du,dy_dv: Bx3 ray differential
+        spp: sampler per pixel
+        indir_depth: indirect illumination depth
+    Return:
+        L: Bx3 traced results
+    """
+    B = len(rays_o)
+    N_lights = emitter_net.light_positions.shape[0]
+    device = rays_o.device
+    
+    # sample camera ray
+    du,dv = torch.rand(2,len(rays_o),spp,1,device=device)-0.5
+    wi = NF.normalize(rays_d[:,None]+dx_du[:,None]*du+dy_dv[:,None]*dv,dim=-1).reshape(-1,3)
+    
+    # Add mask for wi z component
+    position = rays_o.repeat_interleave(spp,0)
+    
+    # compute first intersection
+    position,normal,_,triangle_idx,vis = ray_intersect(scene,position,wi)
+    # position, normal, vis = ray_sphere_intersect(scene,position,wi)
+    L = torch.zeros(vis.shape[0],3,device=device)
+    valid_next = vis
+    # drop invalid intersection
+    if not valid_next.any():
+        return L.reshape(B,spp,3).mean(1)
+    position = position[valid_next]
+    normal = normal[valid_next]
+    wo = -wi[valid_next]
+    active_next = valid_next.clone()
+    
+    # deterministic sampling
+    wi,emit_pdf, emit_position, idx = emitter_net.sample_emitter(position)
+    normal = normal.repeat_interleave(emitter_net.light_positions.shape[0],0)
+    position = position.repeat_interleave(emitter_net.light_positions.shape[0],0)
+    wo = wo.repeat_interleave(emitter_net.light_positions.shape[0],0)
+    
+    # visibility test
+    emit_weight,_,_ = emitter_net.eval_emitter(emit_position, idx)
+    emit_vis = (wi*normal).sum(-1,keepdim=True) > 0 # B, 1
+    
+    # goemetry term (assume double sided area light)
+    G = 1 / (emit_position-position).pow(2).sum(-1).clamp_min(1e-6) # B, 1
+    emit_weight = emit_weight*emit_vis*G[...,None]/emit_pdf.clamp_min(1e-6)
+    
+    # Now, reshape and average over light dimension
+    emit_brdf,_ = material_net.eval_brdf(wi,wo,normal)
+    L[active_next] += (emit_brdf*emit_weight).reshape(-1, N_lights,3).mean(1)
     L = L.reshape(B,spp,3).mean(1)
     return L
 

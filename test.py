@@ -88,28 +88,28 @@ def main(cfg):
             # Create parameter-specific output folder
             if cfg.gt_folder is not None: # if gt folder is provided, use it
                 output_folder = cfg.gt_folder
-            else: # if gt fold er is not provided, render and save the image
+            elif cfg.renderer.emitter.type == 'envmap': # if gt fold er is not provided, render and save the image
                 output_folder = os.path.join(cfg.exp_output_root_path, f'roughness_{roughness:.2f}_metallic_{metallic:.2f}')
                 os.makedirs(output_folder, exist_ok=True)
                 for idx, batch in tqdm(enumerate(dataset)):
-                    camera_idx = idx // dataset.num_lights
-                    light_idx = idx % dataset.num_lights
                     rays = batch['rays'].to(renderer.device)
-                    light_indices = torch.tensor([light_idx]).repeat(len(rays)).to(renderer.device)
                     rays_x,rays_d = rays[...,:3],rays[...,3:6]
                     dxdu, dydv = rays[..., 6:9], rays[..., 9:12]
                     with torch.no_grad():
-                        img = renderer.render(rays_x, rays_d, dxdu, dydv, cfg.renderer.resolution, cfg.renderer.spp.test, light_indices)
+                        img = renderer.render(None, rays_x, rays_d, dxdu, dydv, cfg.renderer.resolution, cfg.renderer.spp.test)
                         img = img.reshape(*cfg.renderer.resolution, -1)
 
-                    filename = f'output_view_{camera_idx}_light_{light_idx}.exr'
+                    filename = f'output_view_{idx}.exr'
                     output_path = os.path.join(output_folder, filename)
                     cv2.imwrite(output_path, img[...,[2,1,0]].cpu().numpy())
 
-                    vis_filename = f'output_gamma_view_{camera_idx}_light_{light_idx}.png'
+                    vis_filename = f'output_gamma_view_{idx}.png'
                     vis_path = os.path.join(output_folder, vis_filename)
                     torchvision.utils.save_image(gamma(img.permute(2, 0, 1)), vis_path)
-
+            else:
+                output_folder = os.path.join(cfg.exp_output_root_path, f'roughness_{roughness:.2f}_metallic_{metallic:.2f}')
+                os.makedirs(output_folder, exist_ok=True)
+                    
             rendered_image_paths[(roughness.item(), metallic.item())] = output_folder
             
 
@@ -124,8 +124,8 @@ def main(cfg):
 
     for (roughness, metallic), gt_folder in tqdm(rendered_image_paths.items(), desc="Training models"):
         material = MLPPBRBRDF(cfg.material, roughness, metallic)
-        model = BRDFTrainer(cfg, material, roughness, metallic)
-        # model = BRDFTrainer.load_from_checkpoint(cfg.model.ckpt_path,  weights_only=False)
+        gt_material = PBRBRDF(albedo=torch.tensor([[1.0, 1.0, 1.0]]), roughness=roughness, metallic=metallic)
+        model = BRDFTrainer(cfg, material, gt_material, roughness, metallic)
         # Load checkpoint
         if os.path.isfile(cfg.model.ckpt_path):
             print(f"=> loading model checkpoint '{cfg.model.ckpt_path}'")
@@ -165,9 +165,10 @@ def main(cfg):
     print('Training and Testing Complete!')
 
     # Generate video for each output folder
+    rendered_image_paths = os.path.join(cfg.exp_output_root_path,f'roughness_{roughness:.2f}_metallic_{metallic:.2f}')
     for output_folder in rendered_image_paths.values():
-        generate_video_from_results(output_folder, video_name="results_video_light_0.mp4", path_string="result_view_*_light_0.png", fps=10)
-        generate_video_from_results(output_folder, video_name="gt_video_light_0.mp4", path_string="output_gamma_view_*_light_0.png", fps=10)
+        generate_video_from_results(output_folder, video_name="results_video.mp4", path_string="result_view_*.png", fps=10)
+        generate_video_from_results(output_folder, video_name="gt_video.mp4", path_string="output_gamma_view_*.png", fps=10)
 
 
 if __name__ == "__main__":

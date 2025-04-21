@@ -4,10 +4,10 @@ import imageio
 from glob import glob
 from tqdm import tqdm
 
-def generate_video_and_gif(output_folder, video_name="results_video.mp4", gif_name="results_video.gif", fps=4):
+def generate_video_and_gif(output_folder, video_name="results_video.mp4", gif_name="results_video.gif", fps=20):
     # Find matching PNGs
-    result_paths = sorted(glob(os.path.join(output_folder, "result_view_*_light_0.png")))
-    gt_paths = sorted(glob(os.path.join(output_folder, "output_gamma_view_*_light_0.png")))
+    result_paths = sorted(glob(os.path.join(output_folder, "result_view_*.png")))
+    gt_paths = sorted(glob(os.path.join(output_folder, "output_gamma_view_*.png")))
     
     if len(result_paths) == 0 or len(gt_paths) == 0:
         print(f"[!] Missing result or ground truth images in {output_folder}")
@@ -57,6 +57,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     generate_video_and_gif(args.output_folder, 
-                          video_name="comparison_video_light_0.mp4",
-                          gif_name="comparison_video_light_0.gif", 
+                          video_name="comparison_video.mp4",
+                          gif_name="comparison_video.gif", 
                           fps=4)

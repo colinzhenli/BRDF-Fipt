@@ -86,7 +86,8 @@ def double_sided(V,N):
     """
     NoV = (N*V).sum(-1)
     flipped = NoV<0
-    N[flipped] = -N[flipped]
+    tmp = -N[flipped]
+    N[flipped] = tmp
     return N
 
     

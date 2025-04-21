@@ -17,6 +17,7 @@ from pytorch_lightning.strategies import DDPStrategy
 import importlib
 import warnings
 import logging
+from viztracer import VizTracer
 import cv2
 warnings.filterwarnings("ignore")
 logging.getLogger("pytorch_lightning").setLevel(logging.ERROR)
@@ -61,29 +62,30 @@ def main(cfg):
             # Create parameter-specific output folder
             if cfg.gt_folder is not None: # if gt folder is provided, use it
                 output_folder = cfg.gt_folder
-            else: # if gt fold er is not provided, render and save the image
+            elif cfg.renderer.emitter.type == 'envmap': # if gt fold er is not provided, render and save the image
                 output_folder = os.path.join(cfg.exp_output_root_path, f'roughness_{roughness:.2f}_metallic_{metallic:.2f}')
                 os.makedirs(output_folder, exist_ok=True)
                 for idx, batch in tqdm(enumerate(dataset)):
-                    camera_idx = idx // dataset.num_lights
-                    light_idx = idx % dataset.num_lights
                     rays = batch['rays'].to(renderer.device)
-                    light_indices = torch.tensor([light_idx]).repeat(len(rays)).to(renderer.device)
                     rays_x,rays_d = rays[...,:3],rays[...,3:6]
                     dxdu, dydv = rays[..., 6:9], rays[..., 9:12]
                     with torch.no_grad():
-                        img = renderer.render(rays_x, rays_d, dxdu, dydv, cfg.renderer.resolution, cfg.renderer.spp.test, light_indices)
+                        img = renderer.render(None, rays_x, rays_d, dxdu, dydv, cfg.renderer.resolution, cfg.renderer.spp.test)
                         img = img.reshape(*cfg.renderer.resolution, -1)
 
-                    filename = f'output_view_{camera_idx}_light_{light_idx}.exr'
+                    filename = f'output_view_{idx}.exr'
                     output_path = os.path.join(output_folder, filename)
                     cv2.imwrite(output_path, img[...,[2,1,0]].cpu().numpy())
 
-                    vis_filename = f'output_gamma_view_{camera_idx}_light_{light_idx}.png'
+                    vis_filename = f'output_gamma_view_{idx}.png'
                     vis_path = os.path.join(output_folder, vis_filename)
                     torchvision.utils.save_image(gamma(img.permute(2, 0, 1)), vis_path)
-
+            else:
+                output_folder = os.path.join(cfg.exp_output_root_path, f'roughness_{roughness:.2f}_metallic_{metallic:.2f}')
+                os.makedirs(output_folder, exist_ok=True)
+                    
             rendered_image_paths[(roughness.item(), metallic.item())] = output_folder
+            
             
 
 
@@ -99,9 +101,10 @@ def main(cfg):
         # material_module = importlib.import_module('model.brdf')
         # material = getattr(material_module, cfg.material.type)(cfg.material, roughness, metallic)
         material = MLPPBRBRDF(cfg.material, roughness, metallic)
-        # material = PBRBRDF(albedo=torch.tensor([[1.0, 1.0, 1.0]]), roughness=roughness, metallic=metallic)
+        gt_material = PBRBRDF(albedo=torch.tensor([[1.0, 1.0, 1.0]]), roughness=roughness, metallic=metallic)
+        gt_folder = None # For dynamic rendering, gt folder is not needed
 
-        model = BRDFTrainer(cfg, material, roughness, metallic)
+        model = BRDFTrainer(cfg, material, gt_material, roughness, metallic)
 
         print("==> initializing data ...")          
         train_loader = DataLoader(get_dataset(cfg, 'train', gt_folder), batch_size=None, num_workers=cfg.data.num_workers)
@@ -128,9 +131,12 @@ def main(cfg):
         trainer = pl.Trainer(
             callbacks=[checkpoint_callback, lr_monitor], logger=logger, **cfg.model.trainer, strategy=DDPStrategy(find_unused_parameters=True)
         )
-
+        tracer = VizTracer()
+        tracer.start()
         trainer.fit(model, train_loader, val_loader)
         test_results = trainer.test(model, dataloaders=test_loader)
+        tracer.stop()
+        tracer.save(f"mitsuba-intersect_test_training_trace_{roughness:.2f}_{metallic:.2f}.json")
 
         test_psnr = sum(result['test/psnr'] for result in test_results) / len(test_results)
         psnr_results[f"{roughness:.2f}_{metallic:.2f}"] = test_psnr 

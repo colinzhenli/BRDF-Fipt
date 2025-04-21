@@ -5,10 +5,12 @@ import pl_bolts
 from renderer import ForwardRenderer
 import torchvision
 from torchviz import make_dot
+from viztracer import VizTracer
+from model.emitter import DynamicPointEmitter
 import os
 
 class BRDFTrainer(pl.LightningModule):
-    def __init__(self, cfg, material, roughness, metallic):
+    def __init__(self, cfg, material, gt_material, roughness, metallic):
         super().__init__()
         self.cfg = cfg
         self.save_hyperparameters(cfg)
@@ -16,8 +18,10 @@ class BRDFTrainer(pl.LightningModule):
         self.metallic = metallic
 
         self.material = material
+        self.gt_material = gt_material
         self.material_latents = {}
         self.renderer = ForwardRenderer(cfg, self.material)
+        self.gt_renderer = ForwardRenderer(cfg, self.gt_material)
         self.img_hw = cfg.renderer.resolution
 
     def gamma(self, x):
@@ -63,49 +67,68 @@ class BRDFTrainer(pl.LightningModule):
         else:
             logging.error('Optimizer type not supported')
 
-    def render_step(self, batch, spp):
-        rays, rgbs_gt, light_indices = batch['rays'], batch['rgbs'], batch['light_indices']
+    def render_step(self, batch, spp, emitter=None):
+        rays, rgbs_gt = batch['rays'], batch['rgbs']
         rays_x, rays_d = rays[..., :3], rays[..., 3:6]
         dxdu, dydv = rays[..., 6:9], rays[..., 9:12]
+        rgbs = self.renderer.render(emitter, rays_x, rays_d, dxdu, dydv, self.img_hw, spp, None)
 
-        rgbs = self.renderer.render(rays_x, rays_d, dxdu, dydv, self.img_hw, spp, light_indices)
+        if rgbs_gt is None:
+            with torch.no_grad():
+                rgbs_gt = self.gt_renderer.render(emitter, rays_x, rays_d, dxdu, dydv, self.img_hw, spp, None)
         loss = NF.l1_loss(rgbs, rgbs_gt)
         # loss = NF.mse_loss(self.gamma(rgbs), self.gamma(rgbs_gt))
-        psnr = -10.0 * torch.log10(loss.clamp_min(1e-5))
-        return rgbs, loss, psnr
+        psnr_loss = NF.mse_loss(self.gamma(rgbs), self.gamma(rgbs_gt))
+        psnr = -10.0 * torch.log10(psnr_loss.clamp_min(1e-5))
+        return rgbs, rgbs_gt, loss, psnr
 
     def training_step(self, batch, batch_idx):
-        _, loss, psnr = self.render_step(batch, self.cfg.renderer.spp.train)
+
+        # randomly initialize emitter
+        emitter = DynamicPointEmitter(
+            dist=self.cfg.renderer.emitter.dist,
+            num_lights=self.cfg.renderer.emitter.num_lights
+        )
+        
+        _, _, loss, psnr = self.render_step(batch, self.cfg.renderer.spp.train, emitter)
         self.log('train/loss', loss)
         self.log('train/psnr', psnr)
-        # self.log('train/roughness', self.material.proxy_brdf.roughness)
-        # loss = loss.sum()
-        # loss.backward(retain_graph=True)
+        
 
-        # # Print gradients explicitly
-        # print(f"Gradient w.r.t roughness: {self.material.proxy_brdf.roughness.grad}")
-        # # Gradient Visualization
-        # dot = make_dot(loss, params={
-        #     'roughness': self.material.proxy_brdf.roughness,
-        # })
-        # dot.render(f"New_gradient_flow_batch_{batch_idx}", format="png")
         return loss
 
     def validation_step(self, batch, batch_idx):
-        _, loss, psnr = self.render_step(batch, self.cfg.renderer.spp.val)
+        # randomly initialize emitter
+        emitter = DynamicPointEmitter(
+            dist=self.cfg.renderer.emitter.dist,
+            num_lights=self.cfg.renderer.emitter.num_lights
+        )
+        _, _, loss, psnr = self.render_step(batch, self.cfg.renderer.spp.val, emitter)
         self.log('val/loss', loss)
         self.log('val/psnr', psnr)
         return
 
     def test_step(self, batch, batch_idx):
-        camera_idx = batch_idx // self.cfg.renderer.emitter.num_lights
-        light_idx = batch_idx % self.cfg.renderer.emitter.num_lights
-        rgbs, loss, psnr = self.render_step(batch, self.cfg.renderer.spp.test)
+        if self.cfg.renderer.emitter.type == 'envmap':
+            rgbs, rgbs_gt, loss, psnr = self.render_step(batch, self.cfg.renderer.spp.test)
+        else:
+            emitter = DynamicPointEmitter(
+                dist=self.cfg.renderer.emitter.dist,
+                num_lights=self.cfg.renderer.emitter.num_lights
+            )
+            rgbs, rgbs_gt, loss, psnr = self.render_step(batch, self.cfg.renderer.spp.test, emitter)
         rgbs = rgbs.reshape(*self.img_hw, -1)
+        rgbs_gt = rgbs_gt.reshape(*self.img_hw, -1)
         os.makedirs(os.path.join(self.cfg.exp_output_root_path,f'roughness_{self.roughness:.2f}_metallic_{self.metallic:.2f}'), exist_ok=True)
+
+        # if self.cfg.renderer.emitter.type == 'dynamicpoint':
+        torchvision.utils.save_image(
+            self.gamma(rgbs_gt.permute(2, 0, 1)),
+            os.path.join(self.cfg.exp_output_root_path,f'roughness_{self.roughness:.2f}_metallic_{self.metallic:.2f}', f'gt_view_{batch_idx}.png')
+            )
         torchvision.utils.save_image(
             self.gamma(rgbs.permute(2, 0, 1)),
-            os.path.join(self.cfg.exp_output_root_path,f'roughness_{self.roughness:.2f}_metallic_{self.metallic:.2f}', f'result_view_{camera_idx}_light_{light_idx}.png')
+            os.path.join(self.cfg.exp_output_root_path,f'roughness_{self.roughness:.2f}_metallic_{self.metallic:.2f}', f'result_view_{batch_idx}.png')
         )
         self.log('test/psnr', psnr)
         # self.log('test/roughness', self.material.proxy_brdf.roughness)
