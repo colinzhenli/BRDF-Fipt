@@ -785,7 +785,7 @@ class MLPPBRBRDF(nn.Module):
 
         # Add SH positional encoding module
         self.levels = 4
-        self.pos_enc = True
+        self.pos_enc = False
         if self.pos_enc:
             self.sh_encoder = encoding.SHEncoding(levels=self.levels)
             

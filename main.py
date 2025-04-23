@@ -131,12 +131,12 @@ def main(cfg):
         trainer = pl.Trainer(
             callbacks=[checkpoint_callback, lr_monitor], logger=logger, **cfg.model.trainer, strategy=DDPStrategy(find_unused_parameters=True)
         )
-        tracer = VizTracer()
-        tracer.start()
+        # tracer = VizTracer()
+        # tracer.start()
         trainer.fit(model, train_loader, val_loader)
         test_results = trainer.test(model, dataloaders=test_loader)
-        tracer.stop()
-        tracer.save(f"mitsuba-intersect_test_training_trace_{roughness:.2f}_{metallic:.2f}.json")
+        # tracer.stop()
+        # tracer.save(f"mitsuba-intersect_test_training_trace_{roughness:.2f}_{metallic:.2f}.json")
 
         test_psnr = sum(result['test/psnr'] for result in test_results) / len(test_results)
         psnr_results[f"{roughness:.2f}_{metallic:.2f}"] = test_psnr 

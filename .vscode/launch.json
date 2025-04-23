@@ -31,16 +31,16 @@
             "name": "Python: Current File",
             "type": "python",
             "request": "launch",
-            "program": "test.py",
+            "program": "main.py",
             "console": "integratedTerminal",
             "justMyCode": true,
             "args": [
-                "renderer=envmap_emitter",
+                "renderer=dynamicpoint_emitter",
                 "material=mlp_pbr",
                 // // "experiment_name=Eight-point-lights_Larger-MLP_pos-enc_Local-coordinate_Evenly-camera-views_L1-loss_point-emitter_run_1",
-                "experiment_name=More-steps_grammared-psnr_Envmap-test_Dynamic-point-emitter_run_2",
+                "experiment_name=No-SH-pos-enc_grammared-psnr_Dynamic-point-emitter_run_2",
                 // // "gt_folder=/localhome/zla247/theia2_data/output/BRDF-Fipt/Over-fit_experiments_2/sphere/Envmap_smaller-mlp_test/roughness_0.20_metallic_0.20",
-                "model.ckpt_path=/localhome/zla247/theia2_data/output/BRDF-Fipt/Over-fit_experiments_2/sphere/Dynamic-point-emitter_run_2/training/model_0.20_0.20/last.ckpt"
+                // "model.ckpt_path=/localhome/zla247/theia2_data/output/BRDF-Fipt/Over-fit_experiments_2/sphere/Dynamic-point-emitter_run_2/training/model_0.20_0.20/last.ckpt"
                 // "output_folder=/localhome/zla247/theia2_data/output/BRDF-Fipt/Over-fit_experiments_2/sphere/Envmap-test_Dynamic-point-emitter_run_2/roughness_0.20_metallic_0.20"
             ]
         }
