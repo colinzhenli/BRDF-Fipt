@@ -8,7 +8,7 @@ import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
 from renderer import ForwardRenderer
 from brdf_trainer import BRDFTrainer
-from model.brdf import MLPPBRBRDF, PBRBRDF, PhongBRDF, ProxyPBRBRDF
+from model.brdf import MLPPBRBRDF, PBRBRDF, ProxyPBRBRDF
 from torch.utils.data import DataLoader
 from utils.dataset import SphereDataset
 import hydra
@@ -22,12 +22,6 @@ import cv2
 warnings.filterwarnings("ignore")
 logging.getLogger("pytorch_lightning").setLevel(logging.ERROR)
 
-def gamma(x):
-    mask = x <= 0.0031308
-    ret = torch.empty_like(x)
-    ret[mask] = 12.92 * x[mask]
-    ret[~mask] = 1.055 * x[~mask].pow(1/2.4) - 0.055
-    return ret
 
 
 def get_dataset(cfg, split, gt_path=None):
@@ -46,106 +40,64 @@ def init_callbacks(cfg):
 def main(cfg):
     # fix the seed
     pl.seed_everything(cfg.global_train_seed, workers=True)
-    rendered_image_paths = {}
     os.makedirs(cfg.exp_output_root_path, exist_ok=True)
     checkpoint_output_path = os.path.join(cfg.exp_output_root_path, "training")
     os.makedirs(checkpoint_output_path, exist_ok=True)
 
-    roughness_vals = torch.linspace(cfg.model.roughness_range[0], cfg.model.roughness_range[1], cfg.model.parameter_num)
-    metallic_vals = torch.linspace(cfg.model.metallic_range[0], cfg.model.metallic_range[1], cfg.model.parameter_num)
+    # Load ground truth material parameters from pbr config
+    gt_material_cfg = hydra.compose(config_name="config", overrides=["material=pbr"]).material
+    
+    # Use ground truth parameters from pbr.yaml
+    albedo = gt_material_cfg.albedo
+    roughness = gt_material_cfg.roughness
+    metallic = gt_material_cfg.metallic
+    
+    output_folder = os.path.join(cfg.exp_output_root_path, f'roughness_{roughness:.2f}_metallic_{metallic:.2f}')
+    os.makedirs(output_folder, exist_ok=True)
 
-    for roughness in tqdm(roughness_vals, desc="[render ground truth] Roughness"):
-        for metallic in tqdm(metallic_vals, desc="[render ground truth] Metallic", leave=False):
-            material = PBRBRDF(albedo=torch.tensor([[1.0, 1.0, 1.0]]), roughness=roughness.item(), metallic=metallic.item())
-            renderer = ForwardRenderer(cfg, material)
-            dataset = get_dataset(cfg, 'test')
-            # Create parameter-specific output folder
-            if cfg.gt_folder is not None: # if gt folder is provided, use it
-                output_folder = cfg.gt_folder
-            elif cfg.renderer.emitter.type == 'envmap': # if gt fold er is not provided, render and save the image
-                output_folder = os.path.join(cfg.exp_output_root_path, f'roughness_{roughness:.2f}_metallic_{metallic:.2f}')
-                os.makedirs(output_folder, exist_ok=True)
-                for idx, batch in tqdm(enumerate(dataset)):
-                    rays = batch['rays'].to(renderer.device)
-                    rays_x,rays_d = rays[...,:3],rays[...,3:6]
-                    dxdu, dydv = rays[..., 6:9], rays[..., 9:12]
-                    with torch.no_grad():
-                        img = renderer.render(None, rays_x, rays_d, dxdu, dydv, cfg.renderer.resolution, cfg.renderer.spp.test)
-                        img = img.reshape(*cfg.renderer.resolution, -1)
+    # Initialize materials using different configs
+    material = MLPPBRBRDF(cfg.material, roughness)  # MLP model uses mlp_pbr config
+    gt_material = PBRBRDF(
+        albedo=torch.tensor(albedo), 
+        roughness=roughness, 
+        metallic=metallic
+    )  # Ground truth uses pbr config
 
-                    filename = f'output_view_{idx}.exr'
-                    output_path = os.path.join(output_folder, filename)
-                    cv2.imwrite(output_path, img[...,[2,1,0]].cpu().numpy())
+    model = BRDFTrainer(cfg, material, gt_material, roughness, metallic)
 
-                    vis_filename = f'output_gamma_view_{idx}.png'
-                    vis_path = os.path.join(output_folder, vis_filename)
-                    torchvision.utils.save_image(gamma(img.permute(2, 0, 1)), vis_path)
-            else:
-                output_folder = os.path.join(cfg.exp_output_root_path, f'roughness_{roughness:.2f}_metallic_{metallic:.2f}')
-                os.makedirs(output_folder, exist_ok=True)
-                    
-            rendered_image_paths[(roughness.item(), metallic.item())] = output_folder
-            
-            
+    print("==> initializing data ...")          
+    train_loader = DataLoader(get_dataset(cfg, 'train', None), batch_size=None, num_workers=cfg.data.num_workers)
+    val_loader = DataLoader(get_dataset(cfg, 'val', None), batch_size=None, num_workers=cfg.data.num_workers)
+    test_loader = DataLoader(get_dataset(cfg, 'test', None), batch_size=None, num_workers=cfg.data.num_workers)
 
+    print("==> initializing logger ...")
+    logger = hydra.utils.instantiate(cfg.model.logger, save_dir=cfg.exp_output_root_path)
 
-    # Training
-    psnr_results = {}
-    psnr_file = os.path.join(cfg.exp_output_root_path, 'psnr_results.json')
+    print("==> initializing monitor ...")
+    checkpoint_callback = ModelCheckpoint(
+        dirpath=os.path.join(cfg.model.checkpoint_monitor.dirpath, f'model_{roughness:.2f}_{metallic:.2f}'),
+        filename=cfg.model.checkpoint_monitor.filename,
+        save_top_k=cfg.model.checkpoint_monitor.save_top_k, 
+        every_n_epochs=cfg.model.checkpoint_monitor.every_n_epochs,
+        monitor='val/loss',
+        save_last=True
+    )
 
-    if os.path.exists(psnr_file):
-        with open(psnr_file, 'r') as f:
-            psnr_results = json.load(f)
+    lr_monitor = LearningRateMonitor(logging_interval='step')
 
-    for (roughness, metallic), gt_folder in tqdm(rendered_image_paths.items(), desc="Training models"):
-        # material_module = importlib.import_module('model.brdf')
-        # material = getattr(material_module, cfg.material.type)(cfg.material, roughness, metallic)
-        material = MLPPBRBRDF(cfg.material, roughness, metallic)
-        gt_material = PBRBRDF(albedo=torch.tensor([[1.0, 1.0, 1.0]]), roughness=roughness, metallic=metallic)
-        gt_folder = None # For dynamic rendering, gt folder is not needed
+    print("==> initializing trainer ...")
 
-        model = BRDFTrainer(cfg, material, gt_material, roughness, metallic)
+    trainer = pl.Trainer(
+        callbacks=[checkpoint_callback, lr_monitor], logger=logger, **cfg.model.trainer, strategy=DDPStrategy(find_unused_parameters=True)
+    )
 
-        print("==> initializing data ...")          
-        train_loader = DataLoader(get_dataset(cfg, 'train', gt_folder), batch_size=None, num_workers=cfg.data.num_workers)
-        val_loader = DataLoader(get_dataset(cfg, 'val', gt_folder), batch_size=None, num_workers=cfg.data.num_workers)
-        test_loader = DataLoader(get_dataset(cfg, 'test', gt_folder), batch_size=None, num_workers=cfg.data.num_workers)
+    trainer.fit(model, train_loader, val_loader)
+    test_results = trainer.test(model, dataloaders=test_loader)
 
-        print("==> initializing logger ...")
-        logger = hydra.utils.instantiate(cfg.model.logger, save_dir=cfg.exp_output_root_path)
+    test_psnr = sum(result['test/psnr'] for result in test_results) / len(test_results)
+    print(f"PSNR for roughness {roughness:.2f}, metallic {metallic:.2f}: {test_psnr:.2f}")
 
-        print("==> initializing monitor ...")
-        checkpoint_callback = ModelCheckpoint(
-            dirpath=os.path.join(cfg.model.checkpoint_monitor.dirpath, f'model_{roughness:.2f}_{metallic:.2f}'),
-            filename=cfg.model.checkpoint_monitor.filename,
-            save_top_k=cfg.model.checkpoint_monitor.save_top_k, 
-            every_n_epochs=cfg.model.checkpoint_monitor.every_n_epochs,
-            monitor='val/loss',
-            save_last=True
-        )
-
-        lr_monitor = LearningRateMonitor(logging_interval='step')
-
-        print("==> initializing trainer ...")
-
-        trainer = pl.Trainer(
-            callbacks=[checkpoint_callback, lr_monitor], logger=logger, **cfg.model.trainer, strategy=DDPStrategy(find_unused_parameters=True)
-        )
-        # tracer = VizTracer()
-        # tracer.start()
-        trainer.fit(model, train_loader, val_loader)
-        test_results = trainer.test(model, dataloaders=test_loader)
-        # tracer.stop()
-        # tracer.save(f"mitsuba-intersect_test_training_trace_{roughness:.2f}_{metallic:.2f}.json")
-
-        test_psnr = sum(result['test/psnr'] for result in test_results) / len(test_results)
-        psnr_results[f"{roughness:.2f}_{metallic:.2f}"] = test_psnr 
-        print(f"PSNR for roughness {roughness:.2f}, metallic {metallic:.2f}: {test_psnr:.2f}")
-
-        with open(psnr_file, 'w') as f:
-            json.dump(psnr_results, f, indent=4)
-
-        torch.cuda.empty_cache()
+    torch.cuda.empty_cache()
 
     print('Training and Testing Complete!')
 

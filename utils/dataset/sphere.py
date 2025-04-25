@@ -186,63 +186,6 @@ class SphereDataset(Dataset):
                 self.all_rgbs = None
             self.batch_num = cfg.data.batch_num
 
-    def get_render_poses(self):
-        self.render_poses = np.stack([pose_spherical(angle, -30.0, self.radius) for angle in np.linspace(-180, 180, self.stride + 1)[:-1]], 0)
-        self.total = len(self.render_poses)
-
-    def get_spiral_camera_dicts(self, steps: int = 30, radius: float = 4.0, rots: int = 2, zrate: float = 0.5):
-        """
-        Generate a list of camera dictionaries from a Nerfstudio spiral path.
-        
-        Args:
-            camera (Cameras): Nerfstudio Cameras object (starting camera).
-            steps (int): Number of steps in the spiral path.
-            radius (float): Radius of spiral.
-            rots (int): Number of full rotations.
-            zrate (float): Vertical rate of change.
-            
-        Returns:
-            List[Dict]: List of camera dictionaries with 'position', 'look_at', and 'up'.
-        """
-        # Initialize camera parameters
-        h, w = self.img_hw
-        fx = fy = self.focal
-        cx = w * 0.5
-        cy = h * 0.5
-
-        # Get initial camera pose
-        c2w = get_c2w(self.initial_camera_dict)
-        c2w = c2w.unsqueeze(0)  # Add batch dimension [1, 3, 4]
-        look_at = self.initial_camera_dict["look_at"]
-        up = self.initial_camera_dict["up"]
-
-        # Create Nerfstudio camera
-        camera = Cameras(
-            camera_to_worlds=c2w,
-            fx=fx,
-            fy=fy, 
-            cx=cx,
-            cy=cy,
-            width=w,
-            height=h
-        )
-        self.camera_dict = []
-        spiral_cameras = get_spiral_path(camera, steps=steps, radius=radius, rots=rots, zrate=zrate)
-        c2ws = spiral_cameras.camera_to_worlds  # shape: [steps, 3, 4]
-
-        for i in range(c2ws.shape[0]):
-            c2w = c2ws[i]
-            position = c2w[:, 3].tolist()
-            # forward = c2w[:, 2]
-            # look_at = (c2w[:, 3] + forward).tolist()
-            # up = c2w[:, 1].tolist()
-
-            self.camera_dict.append({
-                "position": position,
-                "look_at": look_at,
-                "up": up
-            })
-        
 
     def get_camera_dicts(self):
         # Initialize camera dicts list
@@ -261,10 +204,7 @@ class SphereDataset(Dataset):
         # Generate uniform samples for spherical coordinates, excluding poles
         thetas = np.linspace(0, np.pi, n_theta)  # Exclude 0 and pi
         thetas = thetas[1:-1]  # Remove the first and last elements
-        phis = np.linspace(0, 2*np.pi, n_phi)
-        
-        # Add poles separately - they only need one phi value since they're at top/bottom
-        
+        phis = np.linspace(0, 2*np.pi, n_phi)        
         # Create grid of angles
         theta_grid, phi_grid = np.meshgrid(thetas, phis)
         thetas_flat = theta_grid.flatten()
@@ -369,6 +309,7 @@ class SphereDataset(Dataset):
             
             sample = {'rays': tmp[...,:12],
                       'rgbs': self.all_rgbs[idx] if self.all_rgbs is not None else None}
+
         else:
             c2w = get_c2w(self.camera_dict[idx])
             rays_o,rays_d,dxdu,dydv = get_rays(self.directions, c2w, focal=self.focal)

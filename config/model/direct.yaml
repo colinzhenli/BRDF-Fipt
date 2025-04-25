@@ -1,6 +1,2 @@
 defaults:
   - base
-
-parameter_num: 1 # number of roughness and metallic values
-roughness_range: [0.2, 0.8]
-metallic_range: [0.2, 0.8]

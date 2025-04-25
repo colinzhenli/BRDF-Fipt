@@ -10,7 +10,7 @@ trainer:
   accelerator: gpu #cpu or gpu
   devices: auto
   num_nodes: 1
-  max_epochs: 10
+  max_epochs: 5
   max_steps: 20000
   check_val_every_n_epoch: 5
 

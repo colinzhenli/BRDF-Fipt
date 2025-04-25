@@ -3,8 +3,6 @@ defaults:
 
 dataset_name: "sphere"
 dataset_path: None
-# cache_path: "./cache/sphere"
-# gt_path: "./ground_truth/sphere_gt.exr"
 shape:
   type: "sphere"
   center: [0.0, 0.0, 0.0]
