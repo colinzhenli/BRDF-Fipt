@@ -12,9 +12,16 @@ import math
 import matplotlib.pyplot as plt
 
 def get_ray_directions(H, W, focal):
-    """ get camera ray direction """
-    # TODO: implement a proper camera ray direction
-    directions = torch.zeros(H, W, 3)
+    """ get camera ray direction
+    Args:
+        H,W: height and width
+        focal: focal length
+    """
+    x_coords = torch.linspace(0.5, W - 0.5, W)
+    y_coords = torch.linspace(0.5, H - 0.5, H)
+    j, i = torch.meshgrid([y_coords, x_coords])
+    directions = \
+        torch.stack([-(i-W/2)/focal, -(j-H/2)/focal, torch.ones_like(i)], -1) 
 
     return directions
 
@@ -62,9 +69,21 @@ def get_c2w(camera):
     target = torch.tensor(camera['look_at'], dtype=torch.float32)
     up = torch.tensor(camera.get('up', [0,1,0]), dtype=torch.float32)
     
-    # TODO: implement a proper camera to world matrix
+    forward = target - position
+    forward = forward / torch.norm(forward)
+    # Ensure `up` is not parallel to `forward`
+    if torch.abs(torch.dot(forward, up)) > 0.99:  # Too parallel, adjust up
+        up = torch.tensor([1.0, 0.0, 0.0]) if torch.abs(forward[0]) < 0.99 else torch.tensor([0.0, 1.0, 0.0])
+    """ right hand coordinate system """
+    right = torch.cross(up, forward)
+    right = right / torch.norm(right)
+    up = torch.cross(forward, right)
+    
     c2w = torch.eye(4)
-    return c2w[:3,:4]
+    c2w[:3,:3] = torch.stack([right, up, forward], dim=1)
+    c2w[:3,3] = position
+    c2w = c2w[:3,:4]
+    return c2w
 
 class SphereDataset(Dataset):
     """ Simple synthetic dataset for basic scenes like sphere
@@ -140,11 +159,57 @@ class SphereDataset(Dataset):
     def get_camera_dicts(self):
         # Initialize camera dicts list
         self.camera_dict = []
-        self.total = self.number_of_views
-        self.radius = self.distance
-        # TODO: implement a list of camera dicts by uniformly sampling the sphere
-        for i in range(self.number_of_views):
-            self.camera_dict.append(self.initial_camera_dict)
+        
+        # Keep look_at and up vectors fixed from initial camera settings
+        look_at = self.initial_camera_dict["look_at"]
+        up = self.initial_camera_dict["up"]
+        dist = self.distance
+        
+        # Parameters to control sampling density
+        n_theta = 7  # number of theta samples (excluding poles)
+        n_phi = 6    # number of phi samples
+        self.total = (n_theta-2) * n_phi + 2  # Add 2 for poles
+        
+        # Generate uniform samples for spherical coordinates, excluding poles
+        thetas = np.linspace(0, np.pi, n_theta)  # Exclude 0 and pi
+        thetas = thetas[1:-1]  # Remove the first and last elements
+        phis = np.linspace(0, 2*np.pi, n_phi)
+        
+        # Add poles separately - they only need one phi value since they're at top/bottom
+        
+        # Create grid of angles
+        theta_grid, phi_grid = np.meshgrid(thetas, phis)
+        thetas_flat = theta_grid.flatten()
+        phis_flat = phi_grid.flatten()
+        
+        # Convert spherical to cartesian coordinates
+        for theta, phi in zip(thetas_flat, phis_flat):
+            # Calculate camera position
+            x = dist * np.sin(theta) * np.cos(phi)
+            y = dist * np.sin(theta) * np.sin(phi) 
+            z = dist * np.cos(theta)
+            
+            # Create camera dict for this position
+            camera_dict = {
+                "position": [x, y, z],
+                "look_at": look_at,
+                "up": up
+            }
+            
+            self.camera_dict.append(camera_dict)
+        north_pole = {
+            "position": [0, 0, dist],  # x=0, y=0, z=dist
+            "look_at": look_at,
+            "up": up
+        }
+        self.camera_dict.append(north_pole)
+
+        south_pole = {
+            "position": [0, 0, -dist],  # x=0, y=0, z=-dist
+            "look_at": look_at,
+            "up": up
+        }
+        self.camera_dict.append(south_pole)
 
 
     def get_camera_rotation_dicts(self):

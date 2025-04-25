@@ -63,10 +63,26 @@ class EnvMapEmitter(nn.Module):
             pdf: Bx1 pdf
             valid: B valid samples (always True for envmap)
         """
-        # TODO: return the radiance of the environment map from the light_dir
-        Le = torch.zeros_like(light_dir)
-        pdf = torch.ones_like(light_dir)[:,0]
+        # Convert direction to lat-long coordinates
+        phi = torch.atan2(light_dir[..., 2], light_dir[..., 0])  # [-π, π]
+        theta = torch.asin(-light_dir[..., 1])  # [-π/2, π/2]
+
+        # Normalize to [0, 1] texture coordinates
+        u = (phi / (2 * math.pi)) + 0.5
+        v = theta / math.pi + 0.5
+
+        # Convert to pixel indices
+        u_idx = (u * (self.W - 1)).long().clamp(0, self.W - 1)
+        v_idx = (v * (self.H - 1)).long().clamp(0, self.H - 1)
+
+        # Sample radiance from environment map
+        Le = self.envmap[:, v_idx, u_idx].permute(1, 0)  # (B, 3)
+
+        # Compute PDF (assuming uniform distribution for now)
+        pdf = torch.full((position.shape[0], 1), 1.0 / (4 * math.pi), device=position.device)
+
         return Le, pdf, torch.ones_like(pdf, dtype=torch.bool)  # Always valid
+
     
 class DynamicPointEmitter(nn.Module):
     def __init__(self, dist=4.0, num_lights=8):

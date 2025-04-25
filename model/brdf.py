@@ -15,7 +15,7 @@ class PBRBRDF(nn.Module):
     """ Base BRDF class """
     def __init__(self, albedo=torch.ones(1, 3), roughness=0.2, metallic=0.5):
         super(PBRBRDF,self).__init__()
-        """ In current setting we don't need to learn the albedo, roughness, metallic """
+        # Initialize learnable material parameters
         self.albedo = nn.Parameter(albedo)
         self.roughness = nn.Parameter(torch.full((1, 1), roughness).cuda())  # Scalar roughness 
         self.metallic = nn.Parameter(torch.full((1, 1), metallic).cuda())  # Scalar metallic
@@ -77,10 +77,8 @@ class PBRBRDF(nn.Module):
         wi = NF.normalize(wi,dim=-1)
         return wi
     
-
     def eval_brdf(self,wi,wo,normal):
-        """
-        Args:
+        """ evaluate BRDF and pdf
             wi: Bx3 light direction
             wo: Bx3 viewing direction
             normal: Bx3 normal
@@ -89,10 +87,43 @@ class PBRBRDF(nn.Module):
             brdf: Bx3
             pdf: Bx1
         """
-        # TODO: implement a proper PBR BRDF, using utils.ops functions like D_GGX, G_Smith, fresnelSchlick, etc. 
+        # Check if both directions are on the same side
+        NoL = (wi*normal).sum(-1,keepdim=True)
+        NoV = (wo*normal).sum(-1,keepdim=True)
+        valid_geometry = (NoL > 0) & (NoV > 0)
+        
+        # Early return for invalid geometry
+        if not valid_geometry.any():
+            return torch.zeros_like(wi), torch.zeros(wi.shape[0], 1, device=wi.device)
+        # Reshape albedo tensor to match expected dimensions
+        albedo = self.mat['albedo'].view(1, 3).expand(normal.shape[0], 3)
+        roughness = self.mat['roughness'].view(1, 1).expand(normal.shape[0], 1)
+        metallic = self.mat['metallic'].view(1, 1).expand(normal.shape[0], 1)
 
-        brdf = torch.zeros_like(wi)
-        pdf = torch.zeros_like(wi)
+        h = NF.normalize(wi+wo,dim=-1)
+        NoL = NoL.relu()  # Now safe to relu after check
+        NoV = NoV.relu()
+        VoH = (wo*h).sum(-1,keepdim=True).relu()
+        NoH = (normal*h).sum(-1,keepdim=True).relu()
+
+        # get pdf
+        D = D_GGX(NoH,roughness)
+        pdf_spec = D.data/((4*VoH.clamp_min(1e-4))*NoH + 1e-8)
+        pdf_diff = NoL/math.pi
+        pdf = 0.5*pdf_spec + 0.5*pdf_diff
+
+        # get brdf
+        kd = albedo*(1-metallic)
+        ks = 0.04*(1-metallic) + albedo*metallic
+
+        G = G_Smith(NoV,NoL,roughness)
+        F = fresnelSchlick(VoH,ks)
+        brdf_diff = kd/math.pi*NoL
+        brdf_spec = D*G*F/4.0*NoL
+
+        brdf = brdf_diff + brdf_spec
+
+
         return brdf,pdf
     
     def sample_brdf(self,sample1,sample2,wo,normal):
@@ -187,7 +218,7 @@ class ProxyPBRBRDF(nn.Module):
         if wi.isnan().any():
             print("wi is nan")
         return wi
-
+    
     def specular_sampler(self, sample2,roughness, wo, normal):
         """ sampling ggx lobe: h ~ D/(VoH*4)*NoH
         Args:
@@ -249,8 +280,32 @@ class MLPPBRBRDF(nn.Module):
     def __init__(self, cfg, gt_roughness):
         super(MLPPBRBRDF, self).__init__()
 
+        # Add SH positional encoding module
+        self.levels = 4
+        self.pos_enc = True
+        if self.pos_enc:
+            self.sh_encoder = encoding.SHEncoding(levels=self.levels)
+            
+        # Calculate input dimension after SH encoding
+        sh_dim = (self.levels) ** 2
+        encoded_input_dim = sh_dim * 3  # wi, wo, normal each encoded by SH
+
+        layers = []
+        prev_dim = encoded_input_dim if self.pos_enc else 9
+        for hidden_dim in cfg.hidden_layers:
+            layers.append(nn.Linear(prev_dim, hidden_dim))
+            if cfg.activation.lower() == "relu":
+                layers.append(nn.ReLU())
+            prev_dim = hidden_dim
+            
+        layers.append(nn.Linear(prev_dim, cfg.output_channels))
+        layers.append(nn.LeakyReLU(0.2))
+        
+        self.mlp = nn.Sequential(*layers)
+
+        # self.proxy_brdf = PhongBRDF()
         self.proxy_brdf = ProxyPBRBRDF(roughness=gt_roughness)
-        self.Linear = nn.Linear(9, 1)
+
 
 
     def forward(self, wi, wo, normal):
@@ -262,18 +317,39 @@ class MLPPBRBRDF(nn.Module):
         Returns:
             brdf: Bx1 BRDF values
         """
-        # TODO: replace the Linear layer with a proper MLP model with SH position encoding
-        wi_local, wo_local, normal_local = self.world_to_local(wi, wo, normal)
-        x =  torch.cat([wi_local, wo_local, normal_local], dim=-1)
-        return self.Linear(x)
+        # SH encoding
+        if self.pos_enc:
+            wi_enc = self.sh_encoder(wi)
+            wo_enc = self.sh_encoder(wo)
+            normal_enc = self.sh_encoder(normal)
+        # Concatenate encoded inputs
+        x = torch.cat([wi_enc, wo_enc, normal_enc], dim=-1) if self.pos_enc else torch.cat([wi, wo, normal], dim=-1)
+        return self.mlp(x)
 
-    def world_to_local(self, wi, wo, normal):
-        # TODO: implement a proper world_to_local transformation
-        wi_local = wi
-        wo_local = wo
-        normal_local = normal
+    def world_to_local(self, v, normal):
+        
+        # choose arbitrary tangent
+        up = torch.tensor([0.0, 1.0, 0.0], device=normal.device).expand_as(normal)
+        tangent = torch.cross(up, normal)
+        tangent_len = tangent.norm(dim=-1, keepdim=True)
+        
+        # if normal is collinear with [0,1,0], choose another tangent
+        collinear_mask = tangent_len.squeeze(-1) < 1e-6
+        if collinear_mask.any():
+            tangent[collinear_mask] = torch.cross(normal[collinear_mask], torch.tensor([1., 0., 0.].expand_as(normal[collinear_mask])), device=normal.device)
+            tangent_len = tangent.norm(dim=-1, keepdim=True)
 
-        return wi_local, wo_local, normal_local
+        tangent = tangent / tangent_len
+
+        bitangent = torch.cross(normal, tangent)
+
+        v_local = torch.stack([
+            (v * tangent).sum(dim=-1),
+            (v * bitangent).sum(dim=-1),
+            (v * normal).sum(dim=-1)
+        ], dim=-1)
+
+        return v_local
     
     def eval_brdf(self, wi, wo, normal):
         """
@@ -289,14 +365,16 @@ class MLPPBRBRDF(nn.Module):
         # Ensure normal is normalized
         NoL = (wi*normal).sum(-1,keepdim=True)
         NoV = (wo*normal).sum(-1,keepdim=True)
-
-        brdf_value = self.forward(wi, wo, normal)
+        wi_local = self.world_to_local(wi, normal)
+        wo_local = self.world_to_local(wo, normal)
+        local_normal = torch.zeros_like(wi_local)
+        local_normal[..., 2] = 1.0  # Normal is always (0,0,1) in local space
+        brdf_value = self.forward(wi_local, wo_local, local_normal)
         brdf = brdf_value.expand(-1, 3)
 
         pdf = NoL / math.pi
 
         return brdf, pdf
-        
     def sample_brdf(self, sample1, sample2, wo, normal):
         """
         Importance sampling BRDF using proxy (PBRBRDF) and evaluating MLP BRDF.
