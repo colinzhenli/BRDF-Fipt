@@ -5,7 +5,7 @@ indir_depth: 0
 
 camera:
   distance: 2.0
-  number_of_views: 128
+  number_of_views: 8
   look_at: [0.0, 0.0, 0.0]
   up: [0.0, 1.0, 0.0]
   position: [0.0, 0.0, -2.0]
@@ -15,8 +15,7 @@ camera:
 emitter:
   type: "envmap"
   num_lights: 1
-  # envmap_path: "./envmap.exr"
-  envmap_path: "/localhome/zla247/theia2_zla247/projects/BRDF-Fipt/envmap.exr"
+  envmap_path: "./envmap.exr"
 
 spp:
   train: 1024

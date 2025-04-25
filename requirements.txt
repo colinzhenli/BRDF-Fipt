@@ -12,3 +12,10 @@ scipy==1.10.1
 tensorboardX
 jupyter
 ipywidgets
+open3d
+omegaconf
+scikit-learn
+nerfstudio
+lightning-bolts
+torchviz
+openexr_numpy

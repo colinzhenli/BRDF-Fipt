@@ -10,8 +10,8 @@ trainer:
   accelerator: gpu #cpu or gpu
   devices: auto
   num_nodes: 1
-  max_epochs: 5
-  max_steps: 20000
+  max_epochs: 2 # TODO: tune this
+  max_steps: 200 # TODO: tune this
   check_val_every_n_epoch: 5
 
 # https://pytorch-lightning.readthedocs.io/en/stable/api/pytorch_lightning.callbacks.ModelCheckpoint.html
@@ -26,7 +26,7 @@ checkpoint_monitor:
 optimizer:
   name: Adam # SGD or Adam
   weight_decay: 0.0
-  lr: 0.0005
+  lr: 0.1 # TODO: tune this
   warmup_steps_ratio: 0.0
 
 lr_decay: # for Adam

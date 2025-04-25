@@ -8,7 +8,7 @@ import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
 from renderer import ForwardRenderer
 from brdf_trainer import BRDFTrainer
-from model.brdf import MLPPBRBRDF, PBRBRDF, PhongBRDF, ProxyPBRBRDF
+from model.brdf import MLPPBRBRDF, PBRBRDF, ProxyPBRBRDF
 from torch.utils.data import DataLoader
 from utils.dataset import SphereDataset
 import hydra
@@ -70,12 +70,16 @@ def main(cfg):
     checkpoint_output_path = os.path.join(cfg.exp_output_root_path, "training")
     os.makedirs(checkpoint_output_path, exist_ok=True)
 
-    # Use configured roughness and metallic values from config
-    roughness = cfg.model.roughness
-    metallic = cfg.model.metallic
+    # Load ground truth material parameters from pbr config
+    gt_material_cfg = hydra.compose(config_name="config", overrides=["material=pbr"]).material
+    
+    # Use ground truth parameters from pbr.yaml
+    albedo = gt_material_cfg.albedo
+    roughness = gt_material_cfg.roughness
+    metallic = gt_material_cfg.metallic
     
     # Create material with configured parameters
-    material = PBRBRDF(albedo=torch.tensor([[1.0, 1.0, 1.0]]), roughness=roughness, metallic=metallic)
+    material = PBRBRDF(albedo=torch.tensor(albedo), roughness=roughness, metallic=metallic)
     renderer = ForwardRenderer(cfg, material)
     dataset = get_dataset(cfg, 'test')
     
@@ -84,10 +88,8 @@ def main(cfg):
     os.makedirs(output_folder, exist_ok=True)
     for idx, batch in tqdm(enumerate(dataset)):
         rays = batch['rays'].to(renderer.device)
-        rays_x, rays_d = rays[...,:3], rays[...,3:6]
-        dxdu, dydv = rays[..., 6:9], rays[..., 9:12]
         with torch.no_grad():
-            img = renderer.render(None, rays_x, rays_d, dxdu, dydv, cfg.renderer.resolution, cfg.renderer.spp.test)
+            img = renderer.render(None, rays, cfg.renderer.spp.test)
             img = img.reshape(*cfg.renderer.resolution, -1)
 
         filename = f'output_view_{idx}.exr'
@@ -96,11 +98,11 @@ def main(cfg):
 
         vis_filename = f'output_gamma_view_{idx}.png'
         vis_path = os.path.join(output_folder, vis_filename)
-    torchvision.utils.save_image(gamma(img.permute(2, 0, 1)), vis_path)
+        torchvision.utils.save_image(gamma(img.permute(2, 0, 1)), vis_path)
                           
     
-    material = MLPPBRBRDF(cfg.material, roughness, metallic)
-    gt_material = PBRBRDF(albedo=torch.tensor([[1.0, 1.0, 1.0]]), roughness=roughness, metallic=metallic)
+    material = MLPPBRBRDF(cfg.material, roughness)
+    gt_material = PBRBRDF(albedo=torch.tensor([1.0, 1.0, 1.0]), roughness=roughness, metallic=metallic)
     model = BRDFTrainer(cfg, material, gt_material, roughness, metallic)
     
     # Load checkpoint
