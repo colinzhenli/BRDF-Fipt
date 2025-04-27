@@ -40,7 +40,7 @@ def ray_intersect(scene,xs,ds):
     normals = double_sided(-ds,normals)
     return positions,normals,ret.uv.torch(),idx,valid
 
-def path_tracing_dynamic_emitter(scene,emitter_net,material_net,rays_o,rays_d,dx_du,dy_dv,spp, brdf_sampling, emitter_sampling):
+def path_tracing_dynamic_emitter(scene,emitter_net,material_net,rays_o,rays_d,dx_du,dy_dv,spp, brdf_sampling, emitter_sampling, gt_params=None, latent=None):
     """ Path trace current scene
     Args:
         scene: mitsuba scene
@@ -49,8 +49,11 @@ def path_tracing_dynamic_emitter(scene,emitter_net,material_net,rays_o,rays_d,dx
         rays_o: Bx3 ray origin
         rays_d: Bx3 ray direction
         dx_du,dy_dv: Bx3 ray differential
-        spp: sampler per pixel
-        indir_depth: indirect illumination depth
+        spp: samples per pixel
+        brdf_sampling: boolean flag for BRDF importance sampling
+        emitter_sampling: boolean flag for emitter importance sampling
+        gt_params: optional ground truth material parameters
+        latent: optional latent code for material network
     Return:
         L: Bx3 traced results
     """
@@ -90,13 +93,13 @@ def path_tracing_dynamic_emitter(scene,emitter_net,material_net,rays_o,rays_d,dx
     emit_weight = emit_weight*emit_vis*G[...,None]/emit_pdf.clamp_min(1e-6)
     
     # Now, reshape and average over light dimension
-    emit_brdf,_ = material_net.eval_brdf(wi,wo,normal)
+    emit_brdf,_ = material_net.eval_brdf(gt_params, wi,wo,normal, latent)
     L[vis] += (emit_brdf*emit_weight).reshape(-1, N_lights,3).mean(1)
     L = L.reshape(B,spp,3).mean(1)
     return L
 
 
-def path_tracing_envmap_emitter(scene,emitter_net,material_net,rays_o,rays_d,dx_du,dy_dv,spp, brdf_sampling, emitter_sampling):
+def path_tracing_envmap_emitter(scene,emitter_net,material_net,rays_o,rays_d,dx_du,dy_dv,spp, brdf_sampling, emitter_sampling, gt_params=None, latent=None):
     """ Path trace current scene
     Args:
         scene: mitsuba scene
@@ -141,7 +144,7 @@ def path_tracing_envmap_emitter(scene,emitter_net,material_net,rays_o,rays_d,dx_
         emit_weight, emit_pdf, _ = emitter_net.eval_emitter(position, wi)
         emit_weight = emit_weight / emit_pdf.clamp_min(1e-6)
         # emit brdf
-        emit_brdf,brdf_pdf = material_net.eval_brdf(wi,wo,normal)
+        emit_brdf,brdf_pdf = material_net.eval_brdf(gt_params, wi,wo,normal,latent)
         w_mis = torch.where((emit_pdf>0)&(~brdf_pdf.isinf()),emit_pdf*emit_pdf/(emit_pdf*emit_pdf+brdf_pdf*brdf_pdf),0)
         w_mis[emit_pdf.isinf()|(brdf_pdf==0)] = 1
         L[active_next] += emit_brdf*emit_weight * w_mis

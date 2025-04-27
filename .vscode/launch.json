@@ -10,14 +10,14 @@
             "name": "Python: Current File",
             "type": "python",
             "request": "launch",
-            "program": "test.py",
+            "program": "main.py",
             "console": "integratedTerminal",
             "justMyCode": true,
             "args": [
-                "renderer=envmap_emitter",
-                "material=mlp_pbr",
-                "experiment_name=Envmap_Pos_encoding_Local-coord_Clean_debug",
-                "model.ckpt_path=/localhome/zla247/theia2_data/output/BRDF-Fipt/Over-fit_experiments_2/sphere/Pos_encoding_Local-coord_Clean_debug/training/model_0.20_0.20/last.ckpt"
+                "renderer=dynamic_emitter",
+                "material=latent_model",
+                "experiment_name=Debug",
+                // "model.ckpt_path=/localhome/zla247/theia2_data/output/BRDF-Fipt/Over-fit_experiments_2/sphere/Pos_encoding_Local-coord_Clean_debug/training/model_0.20_0.20/last.ckpt"
             ]
         }
     ]

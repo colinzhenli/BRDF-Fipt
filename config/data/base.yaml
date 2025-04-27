@@ -1,3 +1,6 @@
+train_num: 44
+val_num: 9
+test_num: 11
 num_workers: 8
 batch_num: 2048 #4096 # steps per epoch
 batch_size: 8192  # 8192*2 pixels per batch

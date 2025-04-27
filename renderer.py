@@ -27,7 +27,7 @@ class ForwardRenderer:
 
         self.SPP_chunk = cfg.renderer.SPP_chunk
     
-    def render(self, emitter, rays, spp):
+    def render(self, emitter, rays, spp, gt_params=None, latent=None):
         rays_x, rays_d, dxdu, dydv = rays[..., :3], rays[..., 3:6], rays[..., 6:9], rays[..., 9:12]
         L = torch.zeros_like(rays_x)
         if spp < self.SPP_chunk:
@@ -37,13 +37,13 @@ class ForwardRenderer:
                 L += self.ray_tracer(
                     self.scene, self.emitter, self.material,
                     rays_x, rays_d, dxdu, dydv, 
-                    self.SPP_chunk, brdf_sampling=self.cfg.renderer.brdf_sampling, emitter_sampling=self.cfg.renderer.emitter_sampling
+                    self.SPP_chunk, brdf_sampling=self.cfg.renderer.brdf_sampling, emitter_sampling=self.cfg.renderer.emitter_sampling, gt_params=gt_params, latent=latent
                 )
         else:
             L = self.ray_tracer(
                 self.scene, emitter, self.material,
                 rays_x, rays_d, dxdu, dydv, 
-                self.SPP_chunk, brdf_sampling=self.cfg.renderer.brdf_sampling, emitter_sampling=self.cfg.renderer.emitter_sampling
+                self.SPP_chunk, brdf_sampling=self.cfg.renderer.brdf_sampling, emitter_sampling=self.cfg.renderer.emitter_sampling, gt_params=gt_params, latent=latent
             )
         rgbs = L / (spp // self.SPP_chunk)
         return rgbs

@@ -106,6 +106,18 @@ class SphereDataset(Dataset):
         self.batch_size = cfg.data.batch_size
         self.num_view_batch = 4
         self.split = split
+        # Load metadata from the appropriate split file
+        metadata_path = f"metadata/{split}.txt"
+        self.metadata = []
+        
+        if os.path.exists(metadata_path):
+            with open(metadata_path, 'r') as f:
+                for line in f:
+                    if line.strip():
+                        roughness, metallic = map(float, line.strip().split())
+                        self.metadata.append((roughness, metallic))
+        else:
+            print(f"Warning: Metadata file {metadata_path} not found.")
         self.custom_c2w = cfg.data.custom_c2w
         self.gt_folder = gt_folder  
         self.spiral_path = cfg.renderer.camera.spiral_path
@@ -238,11 +250,7 @@ class SphereDataset(Dataset):
             self.camera_dict.append(camera_dict)
 
     def __len__(self):
-        if self.pixel==True:
-            return self.batch_num
-        if self.split == 'val':
-            return 1
-        return len(self.camera_dict)
+        return len(self.metadata)
 
     def __getitem__(self, idx):          
         # Handle different ways of specifying custom camera transform
@@ -268,9 +276,12 @@ class SphereDataset(Dataset):
             # find camera ray indices in the batch
             idx = self.idxs[:self.batch_size]
             tmp = self.all_rays[idx]
+            params = {'roughness': self.metadata[idx][0],
+                      'metallic': self.metadata[idx][1]}
             
             sample = {'rays': tmp[...,:12],
-                      'rgbs': self.all_rgbs[idx] if self.all_rgbs is not None else None}
+                      'rgbs': self.all_rgbs[idx] if self.all_rgbs is not None else None,
+                      'gt_params': params}
 
         else:
             c2w = get_c2w(self.camera_dict[idx])
@@ -280,10 +291,12 @@ class SphereDataset(Dataset):
                               dxdu,
                               dydv],-1)
             if self.gt_folder is not None:
-                """ to be changed to remove light index """
                 img = open_exr(os.path.join(self.gt_folder, f'output_view_{idx}.exr'), self.img_hw).reshape(-1,3)
+                params = {'roughness': self.metadata[idx][0],
+                          'metallic': self.metadata[idx][1]}
                 sample = {'rays': rays,
-                          'rgbs': img}
+                          'rgbs': img,
+                          'gt_params': params}
             else:
                 sample = {'rays': rays,
                           'rgbs': None}

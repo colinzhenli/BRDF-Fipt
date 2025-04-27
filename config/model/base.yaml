@@ -12,6 +12,7 @@ trainer:
   num_nodes: 1
   max_epochs: 10
   max_steps: 20000
+  inference_steps: 1000
   check_val_every_n_epoch: 5
 
 # https://pytorch-lightning.readthedocs.io/en/stable/api/pytorch_lightning.callbacks.ModelCheckpoint.html
@@ -27,7 +28,14 @@ optimizer:
   name: Adam # SGD or Adam
   weight_decay: 0.0
   lr: 0.0005
+  inference_lr: 0.01
   warmup_steps_ratio: 0.0
+
+loss:
+  recon_loss:
+    weight: 1.0
+  latent_reg_loss:
+    weight: 0.01
 
 lr_decay: # for Adam
   decay_start_epoch: 6
