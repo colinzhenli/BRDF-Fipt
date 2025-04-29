@@ -274,13 +274,13 @@ class SphereDataset(Dataset):
             self.idxs = view_ray_indices[shuffled_indices]
             
             # find camera ray indices in the batch
-            idx = self.idxs[:self.batch_size]
-            tmp = self.all_rays[idx]
+            ray_idx = self.idxs[:self.batch_size]
+            tmp = self.all_rays[ray_idx]
             params = {'roughness': self.metadata[idx][0],
                       'metallic': self.metadata[idx][1]}
             
             sample = {'rays': tmp[...,:12],
-                      'rgbs': self.all_rgbs[idx] if self.all_rgbs is not None else None,
+                      'rgbs': self.all_rgbs[ray_idx] if self.all_rgbs is not None else None,
                       'gt_params': params}
 
         else:
@@ -290,15 +290,17 @@ class SphereDataset(Dataset):
             rays = torch.cat([rays_o, rays_d,
                               dxdu,
                               dydv],-1)
+            params = {'roughness': self.metadata[idx][0], 
+                      'metallic': self.metadata[idx][1]}
             if self.gt_folder is not None:
                 img = open_exr(os.path.join(self.gt_folder, f'output_view_{idx}.exr'), self.img_hw).reshape(-1,3)
-                params = {'roughness': self.metadata[idx][0],
-                          'metallic': self.metadata[idx][1]}
+
                 sample = {'rays': rays,
                           'rgbs': img,
                           'gt_params': params}
             else:
                 sample = {'rays': rays,
-                          'rgbs': None}
+                          'rgbs': None,
+                          'gt_params': params}
 
         return sample

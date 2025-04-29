@@ -86,10 +86,13 @@ class PBRBRDF(nn.Module):
         # Early return for invalid geometry
         if not valid_geometry.any():
             return torch.zeros_like(wi), torch.zeros(wi.shape[0], 1, device=wi.device)
+        
         # Reshape albedo tensor to match expected dimensions
-        albedo = self.albedo.view(1, 3).expand(normal.shape[0], 3)
-        roughness = params['roughness'].view(1, 1).expand(normal.shape[0], 1)
-        metallic = params['metallic'].view(1, 1).expand(normal.shape[0], 1)
+        albedo = self.albedo.expand(normal.shape[0], 3)
+        
+        roughness = torch.full((normal.shape[0], 1), params['roughness'], device=wi.device)
+        metallic = torch.full((normal.shape[0], 1), params['metallic'], device=wi.device)
+
 
         h = NF.normalize(wi+wo,dim=-1)
         NoL = NoL.relu()  # Now safe to relu after check
@@ -452,6 +455,7 @@ class LatentModel(nn.Module):
             wi_enc = self.sh_encoder(wi)
             wo_enc = self.sh_encoder(wo)
             normal_enc = self.sh_encoder(normal)
+            latent = latent.repeat(wi_enc.shape[0], 1)
             # Concatenate encoded inputs with latent code
             x = torch.cat([wi_enc, wo_enc, normal_enc, latent], dim=-1)
         else:

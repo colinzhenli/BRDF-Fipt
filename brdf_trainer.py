@@ -6,6 +6,7 @@ from renderer import ForwardRenderer
 import torchvision
 from torchviz import make_dot
 from viztracer import VizTracer
+from tqdm import tqdm
 from model.emitter import DynamicPointEmitter
 import os
 
@@ -24,8 +25,8 @@ class BRDFTrainer(pl.LightningModule):
         # self.test_latents = torch.nn.Embedding(int(cfg.data.test_num), self.latent_dim)
         
         self.latent_reg_weight = cfg.model.latent_reg_weight if hasattr(cfg.model, 'latent_reg_weight') else 1e-4
-        self.inference_lr = cfg.model.inference_lr
-        self.inference_steps = cfg.model.inference_steps
+        self.inference_lr = cfg.model.optimizer.inference_lr
+        self.inference_steps = cfg.model.optimizer.inference_steps
         
         self.renderer = ForwardRenderer(cfg, self.material)
         self.gt_renderer = ForwardRenderer(cfg, self.gt_material)
@@ -77,6 +78,7 @@ class BRDFTrainer(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         # Get latent for this batch
         latent = self.train_latents(torch.tensor([batch_idx], device=self.device))
+        # latent = self.train_latents(batch_idx)
         
         # randomly initialize emitter
         emitter = DynamicPointEmitter(
@@ -86,11 +88,11 @@ class BRDFTrainer(pl.LightningModule):
         
         # Render step logic
         rays, rgbs_gt, gt_params = batch['rays'], batch['rgbs'], batch['gt_params']
-        rgbs = self.renderer.render(emitter, rays, self.cfg.renderer.spp.train, gt_params, latent)
+        rgbs = self.renderer.render(emitter, rays, self.cfg.renderer.spp.train, None, latent)
 
         if rgbs_gt is None:
             with torch.no_grad():
-                rgbs_gt = self.gt_renderer.render(emitter, rays, self.cfg.renderer.spp.train, gt_params, latent)
+                rgbs_gt = self.gt_renderer.render(emitter, rays, self.cfg.renderer.spp.train, gt_params, None)
         
         # Reconstruction loss
         recon_loss = NF.l1_loss(rgbs, rgbs_gt)
@@ -108,8 +110,9 @@ class BRDFTrainer(pl.LightningModule):
         return loss
 
     def validation_step(self, batch, batch_idx):
-        latent = self.val_latents(torch.tensor([batch_idx], device=self.device))
-        latent_optimizer = torch.optim.Adam(latent.parameters(), lr=self.inference_lr)
+        torch.set_grad_enabled(True)
+        latent = torch.randn(1, self.hparams.material.latent_dim, device=self.device) * 0.01
+        latent_optimizer = torch.optim.Adam([latent], lr=self.inference_lr)
         # randomly initialize emitter
         emitter = DynamicPointEmitter(
             dist=self.cfg.renderer.emitter.dist,
@@ -117,14 +120,15 @@ class BRDFTrainer(pl.LightningModule):
         )
         
         # Render step logic
-        for i in range(self.inference_steps):
+        # Create a progress bar for inference steps
+        for i in tqdm(range(self.inference_steps), desc="Validation inference", leave=False):
             latent_optimizer.zero_grad()
-            rays, rgbs_gt = batch['rays'], batch['rgbs']
-            rgbs = self.renderer.render(emitter, rays, self.cfg.renderer.spp.val)
+            rays, rgbs_gt, gt_params = batch['rays'], batch['rgbs'], batch['gt_params']
+            rgbs = self.renderer.render(emitter, rays, self.cfg.renderer.spp.val, None, latent)
 
             if rgbs_gt is None:
                 with torch.no_grad():
-                    rgbs_gt = self.gt_renderer.render(emitter, rays, self.cfg.renderer.spp.val)
+                    rgbs_gt = self.gt_renderer.render(emitter, rays, self.cfg.renderer.spp.val, gt_params, None)
             recon_loss = NF.l1_loss(rgbs, rgbs_gt)
             latent_reg = torch.norm(latent, p=2)
             loss = recon_loss + self.hparams.model.loss.latent_reg_loss.weight * latent_reg
@@ -136,18 +140,21 @@ class BRDFTrainer(pl.LightningModule):
         
         self.log('val/loss', loss)
         self.log('val/psnr', psnr)
+        torch.set_grad_enabled(False)
+        
         return
 
     def test_step(self, batch, batch_idx):
-        latent = torch.nn.Parameter(torch.randn(1, self.hparams.material.latent_dim, device=self.device))
-        latent_optimizer = torch.optim.Adam(latent.parameters(), lr=self.inference_lr)
-        rays, rgbs_gt = batch['rays'], batch['rgbs']
+        torch.set_grad_enabled(True)
+        latent = torch.randn(1, self.hparams.material.latent_dim, device=self.device) * 0.01
+        latent_optimizer = torch.optim.Adam([latent], lr=self.inference_lr)
+        rays, rgbs_gt, gt_params = batch['rays'], batch['rgbs'], batch['gt_params']
         
-        if self.cfg.renderer.emitter.typeg == 'envmap':
-            rgbs = self.renderer.render(None, rays, self.cfg.renderer.spp.test, None, latent)
+        if self.cfg.renderer.emitter.type == 'envmap':
+            rgbs = self.renderer.render(None, rays, self.cfg.renderer.spp.test, gt_params, latent)
             if rgbs_gt is None:
                 with torch.no_grad():
-                    rgbs_gt = self.gt_renderer.render(None, rays, self.cfg.renderer.spp.test, None, latent)
+                    rgbs_gt = self.gt_renderer.render(None, rays, self.cfg.renderer.spp.test, gt_params, latent)
         else:
             for i in range(self.inference_steps):
                 latent_optimizer.zero_grad()
@@ -158,14 +165,14 @@ class BRDFTrainer(pl.LightningModule):
                 rgbs = self.renderer.render(emitter, rays, self.cfg.renderer.spp.test, None, latent)
                 if rgbs_gt is None:
                     with torch.no_grad():
-                        rgbs_gt = self.gt_renderer.render(emitter, rays, self.cfg.renderer.spp.test, None, latent)
+                        rgbs_gt = self.gt_renderer.render(emitter, rays, self.cfg.renderer.spp.test, gt_params, None)
 
                 recon_loss = NF.l1_loss(rgbs, rgbs_gt)
                 latent_reg = torch.norm(latent, p=2)
                 loss = recon_loss + self.hparams.model.loss.latent_reg_loss.weight * latent_reg
                 loss.backward()
                 latent_optimizer.step()
-        
+        torch.set_grad_enabled(False)
         psnr_loss = NF.mse_loss(self.gamma(rgbs), self.gamma(rgbs_gt))
         psnr = -10.0 * torch.log10(psnr_loss.clamp_min(1e-5))
         

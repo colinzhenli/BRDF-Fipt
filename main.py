@@ -8,7 +8,7 @@ import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
 from renderer import ForwardRenderer
 from brdf_trainer import BRDFTrainer
-from model.brdf import MLPPBRBRDF, PBRBRDF, ProxyPBRBRDF
+from model.brdf import LatentModel, PBRBRDF
 from torch.utils.data import DataLoader
 from utils.dataset import SphereDataset
 import hydra
@@ -56,11 +56,9 @@ def main(cfg):
     os.makedirs(output_folder, exist_ok=True)
 
     # Initialize materials using different configs
-    material = MLPPBRBRDF(cfg.material, roughness)  # MLP model uses mlp_pbr config
+    material = LatentModel(cfg.material)  # MLP model uses mlp_pbr config
     gt_material = PBRBRDF(
-        albedo=torch.tensor(albedo), 
-        roughness=roughness, 
-        metallic=metallic
+        albedo=torch.tensor(albedo)
     )  # Ground truth uses pbr config
 
     model = BRDFTrainer(cfg, material, gt_material, roughness, metallic)
@@ -88,7 +86,7 @@ def main(cfg):
     print("==> initializing trainer ...")
 
     trainer = pl.Trainer(
-        callbacks=[checkpoint_callback, lr_monitor], logger=logger, **cfg.model.trainer, strategy=DDPStrategy(find_unused_parameters=True)
+        callbacks=[checkpoint_callback, lr_monitor], logger=logger, **cfg.model.trainer
     )
 
     trainer.fit(model, train_loader, val_loader)

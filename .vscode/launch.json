@@ -14,7 +14,7 @@
             "console": "integratedTerminal",
             "justMyCode": true,
             "args": [
-                "renderer=dynamic_emitter",
+                "renderer=dynamicpoint_emitter",
                 "material=latent_model",
                 "experiment_name=Debug",
                 // "model.ckpt_path=/localhome/zla247/theia2_data/output/BRDF-Fipt/Over-fit_experiments_2/sphere/Pos_encoding_Local-coord_Clean_debug/training/model_0.20_0.20/last.ckpt"
