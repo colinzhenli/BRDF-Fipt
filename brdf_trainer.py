@@ -21,8 +21,13 @@ class BRDFTrainer(pl.LightningModule):
         
         self.latent_dim = cfg.material.latent_dim
         self.train_latents = torch.nn.Embedding(int(cfg.data.train_num), self.latent_dim)
-        # self.val_latents = torch.nn.Embedding(int(cfg.data.val_num), self.latent_dim)
-        # self.test_latents = torch.nn.Embedding(int(cfg.data.test_num), self.latent_dim)
+        # Create a mapping from roughness-metallic pairs to train latent indices
+        self.roughness_metallic_to_index = {}
+        
+        # Store roughness and metallic values for test rendering
+        self.roughness = roughness
+        self.metallic = metallic
+
         
         self.latent_reg_weight = cfg.model.latent_reg_weight if hasattr(cfg.model, 'latent_reg_weight') else 1e-4
         self.inference_lr = cfg.model.optimizer.inference_lr
@@ -78,7 +83,9 @@ class BRDFTrainer(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         # Get latent for this batch
         latent = self.train_latents(torch.tensor([batch_idx], device=self.device))
-        # latent = self.train_latents(batch_idx)
+        key = f"{batch['gt_params']['roughness']:.2f}_{batch['gt_params']['metallic']:.2f}"
+        if key not in self.roughness_metallic_to_index:
+            self.roughness_metallic_to_index[key] = batch_idx
         
         # randomly initialize emitter
         emitter = DynamicPointEmitter(
@@ -110,33 +117,62 @@ class BRDFTrainer(pl.LightningModule):
         return loss
 
     def validation_step(self, batch, batch_idx):
-        torch.set_grad_enabled(True)
-        latent = torch.randn(1, self.hparams.material.latent_dim, device=self.device) * 0.01
-        latent_optimizer = torch.optim.Adam([latent], lr=self.inference_lr)
+        # torch.set_grad_enabled(True)
+        # latent = torch.randn(1, self.hparams.material.latent_dim, device=self.device) * 0.01
+        # Get roughness and metallic values from ground truth parameters
+        key = f"{batch['gt_params']['roughness']:.2f}_{batch['gt_params']['metallic']:.2f}"
+        if key not in self.roughness_metallic_to_index:
+            self.roughness_metallic_to_index[key] = batch_idx
+        latent_index = self.roughness_metallic_to_index[key]
+        latent = self.train_latents(torch.tensor([latent_index], device=self.device))
+        
+        # Make latent requires_grad for optimization
+        # latent = latent.clone().detach().requires_grad_(True)
+        # latent_optimizer = torch.optim.Adam([latent], lr=self.inference_lr)
         # randomly initialize emitter
         emitter = DynamicPointEmitter(
             dist=self.cfg.renderer.emitter.dist,
             num_lights=self.cfg.renderer.emitter.num_lights
         )
         
-        # Render step logic
-        # Create a progress bar for inference steps
-        for i in tqdm(range(self.inference_steps), desc="Validation inference", leave=False):
-            latent_optimizer.zero_grad()
-            rays, rgbs_gt, gt_params = batch['rays'], batch['rgbs'], batch['gt_params']
-            rgbs = self.renderer.render(emitter, rays, self.cfg.renderer.spp.val, None, latent)
+        # # Render step logic
+        # # Create a progress bar for inference steps
+        # for i in tqdm(range(self.inference_steps), desc="Validation inference", leave=False):
+        #     latent_optimizer.zero_grad()
+        #     rays, rgbs_gt, gt_params = batch['rays'], batch['rgbs'], batch['gt_params']
+        #     rgbs = self.renderer.render(emitter, rays, self.cfg.renderer.spp.val, None, latent)
 
-            if rgbs_gt is None:
-                with torch.no_grad():
-                    rgbs_gt = self.gt_renderer.render(emitter, rays, self.cfg.renderer.spp.val, gt_params, None)
-            recon_loss = NF.l1_loss(rgbs, rgbs_gt)
-            latent_reg = torch.norm(latent, p=2)
-            loss = recon_loss + self.hparams.model.loss.latent_reg_loss.weight * latent_reg
-            loss.backward()
-            latent_optimizer.step()
+        #     if rgbs_gt is None:
+        #         with torch.no_grad():
+        #             rgbs_gt = self.gt_renderer.render(emitter, rays, self.cfg.renderer.spp.val, gt_params, None)
+        #     recon_loss = NF.l1_loss(rgbs, rgbs_gt)
+        #     latent_reg = torch.norm(latent, p=2)
+        #     loss = recon_loss + self.hparams.model.loss.latent_reg_loss.weight * latent_reg
+        #     loss.backward()
+        #     latent_optimizer.step()
         # loss and psnr after optimization
+        rays, rgbs_gt, gt_params = batch['rays'], batch['rgbs'], batch['gt_params']
+        rgbs = self.renderer.render(emitter, rays, self.cfg.renderer.spp.val, None, latent)
+        if rgbs_gt is None:
+            with torch.no_grad():
+                rgbs_gt = self.gt_renderer.render(emitter, rays, self.cfg.renderer.spp.val, gt_params, None)
         psnr_loss = NF.mse_loss(self.gamma(rgbs), self.gamma(rgbs_gt))
         psnr = -10.0 * torch.log10(psnr_loss.clamp_min(1e-5))
+        rgbs = rgbs.reshape(*self.img_hw, -1)
+        rgbs_gt = rgbs_gt.reshape(*self.img_hw, -1)
+        os.makedirs(os.path.join(self.cfg.exp_output_root_path,f'val_roughness_{gt_params["roughness"]:.2f}_metallic_{gt_params["metallic"]:.2f}'), exist_ok=True)
+        recon_loss = NF.l1_loss(rgbs, rgbs_gt)
+        latent_reg = torch.norm(latent, p=2)
+        loss = recon_loss + self.hparams.model.loss.latent_reg_loss.weight * latent_reg
+
+        torchvision.utils.save_image(
+            self.gamma(rgbs_gt.permute(2, 0, 1)),
+            os.path.join(self.cfg.exp_output_root_path,f'val_roughness_{gt_params["roughness"]:.2f}_metallic_{gt_params["metallic"]:.2f}', f'gt_view_{batch_idx}.png')
+            )
+        torchvision.utils.save_image(
+            self.gamma(rgbs.permute(2, 0, 1)),
+            os.path.join(self.cfg.exp_output_root_path,f'val_roughness_{gt_params["roughness"]:.2f}_metallic_{gt_params["metallic"]:.2f}', f'result_view_{batch_idx}.png')
+        )
         
         self.log('val/loss', loss)
         self.log('val/psnr', psnr)
