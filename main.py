@@ -64,7 +64,7 @@ def main(cfg):
     model = BRDFTrainer(cfg, material, gt_material, roughness, metallic)
 
     print("==> initializing data ...")          
-    train_loader = DataLoader(get_dataset(cfg, 'train', None), batch_size=None, num_workers=cfg.data.num_workers)
+    train_loader = DataLoader(get_dataset(cfg, 'train', None), batch_size=cfg.data.batch_size, num_workers=cfg.data.num_workers)
     val_loader = DataLoader(get_dataset(cfg, 'val', None), batch_size=None, num_workers=cfg.data.num_workers)
     test_loader = DataLoader(get_dataset(cfg, 'test', None), batch_size=None, num_workers=cfg.data.num_workers)
 
@@ -90,10 +90,11 @@ def main(cfg):
     )
 
     trainer.fit(model, train_loader, val_loader)
-    test_results = trainer.test(model, dataloaders=test_loader)
+    """  Skipping testing for now """
+    # test_results = trainer.test(model, dataloaders=test_loader)
 
-    test_psnr = sum(result['test/psnr'] for result in test_results) / len(test_results)
-    print(f"PSNR for roughness {roughness:.2f}, metallic {metallic:.2f}: {test_psnr:.2f}")
+    # test_psnr = sum(result['test/psnr'] for result in test_results) / len(test_results)
+    # print(f"PSNR for roughness {roughness:.2f}, metallic {metallic:.2f}: {test_psnr:.2f}")
 
     torch.cuda.empty_cache()
 

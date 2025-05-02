@@ -18,6 +18,7 @@ class BRDFTrainer(pl.LightningModule):
 
         self.material = material
         self.gt_material = gt_material
+        self.gt_folder = cfg.gt_folder
         
         self.latent_dim = cfg.material.latent_dim
         self.train_latents = torch.nn.Embedding(int(cfg.data.train_num), self.latent_dim)
@@ -81,11 +82,17 @@ class BRDFTrainer(pl.LightningModule):
             logging.error('Optimizer type not supported')
 
     def training_step(self, batch, batch_idx):
-        # Get latent for this batch
-        latent = self.train_latents(torch.tensor([batch_idx], device=self.device))
-        key = f"{batch['gt_params']['roughness']:.2f}_{batch['gt_params']['metallic']:.2f}"
-        if key not in self.roughness_metallic_to_index:
-            self.roughness_metallic_to_index[key] = batch_idx
+        # Handle batch of roughness and metallic values
+        batch_indices = []
+        roughness = batch['gt_params']['roughness']
+        metallic = batch['gt_params']['metallic']
+        keys = [f"{r:.2f}_{m:.2f}" for r, m in zip(roughness, metallic)]
+        for key in keys:
+            if key not in self.roughness_metallic_to_index:
+                self.roughness_metallic_to_index[key] = batch_idx
+        batch_indices = [self.roughness_metallic_to_index[key] for key in keys]
+        # Get latents for the batch using the indices
+        latent = self.train_latents(torch.tensor(batch_indices, device=self.device))
         
         # randomly initialize emitter
         emitter = DynamicPointEmitter(
@@ -94,12 +101,14 @@ class BRDFTrainer(pl.LightningModule):
         )
         
         # Render step logic
-        rays, rgbs_gt, gt_params = batch['rays'], batch['rgbs'], batch['gt_params']
+        rays, gt_params = batch['rays'], batch['gt_params']
         rgbs = self.renderer.render(emitter, rays, self.cfg.renderer.spp.train, None, latent)
 
-        if rgbs_gt is None:
+        if self.gt_folder is None:
             with torch.no_grad():
                 rgbs_gt = self.gt_renderer.render(emitter, rays, self.cfg.renderer.spp.train, gt_params, None)
+        else:
+            rgbs_gt = batch['rgbs']
         
         # Reconstruction loss
         recon_loss = NF.l1_loss(rgbs, rgbs_gt)

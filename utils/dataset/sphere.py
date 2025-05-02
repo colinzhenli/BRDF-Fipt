@@ -103,7 +103,7 @@ class SphereDataset(Dataset):
         """
         self.cfg = cfg
         self.pixel = cfg.data.pixel if split == 'train' else False
-        self.batch_size = cfg.data.batch_size
+        self.rays_num = cfg.data.rays_num
         self.num_view_batch = 4
         self.split = split
         # Load metadata from the appropriate split file
@@ -165,7 +165,6 @@ class SphereDataset(Dataset):
                 self.all_rgbs = torch.cat(self.all_rgbs, 0)
             else:
                 self.all_rgbs = None
-            self.batch_num = cfg.data.batch_num
 
 
     def get_camera_dicts(self):
@@ -274,13 +273,16 @@ class SphereDataset(Dataset):
             self.idxs = view_ray_indices[shuffled_indices]
             
             # find camera ray indices in the batch
-            ray_idx = self.idxs[:self.batch_size]
+            ray_idx = self.idxs[:self.rays_num]
             tmp = self.all_rays[ray_idx]
             params = {'roughness': self.metadata[idx][0],
                       'metallic': self.metadata[idx][1]}
             
+            # Use zero tensor instead of None for rgbs when all_rgbs is None
+            rgbs = self.all_rgbs[ray_idx] if self.all_rgbs is not None else torch.zeros_like(tmp[...,:3])
+            
             sample = {'rays': tmp[...,:12],
-                      'rgbs': self.all_rgbs[ray_idx] if self.all_rgbs is not None else None,
+                      'rgbs': rgbs,
                       'gt_params': params}
 
         else:
@@ -299,8 +301,9 @@ class SphereDataset(Dataset):
                           'rgbs': img,
                           'gt_params': params}
             else:
+                rgbs = torch.zeros_like(rays[...,:3])
                 sample = {'rays': rays,
-                          'rgbs': None,
+                          'rgbs': rgbs,
                           'gt_params': params}
 
         return sample

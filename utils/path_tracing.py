@@ -40,24 +40,33 @@ def ray_intersect(scene,xs,ds):
     normals = double_sided(-ds,normals)
     return positions,normals,ret.uv.torch(),idx,valid
 
-def path_tracing_dynamic_emitter(scene,emitter_net,material_net,rays_o,rays_d,dx_du,dy_dv,spp, brdf_sampling, emitter_sampling, gt_params=None, latent=None):
+def batched_path_tracing_dynamic_emitter(scene,emitter_net,material_net,rays_o,rays_d,dx_du,dy_dv,spp, brdf_sampling, emitter_sampling, gt_params=None, latent=None):
     """ Path trace current scene
     Args:
         scene: mitsuba scene
         emitter_net: emitter object
         material_net: material object
-        rays_o: Bx3 ray origin
-        rays_d: Bx3 ray direction
-        dx_du,dy_dv: Bx3 ray differential
+        rays_o: BxNx3 ray origin
+        rays_d: BxNx3 ray direction
+        dx_du,dy_dv: BxNx3 ray differential
         spp: samples per pixel
         brdf_sampling: boolean flag for BRDF importance sampling
         emitter_sampling: boolean flag for emitter importance sampling
         gt_params: optional ground truth material parameters
-        latent: optional latent code for material network
+        latent: optional batched latent code for material network
     Return:
         L: Bx3 traced results
     """
-    B = len(rays_o)
+    # flatten the rays
+    # Create batch mask where each row contains the same batch index
+    # For rays with shape B, N, 3, create mask with shape B, N
+    batch_mask = torch.arange(len(rays_o), device=rays_o.device).view(rays_o.shape[0], 1).expand(rays_o.shape[0], rays_o.shape[1])
+    rays_o = rays_o.reshape(-1,3)
+    rays_d = rays_d.reshape(-1,3)
+    dx_du = dx_du.reshape(-1,3)
+    dy_dv = dy_dv.reshape(-1,3)
+    batch_mask = batch_mask.reshape(-1)
+    N = len(rays_o)
     N_lights = emitter_net.light_positions.shape[0]
     device = rays_o.device
     
@@ -73,9 +82,10 @@ def path_tracing_dynamic_emitter(scene,emitter_net,material_net,rays_o,rays_d,dx
     # position, normal, vis = ray_sphere_intersect(scene,position,wi)
     L = torch.zeros(vis.shape[0],3,device=device)
     if not vis.any():
-        return L.reshape(B,spp,3).mean(1)
+        return L.reshape(N,spp,3).mean(1)
     position = position[vis]
     normal = normal[vis]
+    batch_mask = batch_mask[vis]
     wo = -wi[vis]
     
     # deterministic sampling
@@ -83,7 +93,7 @@ def path_tracing_dynamic_emitter(scene,emitter_net,material_net,rays_o,rays_d,dx
     normal = normal.repeat_interleave(emitter_net.light_positions.shape[0],0)
     position = position.repeat_interleave(emitter_net.light_positions.shape[0],0)
     wo = wo.repeat_interleave(emitter_net.light_positions.shape[0],0)
-    
+    batch_mask = batch_mask.repeat_interleave(emitter_net.light_positions.shape[0],0)
     # visibility test
     emit_weight,_,_ = emitter_net.eval_emitter(emit_position, idx)
     emit_vis = (wi*normal).sum(-1,keepdim=True) > 0 # B, 1
@@ -93,9 +103,9 @@ def path_tracing_dynamic_emitter(scene,emitter_net,material_net,rays_o,rays_d,dx
     emit_weight = emit_weight*emit_vis*G[...,None]/emit_pdf.clamp_min(1e-6)
     
     # Now, reshape and average over light dimension
-    emit_brdf,_ = material_net.eval_brdf(gt_params, wi,wo,normal, latent)
+    emit_brdf,_ = material_net.eval_brdf(gt_params, wi,wo,normal, latent, batch_mask)
     L[vis] += (emit_brdf*emit_weight).reshape(-1, N_lights,3).mean(1)
-    L = L.reshape(B,spp,3).mean(1)
+    L = L.reshape(N,spp,3).mean(1)
     return L
 
 

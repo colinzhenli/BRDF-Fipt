@@ -68,12 +68,14 @@ class PBRBRDF(nn.Module):
         wi = NF.normalize(wi,dim=-1)
         return wi
     
-    def eval_brdf(self, params, wi,wo,normal, latent=None):
+    def eval_brdf(self, params, wi, wo, normal, latent=None, batch_mask=None):
         """ evaluate BRDF and pdf
             wi: Bx3 light direction
             wo: Bx3 viewing direction
             normal: Bx3 normal
-            mat: surface BRDF dict
+            params: surface BRDF dict with batched parameters
+            latent: optional latent code for material
+            batch_mask: B indices indicating which batch each ray belongs to
         Return:
             brdf: Bx3
             pdf: Bx1
@@ -90,9 +92,9 @@ class PBRBRDF(nn.Module):
         # Reshape albedo tensor to match expected dimensions
         albedo = self.albedo.expand(normal.shape[0], 3)
         
-        roughness = torch.full((normal.shape[0], 1), params['roughness'], device=wi.device)
-        metallic = torch.full((normal.shape[0], 1), params['metallic'], device=wi.device)
-
+        # Use batch_mask to index into the batched parameters
+        roughness = params['roughness'][batch_mask].view(-1, 1)
+        metallic = params['metallic'][batch_mask].view(-1, 1)
 
         h = NF.normalize(wi+wo,dim=-1)
         NoL = NoL.relu()  # Now safe to relu after check
@@ -117,10 +119,9 @@ class PBRBRDF(nn.Module):
 
         brdf = brdf_diff + brdf_spec
 
-
-        return brdf,pdf
+        return brdf, pdf
     
-    def sample_brdf(self, params, sample1,sample2,wo,normal):
+    def sample_brdf(self, params, sample1,sample2,wo,normal, batch_mask=None):
         """ importance sampling brdf and get brdf/pdf
         Args:
             params: Bx2 material parameters
@@ -128,7 +129,7 @@ class PBRBRDF(nn.Module):
             sample2: Bx2 uniform samples
             wo: Bx3 viewing direction
             normal: Bx3 normal
-            mat: material dict
+            batch_mask: B indices indicating which batch each ray belongs to
         Return:
             wi: Bx3 sampled direction
             pdf: Bx1
@@ -143,7 +144,7 @@ class PBRBRDF(nn.Module):
 
         mask = (sample1 > 0.5)
         wi_diffuse = self.diffuse_sampler(sample2[mask], normal[mask])
-        wi_specular = self.specular_sampler(sample2[~mask], params['roughness'].view(1, 1).expand(normal.shape[0], 1)[~mask], wo[~mask], normal[~mask])
+        wi_specular = self.specular_sampler(sample2[~mask], params['roughness'][batch_mask][~mask].view(-1, 1), wo[~mask], normal[~mask])
 
         # Construct wi without gradient-breaking assignment
         wi = torch.zeros(B, 3, device=device)
@@ -433,7 +434,7 @@ class LatentModel(nn.Module):
         # Initialize proxy BRDF for importance sampling
         self.proxy_brdf = ProxyPBRBRDF(roughness=0.2)  # Default roughness
 
-    def forward(self, wi, wo, normal, latent=None):
+    def forward(self, wi, wo, normal, latent=None, batch_mask=None):
         """
         Evaluate BRDF using MLP with latent conditioning
         Args:
@@ -444,22 +445,14 @@ class LatentModel(nn.Module):
         Returns:
             brdf: Bx1 BRDF values
         """
-        batch_size = wi.shape[0]
-        
-        # If no latent provided, use zeros
-        if latent is None:
-            latent = torch.zeros(batch_size, self.latent_dim, device=wi.device)
             
-        # SH encoding
+        latent = latent[batch_mask]
         if self.pos_enc:
             wi_enc = self.sh_encoder(wi)
             wo_enc = self.sh_encoder(wo)
             normal_enc = self.sh_encoder(normal)
-            latent = latent.repeat(wi_enc.shape[0], 1)
-            # Concatenate encoded inputs with latent code
             x = torch.cat([wi_enc, wo_enc, normal_enc, latent], dim=-1)
         else:
-            # Concatenate raw inputs with latent code
             x = torch.cat([wi, wo, normal, latent], dim=-1)
             
         return self.mlp(x)
@@ -489,7 +482,7 @@ class LatentModel(nn.Module):
 
         return v_local
     
-    def eval_brdf(self, gt_params, wi, wo, normal, latent=None):
+    def eval_brdf(self, gt_params, wi, wo, normal, latent=None, batch_mask=None):
         """
         Evaluate BRDF and pdf after transforming world-space vectors to local space.
         Args:
@@ -507,7 +500,7 @@ class LatentModel(nn.Module):
         wo_local = self.world_to_local(wo, normal)
         local_normal = torch.zeros_like(wi_local)
         local_normal[..., 2] = 1.0  # Normal is always (0,0,1) in local space
-        brdf_value = self.forward(wi_local, wo_local, local_normal, latent)
+        brdf_value = self.forward(wi_local, wo_local, local_normal, latent, batch_mask)
         brdf = brdf_value.expand(-1, 3)
 
         pdf = NoL / math.pi
