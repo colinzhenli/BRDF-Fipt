@@ -16,7 +16,7 @@
             "args": [
                 "renderer=dynamicpoint_emitter",
                 "material=latent_model",
-                "experiment_name=Larger-model_More-epoches_Test_on_training_set_1",
+                "experiment_name=With-latent-reg-Miltiple-material-Batched-train_run_2",
                 // "model.ckpt_path=/localhome/zla247/theia2_data/output/BRDF-Fipt/Over-fit_experiments_2/sphere/Pos_encoding_Local-coord_Clean_debug/training/model_0.20_0.20/last.ckpt"
             ]
         }

@@ -1,5 +1,5 @@
 import torch
-from utils.path_tracing import path_tracing_envmap_emitter, path_tracing_dynamic_emitter
+from utils.path_tracing import path_tracing_envmap_emitter, batched_path_tracing_dynamic_emitter
 from mitsuba import load_dict
 from model.emitter import EnvMapEmitter, DynamicPointEmitter
 class ForwardRenderer:
@@ -20,7 +20,7 @@ class ForwardRenderer:
         if cfg.renderer.emitter.type == 'envmap':
             self.ray_tracer = path_tracing_envmap_emitter
         else:
-            self.ray_tracer = path_tracing_dynamic_emitter
+            self.ray_tracer = batched_path_tracing_dynamic_emitter
         emitter_cfg = cfg.renderer.emitter
         if cfg.renderer.emitter.type == 'envmap':
             self.emitter = EnvMapEmitter(emitter_cfg.envmap_path).to(self.device)

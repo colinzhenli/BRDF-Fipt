@@ -10,7 +10,7 @@ from renderer import ForwardRenderer
 from brdf_trainer import BRDFTrainer
 from model.brdf import LatentModel, PBRBRDF
 from torch.utils.data import DataLoader
-from utils.dataset import SphereDataset
+from utils.dataset import SphereTrainIterableDataset, SphereValDataset
 import hydra
 from omegaconf import DictConfig
 from pytorch_lightning.strategies import DDPStrategy
@@ -21,15 +21,6 @@ from viztracer import VizTracer
 import cv2
 warnings.filterwarnings("ignore")
 logging.getLogger("pytorch_lightning").setLevel(logging.ERROR)
-
-
-
-def get_dataset(cfg, split, gt_path=None):
-    return SphereDataset(
-        cfg,
-        gt_path,
-        split
-    )
 
 def init_callbacks(cfg):
     checkpoint_monitor = hydra.utils.instantiate(cfg.model.checkpoint_monitor)
@@ -64,9 +55,26 @@ def main(cfg):
     model = BRDFTrainer(cfg, material, gt_material, roughness, metallic)
 
     print("==> initializing data ...")          
-    train_loader = DataLoader(get_dataset(cfg, 'train', None), batch_size=cfg.data.batch_size, num_workers=cfg.data.num_workers)
-    val_loader = DataLoader(get_dataset(cfg, 'val', None), batch_size=None, num_workers=cfg.data.num_workers)
-    test_loader = DataLoader(get_dataset(cfg, 'test', None), batch_size=None, num_workers=cfg.data.num_workers)
+    train_dataset = SphereTrainIterableDataset(cfg, gt_folder=None)
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=cfg.data.batch_size,
+        num_workers=cfg.data.num_workers,
+    )
+
+    val_dataset = SphereValDataset(cfg, gt_folder=None)
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=2,
+        num_workers=cfg.data.num_workers,
+    )
+
+    # test_dataset = SphereValDataset(cfg, gt_folder=None)
+    # test_loader = DataLoader(
+    #     test_dataset,
+    #     batch_size=1,
+    #     num_workers=cfg.data.num_workers,
+    # )
 
     print("==> initializing logger ...")
     logger = hydra.utils.instantiate(cfg.model.logger, save_dir=cfg.exp_output_root_path)

@@ -416,7 +416,6 @@ class LatentModel(nn.Module):
         
         # Add latent dimension to input
         input_dim = encoded_input_dim + self.latent_dim if self.pos_enc else cfg.input_channels + self.latent_dim
-
         # Build MLP layers
         layers = []
         prev_dim = input_dim
@@ -452,6 +451,7 @@ class LatentModel(nn.Module):
             wo_enc = self.sh_encoder(wo)
             normal_enc = self.sh_encoder(normal)
             x = torch.cat([wi_enc, wo_enc, normal_enc, latent], dim=-1)
+            # x = torch.cat([wi_enc, wo_enc, normal_enc], dim=-1)
         else:
             x = torch.cat([wi, wo, normal, latent], dim=-1)
             
