@@ -1,6 +1,5 @@
 import torch
 import torch.nn.functional as NF
-from model.brdf import MLPPBRBRDF
 
 import mitsuba
 mitsuba.set_variant('cuda_ad_rgb')
@@ -145,6 +144,9 @@ def path_tracing_envmap_emitter(scene,emitter_net,material_net,rays_o,rays_d,dx_
     normal = normal[valid_next]
     wo = -wi[valid_next]
     active_next = valid_next.clone()
+    # Create batch mask for all samples (all batch 0s since this is not batched)
+    batch_size = position.shape[0]
+    batch_mask = torch.zeros(batch_size, dtype=torch.long, device=position.device)
 
     # Sample the environment map instead of a point emitter
     if emitter_sampling:
@@ -154,7 +156,7 @@ def path_tracing_envmap_emitter(scene,emitter_net,material_net,rays_o,rays_d,dx_
         emit_weight, emit_pdf, _ = emitter_net.eval_emitter(position, wi)
         emit_weight = emit_weight / emit_pdf.clamp_min(1e-6)
         # emit brdf
-        emit_brdf,brdf_pdf = material_net.eval_brdf(gt_params, wi,wo,normal,latent)
+        emit_brdf,brdf_pdf = material_net.eval_brdf(gt_params, wi,wo,normal,latent, batch_mask) # gt_params will not be used in neural brdf model
         w_mis = torch.where((emit_pdf>0)&(~brdf_pdf.isinf()),emit_pdf*emit_pdf/(emit_pdf*emit_pdf+brdf_pdf*brdf_pdf),0)
         w_mis[emit_pdf.isinf()|(brdf_pdf==0)] = 1
         L[active_next] += emit_brdf*emit_weight * w_mis
@@ -163,9 +165,13 @@ def path_tracing_envmap_emitter(scene,emitter_net,material_net,rays_o,rays_d,dx_
     # sample brdf
     if brdf_sampling:
         wi,brdf_pdf,brdf_weight = material_net.sample_brdf(
+            gt_params,
             torch.rand(len(normal),device=device),
             torch.rand(len(normal),2,device=device),
-            wo,normal)
+            wo,normal,
+            latent,
+            batch_mask
+        ) # ground truth roughness will be used in brdf sampling
     
         # Evaluate Le from environment map
         Le, emit_pdf, valid_next = emitter_net.eval_emitter(position, wi)

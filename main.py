@@ -10,7 +10,7 @@ from renderer import ForwardRenderer
 from brdf_trainer import BRDFTrainer
 from model.brdf import LatentModel, PBRBRDF
 from torch.utils.data import DataLoader
-from utils.dataset import SphereTrainIterableDataset, SphereValDataset
+from utils.dataset import SphereIterableDataset, SphereValDataset
 import hydra
 from omegaconf import DictConfig
 from pytorch_lightning.strategies import DDPStrategy
@@ -55,7 +55,7 @@ def main(cfg):
     model = BRDFTrainer(cfg, material, gt_material, roughness, metallic)
 
     print("==> initializing data ...")          
-    train_dataset = SphereTrainIterableDataset(cfg, gt_folder=None)
+    train_dataset = SphereIterableDataset(cfg, gt_folder=None, split="train")
     train_loader = DataLoader(
         train_dataset,
         batch_size=cfg.data.batch_size,
@@ -68,13 +68,6 @@ def main(cfg):
         batch_size=2,
         num_workers=cfg.data.num_workers,
     )
-
-    # test_dataset = SphereValDataset(cfg, gt_folder=None)
-    # test_loader = DataLoader(
-    #     test_dataset,
-    #     batch_size=1,
-    #     num_workers=cfg.data.num_workers,
-    # )
 
     print("==> initializing logger ...")
     logger = hydra.utils.instantiate(cfg.model.logger, save_dir=cfg.exp_output_root_path)

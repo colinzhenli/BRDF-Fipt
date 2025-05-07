@@ -3,11 +3,11 @@ import cv2
 import imageio
 from glob import glob
 from tqdm import tqdm
-
+import argparse
 def generate_video_and_gif(output_folder, video_name="results_video.mp4", gif_name="results_video.gif", fps=20):
     # Find matching PNGs
     result_paths = sorted(glob(os.path.join(output_folder, "result_view_*.png")))
-    gt_paths = sorted(glob(os.path.join(output_folder, "output_gamma_view_*.png")))
+    gt_paths = sorted(glob(os.path.join(output_folder, "gt_view_*.png")))
     
     if len(result_paths) == 0 or len(gt_paths) == 0:
         print(f"[!] Missing result or ground truth images in {output_folder}")
@@ -51,12 +51,13 @@ def generate_video_and_gif(output_folder, video_name="results_video.mp4", gif_na
 
 
 if __name__ == "__main__":
-    import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('--output_folder', type=str, required=True, help='Path to output folder containing result images')
+    parser.add_argument('--root_folder', type=str, required=True,
+                        help='Path to root folder containing material subfolders like 0.10_0.90')
     args = parser.parse_args()
 
-    generate_video_and_gif(args.output_folder, 
-                          video_name="comparison_video.mp4",
-                          gif_name="comparison_video.gif", 
-                          fps=4)
+    subfolders = [f.path for f in os.scandir(args.root_folder) if f.is_dir()]
+    for folder in subfolders:
+        print(f"Processing folder: {folder}")
+        generate_video_and_gif(folder, video_name="comparison_video.mp4",
+                          gif_name="comparison_video.gif", fps=5)

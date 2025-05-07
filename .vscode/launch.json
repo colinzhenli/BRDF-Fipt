@@ -10,14 +10,15 @@
             "name": "Python: Current File",
             "type": "python",
             "request": "launch",
-            "program": "main.py",
+            "program": "test.py",
             "console": "integratedTerminal",
             "justMyCode": true,
             "args": [
-                "renderer=dynamicpoint_emitter",
+                "renderer=envmap_emitter",
                 "material=latent_model",
-                "experiment_name=With-latent-reg-Miltiple-material-Batched-train_run_2",
-                // "model.ckpt_path=/localhome/zla247/theia2_data/output/BRDF-Fipt/Over-fit_experiments_2/sphere/Pos_encoding_Local-coord_Clean_debug/training/model_0.20_0.20/last.ckpt"
+                "experiment_name=Lr-decay_More-views_20K-steps_Envmap-test_with-reg-loss_1",
+                "model.ckpt_path=/localhome/zla247/theia2_data/output/BRDF-Fipt/Over-fit_experiments_2/sphere/Correct-cameras-Miltiple-material-Batched-train_run_1/training/model_0.20_0.20/last-v1.ckpt",
+                "test_on_train=False"
             ]
         }
     ]
