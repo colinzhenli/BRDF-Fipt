@@ -126,6 +126,9 @@ def path_tracing_envmap_emitter(scene,emitter_net,material_net,rays_o,rays_d,dx_
     device = rays_o.device
     
     # sample camera ray
+    # Set fixed random seed for reproducibility
+    # torch.manual_seed(42)    
+    # Generate random offsets for ray sampling
     du,dv = torch.rand(2,len(rays_o),spp,1,device=device)-0.5
     wi = NF.normalize(rays_d[:,None]+dx_du[:,None]*du+dy_dv[:,None]*dv,dim=-1).reshape(-1,3)
     

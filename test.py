@@ -232,6 +232,22 @@ def main(cfg):
 
                 img_pred = rgbs_pred.reshape(*resolution, -1)
                 img_gt = rgbs_gt.reshape(*resolution, -1)
+                # Compute error map between prediction and ground truth with sign
+                # Signed error as sum over RGB channels
+                error_map = img_pred - img_gt  # shape: [H, W, 3]
+                error_scalar = error_map.sum(dim=-1, keepdim=True)  # shape: [H, W, 1]
+                error_magnitude = error_scalar.abs()
+                error_map_r = torch.zeros_like(error_scalar)
+                error_map_b = torch.zeros_like(error_scalar)
+                error_map_r[error_scalar > 0] = error_magnitude[error_scalar > 0]
+                error_map_b[error_scalar < 0] = error_magnitude[error_scalar < 0]
+                error_map_display = torch.cat([error_map_r, torch.zeros_like(error_map_r), error_map_b], dim=-1)
+                
+                # Save error map
+                torchvision.utils.save_image(
+                    error_map_display.permute(2, 0, 1), 
+                    os.path.join(output_folder, f'error_map_view_{view_idx}.png')
+                )
 
                 torchvision.utils.save_image(gamma(img_gt.permute(2, 0, 1)), os.path.join(output_folder, f'gt_view_{view_idx}.png'))
                 torchvision.utils.save_image(gamma(img_pred.permute(2, 0, 1)), os.path.join(output_folder, f'result_view_{view_idx}.png'))
@@ -239,8 +255,8 @@ def main(cfg):
             avg_psnr = sum(psnr_list) / len(psnr_list)
             psnr_record[param_key] = avg_psnr
 
-            generate_video_from_results(output_folder, video_name="results_video.mp4", path_string="result_view_*.png", fps=10)
-            generate_video_from_results(output_folder, video_name="gt_video.mp4", path_string="gt_view_*.png", fps=10)
+            # generate_video_from_results(output_folder, video_name="results_video.mp4", path_string="result_view_*.png", fps=10)
+            # generate_video_from_results(output_folder, video_name="gt_video.mp4", path_string="gt_view_*.png", fps=10)
 
         with open(os.path.join(cfg.exp_output_root_path, "psnr_results.json"), "w") as f:
             json.dump(psnr_record, f, indent=2)

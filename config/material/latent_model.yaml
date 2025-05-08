@@ -1,11 +1,7 @@
 type: "LatentModel"
 latent_dim: 64
-hidden_layers: [128, 128, 64, 32, 16]
-# hidden_layers: [128, 128, 128, 128, 128, 64, 32, 1]
-# hidden_layers: [48, 48, 24, 12, 6]
-# hidden_layers: [18, 36, 72, 36, 18, 9]
-# hidden_layers: [18, 36, 72, 72, 36, 18, 9]
-# hidden_layers: [100, 200, 100, 50, 25]c
+# hidden_layers: [128, 128, 64, 32, 16]
+hidden_layers: [256, 256, 128, 64, 32, 16]
 
 activation: "relu"
 input_channels: 9

@@ -282,13 +282,13 @@ class LatentModel(nn.Module):
         self.latent_dim = cfg.latent_dim
         
         # Add SH positional encoding module
-        self.levels = 4
+        self.degree = 6
         self.pos_enc = True
         if self.pos_enc:
-            self.sh_encoder = encoding.SHEncoding(levels=self.levels)
+            self.sh_encoder = lambda x: components_from_spherical_harmonics(self.degree, x)
             
         # Calculate input dimension after SH encoding
-        sh_dim = (self.levels) ** 2
+        sh_dim = num_sh_bases(self.degree)
         encoded_input_dim = sh_dim * 3  # wi, wo, normal each encoded by SH
         
         # Add latent dimension to input
