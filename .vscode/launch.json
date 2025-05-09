@@ -16,8 +16,8 @@
             "args": [
                 "renderer=envmap_emitter",
                 "material=latent_model",
-                "experiment_name=Envmap-emitter_Eval_SH-degree-6_More-rays_Larger-MLP_run_1",
-                "model.ckpt_path=/localhome/zla247/theia2_data/output/BRDF-Fipt/Over-fit_experiments_2/sphere/SH-degree-6_More-rays_Larger-MLP_run_1/training/model_0.20_0.20/last.ckpt",
+                "experiment_name=Camera-trajectory_debug_1",
+                "model.ckpt_path=/localhome/zla247/theia2_data/theia2_data/output/BRDF-Fipt/Over-fit_experiments_2/sphere/Correct-cameras-Miltiple-material-Batched-train_run_1/training/model_0.20_0.20/last-v1.ckpt",
                 "test_on_train=False"
             ]
         }

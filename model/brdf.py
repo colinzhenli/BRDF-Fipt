@@ -282,7 +282,7 @@ class LatentModel(nn.Module):
         self.latent_dim = cfg.latent_dim
         
         # Add SH positional encoding module
-        self.degree = 6
+        self.degree = 3
         self.pos_enc = True
         if self.pos_enc:
             self.sh_encoder = lambda x: components_from_spherical_harmonics(self.degree, x)
