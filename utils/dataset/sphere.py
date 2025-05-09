@@ -94,13 +94,8 @@ class SphereIterableDataset(IterableDataset):
         self.num_view_batch = 4
 
         # Load metadata
-        metadata_path = f"metadata/{split}.txt"
-        self.metadata = []
-        with open(metadata_path, 'r') as f:
-            for line in f:
-                if line.strip():
-                    roughness, metallic = map(float, line.strip().split())
-                    self.metadata.append((roughness, metallic))
+        metadata_path = f"metadata/dual_{split}.txt"
+        self.metadata = self._load_metadata(metadata_path)
 
         self.gt_folder = gt_folder
         self.img_hw = cfg.renderer.resolution
@@ -113,6 +108,20 @@ class SphereIterableDataset(IterableDataset):
         self.get_camera_dicts()
         self.all_rays, self.all_rgbs = self.preload_rays_and_rgbs()
 
+    def _load_metadata(self, path):
+        metadata = []
+        with open(path, 'r') as f:
+            for line in f:
+                if line.strip():
+                    values = list(map(float, line.strip().split()))
+                    if len(values) == 2:
+                        r, m = values
+                        metadata.append((r, m))
+                    elif len(values) == 4:  # Support for dual parameter sets
+                        r1, m1, r2, m2 = values
+                        metadata.append((r1, m1, r2, m2))
+        return metadata
+    
     def get_camera_rotation_dicts(self):
         camera_dicts = []
         look_at = self.cfg.renderer.camera.look_at
@@ -200,6 +209,15 @@ class SphereIterableDataset(IterableDataset):
 
         while True:
             for idx in torch.randperm(len(self.metadata)):
+                params = self.metadata[idx]
+                if len(params) == 2:
+                    r, m = params
+                    gt_params = {'roughness': torch.tensor(r, dtype=torch.float32),
+                                'metallic': torch.tensor(m, dtype=torch.float32)}
+                else:  # Handle dual parameter case
+                    r1, m1, r2, m2 = params
+                    gt_params = {'roughness': torch.tensor([r1, r2], dtype=torch.float32),
+                         'metallic': torch.tensor([m1, m2], dtype=torch.float32)}
                 view_indices = torch.randint(0, self.number_of_views, (self.num_view_batch,))
                 total_indices = []
                 for view_idx in view_indices:
@@ -219,10 +237,7 @@ class SphereIterableDataset(IterableDataset):
                 yield {
                     'rays': rays,
                     'rgbs': rgbs,
-                    'gt_params': {
-                        'roughness': self.metadata[idx][0],
-                        'metallic': self.metadata[idx][1]
-                    }
+                    'gt_params': gt_params
                 }
 
 class SphereValDataset(Dataset):
@@ -328,20 +343,27 @@ class SphereTestDataset(Dataset):
         self.cfg = cfg
         self.gt_folder = gt_folder
         self.img_hw = cfg.renderer.resolution
+        h, w = self.img_hw
         self.number_of_views = cfg.renderer.camera.number_of_views
         self.distance = cfg.renderer.camera.distance
-        self.focal = (0.5 * self.img_hw[1] / np.tan(0.5 * cfg.renderer.camera.camera_angle_x)).item()
-        self.directions = get_ray_directions(*self.img_hw, self.focal)
+        self.camera_angle_x = cfg.renderer.camera.camera_angle_x
+        self.focal = (0.5 * w / np.tan(0.5 * self.camera_angle_x)).item()
+        self.directions = get_ray_directions(h, w, self.focal)
         self.get_camera_rotation_dicts()
-        self.metadata = self._load_metadata(f"metadata/{split}.txt")
+        self.metadata = self._load_metadata(f"metadata/dual_{split}.txt")
 
     def _load_metadata(self, path):
         metadata = []
         with open(path, 'r') as f:
             for line in f:
                 if line.strip():
-                    r, m = map(float, line.strip().split())
-                    metadata.append((r, m))
+                    values = list(map(float, line.strip().split()))
+                    if len(values) == 2:
+                        r, m = values
+                        metadata.append((r, m))
+                    elif len(values) == 4:  # Support for dual parameter sets
+                        r1, m1, r2, m2 = values
+                        metadata.append((r1, m1, r2, m2))
         return metadata
 
     def get_camera_rotation_dicts(self):
@@ -368,25 +390,39 @@ class SphereTestDataset(Dataset):
             }
             
             self.camera_dict.append(camera_dict)
-
-
     def __len__(self):
         return len(self.metadata)
 
     def __getitem__(self, idx):
-        r, m = self.metadata[idx]
+        params = self.metadata[idx]
+        if len(params) == 2:
+            r, m = params
+            gt_params = {'roughness': torch.tensor(r, dtype=torch.float32),
+                         'metallic': torch.tensor(m, dtype=torch.float32)}
+        else:  # Handle dual parameter case
+            r1, m1, r2, m2 = params
+            gt_params = {'roughness': torch.tensor([r1, r2], dtype=torch.float32),
+                         'metallic': torch.tensor([m1, m2], dtype=torch.float32)}
+            
         all_views = []
         for view_idx, cam_dict in enumerate(self.camera_dict):
             c2w = get_c2w(cam_dict)
             rays_o, rays_d, dxdu, dydv = get_rays(self.directions, c2w, focal=self.focal)
             rays = torch.cat([rays_o, rays_d, dxdu, dydv], dim=-1)
             if self.gt_folder:
-                img = open_exr(os.path.join(self.gt_folder, f'output_view_{view_idx}.exr'), self.img_hw).reshape(-1, 3)
+                img_path = os.path.join(self.gt_folder, f'output_{idx}_view_{view_idx}.exr')
+                if os.path.exists(img_path):
+                    img = open_exr(img_path, self.img_hw).reshape(-1, 3)
+                else:
+                    img = torch.zeros_like(rays[..., :3])
             else:
                 img = torch.zeros_like(rays[..., :3])
-            all_views.append({
+            
+            view_data = {
                 'rays': rays,
                 'rgbs': img,
-                'gt_params': {'roughness': r, 'metallic': m}
-            })
+                'gt_params': gt_params
+            }
+            all_views.append(view_data)
+        
         return all_views

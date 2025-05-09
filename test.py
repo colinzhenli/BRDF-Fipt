@@ -97,9 +97,10 @@ def main(cfg):
 
     print("==> optimizing latents for test materials...")
 
-    # Create a separate tensor for latent codes instead of using model.test_latents
-    test_latents = torch.nn.Embedding(cfg.data.test_num, cfg.material.latent_dim, device=model.device)
+    # Create a separate tensor for dual-latent codes instead of using model.test_latents
+    test_latents = torch.nn.Embedding(cfg.data.test_num, 2 * cfg.material.latent_dim, device=model.device)
     torch.nn.init.normal_(test_latents.weight, mean=0.0, std=0.01)
+    # When used, we'll reshape to [B, 2, N] where N is the latent dimension
     optimizer = torch.optim.Adam([test_latents.weight], lr=cfg.model.optimizer.inference_lr, betas=(0.9, 0.999), weight_decay=cfg.model.optimizer.weight_decay)
     
     # Setup cosine learning rate decay
@@ -142,18 +143,19 @@ def main(cfg):
             roughness = gt_params['roughness']
             metallic = gt_params['metallic']
             
-            # Create unique keys for each roughness-metallic combination
-            keys = [f"{r.item():.2f}_{m.item():.2f}" for r, m in zip(roughness, metallic)]
+            # # Create unique keys for each roughness-metallic combination
+            # keys = [f"{r.item():.2f}_{m.item():.2f}" for r, m in zip(roughness, metallic)]
                 
-            # Map each unique key to an index
-            for key in keys:
-                if key not in roughness_metallic_to_index:
-                    roughness_metallic_to_index[key] = len(roughness_metallic_to_index)
+            # # Map each unique key to an index
+            # for key in keys:
+            #     if key not in roughness_metallic_to_index:
+            #         roughness_metallic_to_index[key] = len(roughness_metallic_to_index)
                     
             # Get indices for the current batch
-            batch_indices = torch.tensor([roughness_metallic_to_index[key] for key in keys], device=model.device)
+            # batch_indices = torch.tensor([roughness_metallic_to_index[key] for key in keys], device=model.device)
+            batch_indices = torch.tensor([0], device=model.device)
             
-            # Get latents for the batch using the indices
+            # # Get latents for the batch using the indices
             latents = test_latents(batch_indices)
             
             # Render all samples in batch
@@ -199,12 +201,13 @@ def main(cfg):
     with torch.no_grad():
         for idx, batch in tqdm(enumerate(dataset), total=len(dataset), desc="Processing materials"):
             gt_params = batch[0]['gt_params'] # different batch share the same gt_params
-            # Convert roughness and metallic to torch tensors if they're not already
-            if not isinstance(gt_params['roughness'], torch.Tensor):
-                gt_params['roughness'] = torch.tensor(gt_params['roughness'], device=model.device).unsqueeze(0)
-            if not isinstance(gt_params['metallic'], torch.Tensor):
-                gt_params['metallic'] = torch.tensor(gt_params['metallic'], device=model.device).unsqueeze(0)
-            param_key = f"{gt_params['roughness'].item():.2f}_{gt_params['metallic'].item():.2f}"
+            # Move all parameters to the device
+            for key in gt_params:
+                gt_params[key] = gt_params[key].unsqueeze(0).to(model.device)
+            r1, r2 = gt_params['roughness'][0][0].item(), gt_params['roughness'][0][1].item()
+            m1, m2 = gt_params['metallic'][0][0].item(), gt_params['metallic'][0][1].item()
+            param_key = f"{r1:.2f}_{m1:.2f}_{r2:.2f}_{m2:.2f}"
+
             output_folder = os.path.join(cfg.exp_output_root_path, param_key)
             os.makedirs(output_folder, exist_ok=True)
 
@@ -213,7 +216,7 @@ def main(cfg):
                     model.roughness_metallic_to_index[param_key] = len(model.roughness_metallic_to_index)
                 latent = model.train_latents(torch.tensor([model.roughness_metallic_to_index[param_key]], device=model.device)) # use the learned latents in the training set
             else:
-                latent = test_latents(torch.tensor([roughness_metallic_to_index[param_key]], device=model.device))
+                latent = test_latents(torch.tensor([0], device=model.device))
             psnr_list = []
 
             for view_idx in tqdm(range(dataset.number_of_views), desc=f"Rendering views for {param_key}", leave=False):

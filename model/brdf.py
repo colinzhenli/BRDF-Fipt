@@ -10,6 +10,8 @@ from utils.ops import *
 
 from nerfstudio.field_components import encodings as encoding
 
+def hemisphere_detection(pos):
+    return (pos[:,0] + pos[:,1] + pos[:,2]) > 0
 
 class PBRBRDF(nn.Module):
     """ Base BRDF class """
@@ -64,8 +66,9 @@ class PBRBRDF(nn.Module):
         wi = NF.normalize(wi,dim=-1)
         return wi
     
-    def eval_brdf(self, params, wi, wo, normal, latent=None, batch_mask=None):
+    def eval_brdf(self, params, pos, wi, wo, normal, latent=None, batch_mask=None):
         """ evaluate BRDF and pdf
+            pos: Bx3 position
             wi: Bx3 light direction
             wo: Bx3 viewing direction
             normal: Bx3 normal
@@ -89,8 +92,19 @@ class PBRBRDF(nn.Module):
         albedo = self.albedo.expand(normal.shape[0], 3)
         
         # Use batch_mask to index into the batched parameters
-        roughness = params['roughness'][batch_mask].view(-1, 1)
-        metallic = params['metallic'][batch_mask].view(-1, 1)
+        hemisphere_mask = hemisphere_detection(pos).view(-1, 1)
+        roughness = torch.where(
+            hemisphere_mask,
+            params['roughness'][:, 0].expand_as(hemisphere_mask),
+            params['roughness'][:, 1].expand_as(hemisphere_mask)
+        )
+        metallic = torch.where(
+            hemisphere_mask,
+            params['metallic'][:, 0].expand_as(hemisphere_mask),
+            params['metallic'][:, 1].expand_as(hemisphere_mask)
+        )
+        # roughness = roughness[batch_mask]
+        # metallic = metallic[batch_mask]
 
         h = NF.normalize(wi+wo,dim=-1)
         NoL = NoL.relu()  # Now safe to relu after check
@@ -117,10 +131,11 @@ class PBRBRDF(nn.Module):
 
         return brdf, pdf
     
-    def sample_brdf(self, params, sample1,sample2,wo,normal, latent=None, batch_mask=None):
+    def sample_brdf(self, params, pos, sample1, sample2, wo, normal, latent=None, batch_mask=None):
         """ importance sampling brdf and get brdf/pdf
         Args:
             params: Bx2 material parameters
+            pos: Bx3 position
             sample1: B unifrom samples
             sample2: Bx2 uniform samples
             wo: Bx3 viewing direction
@@ -140,7 +155,14 @@ class PBRBRDF(nn.Module):
 
         mask = (sample1 > 0.5)
         wi_diffuse = self.diffuse_sampler(sample2[mask], normal[mask])
-        wi_specular = self.specular_sampler(sample2[~mask], params['roughness'][batch_mask][~mask].view(-1, 1), wo[~mask], normal[~mask])
+        hemisphere_mask = hemisphere_detection(pos).view(-1, 1)
+        roughness = torch.where(
+            hemisphere_mask,
+            params['roughness'][:, 0].expand_as(hemisphere_mask),
+            params['roughness'][:, 1].expand_as(hemisphere_mask)
+        )
+        # roughness = roughness[batch_mask]
+        wi_specular = self.specular_sampler(sample2[~mask], roughness[~mask], wo[~mask], normal[~mask])
 
         # Construct wi without gradient-breaking assignment
         wi = torch.zeros(B, 3, device=device)
@@ -148,11 +170,11 @@ class PBRBRDF(nn.Module):
         wi[mask] = wi_diffuse
         wi[~mask] = wi_specular
         # get brdf,pdf
-        brdf,pdf = self.eval_brdf(params, wi, wo, normal, latent, batch_mask)
+        brdf,pdf = self.eval_brdf(params, pos,wi, wo, normal, latent, batch_mask)
         brdf_weight = torch.where(pdf>0,brdf/pdf,0)
         brdf_weight[brdf_weight.isnan()] = 0
         return wi,pdf,brdf_weight
-
+    
 class ProxyPBRBRDF(nn.Module):
     def __init__(self, roughness=0.1):
         super(ProxyPBRBRDF, self).__init__()
@@ -238,9 +260,10 @@ class ProxyPBRBRDF(nn.Module):
         wi = NF.normalize(wi,dim=-1)
         return wi
     
-    def sample_brdf(self, sample1, sample2, wo, normal, roughness=None):
+    def sample_brdf(self, pos, sample1, sample2, wo, normal, roughness=None, batch_mask=None):
         """ importance sampling brdf and get brdf/pdf
         Args:
+            pos: Bx3 position
             sample1: B unifrom samples
             sample2: Bx2 uniform samples
             wo: Bx3 viewing direction
@@ -252,10 +275,13 @@ class ProxyPBRBRDF(nn.Module):
         """
         B = sample1.shape[0]
         device = sample1.device
-        
-        # Use provided roughness or default class parameter
-        if roughness is None:
-            roughness = self.roughness.expand(normal.shape[0], 1)
+        hemisphere_mask = hemisphere_detection(pos).view(-1, 1)
+        roughness = torch.where(
+            hemisphere_mask,
+            roughness[:, 0].expand_as(hemisphere_mask),
+            roughness[:, 1].expand_as(hemisphere_mask)
+        )
+        # roughness = roughness[batch_mask]
 
         pdf = torch.zeros(B, device=device)
 
@@ -282,7 +308,7 @@ class LatentModel(nn.Module):
         self.latent_dim = cfg.latent_dim
         
         # Add SH positional encoding module
-        self.degree = 6
+        self.degree = 3
         self.pos_enc = True
         if self.pos_enc:
             self.sh_encoder = lambda x: components_from_spherical_harmonics(self.degree, x)
@@ -310,7 +336,7 @@ class LatentModel(nn.Module):
         # Initialize proxy BRDF for importance sampling
         self.proxy_brdf = ProxyPBRBRDF()  # Default roughness
 
-    def forward(self, wi, wo, normal, latent=None, batch_mask=None):
+    def forward(self, pos, wi, wo, normal, latent=None, batch_mask=None):
         """
         Evaluate BRDF using MLP with latent conditioning
         Args:
@@ -321,8 +347,16 @@ class LatentModel(nn.Module):
         Returns:
             brdf: Bx1 BRDF values
         """
-            
-        latent = latent[batch_mask]
+        hemisphere_mask = hemisphere_detection(pos).view(-1, 1)
+        # Determine which latent code to use based on hemisphere
+        latent = latent.reshape(latent.shape[0], 2, self.latent_dim)
+        latent = torch.where(
+            hemisphere_mask,
+            latent[:, 0].expand(hemisphere_mask.shape[0], self.latent_dim),
+            latent[:, 1].expand(hemisphere_mask.shape[0], self.latent_dim)
+        )
+
+        # latent = latent[batch_mask]
         if self.pos_enc:
             wi_enc = self.sh_encoder(wi)
             wo_enc = self.sh_encoder(wo)
@@ -359,10 +393,11 @@ class LatentModel(nn.Module):
 
         return v_local
     
-    def eval_brdf(self, gt_params, wi, wo, normal, latent=None, batch_mask=None):
+    def eval_brdf(self, gt_params, pos, wi, wo, normal, latent=None, batch_mask=None):
         """
         Evaluate BRDF and pdf after transforming world-space vectors to local space.
         Args:
+            pos: Bx3 position
             wi: Bx3 light direction in world space
             wo: Bx3 viewing direction in world space
             normal: Bx3 normal in world space
@@ -377,13 +412,14 @@ class LatentModel(nn.Module):
         wo_local = self.world_to_local(wo, normal)
         local_normal = torch.zeros_like(wi_local)
         local_normal[..., 2] = 1.0  # Normal is always (0,0,1) in local space
-        brdf_value = self.forward(wi_local, wo_local, local_normal, latent, batch_mask)
+        brdf_value = self.forward(pos, wi_local, wo_local, local_normal, latent, batch_mask)
         brdf = brdf_value.expand(-1, 3)
 
         pdf = NoL / math.pi
 
         return brdf, pdf
-    def sample_brdf(self, params, sample1, sample2, wo, normal, latent=None, batch_mask=None):
+    
+    def sample_brdf(self, params, pos, sample1, sample2, wo, normal, latent=None, batch_mask=None):
         """
         Importance sampling BRDF using proxy (PBRBRDF) and evaluating MLP BRDF.
         
@@ -400,10 +436,11 @@ class LatentModel(nn.Module):
             brdf_weight: Bx3 ratio (MLP evaluated BRDF / pdf)
         """
 
-        wi_proxy, pdf_proxy = self.proxy_brdf.sample_brdf(sample1, sample2, wo, normal, params['roughness'][batch_mask].unsqueeze(-1))
+        wi_proxy, pdf_proxy = self.proxy_brdf.sample_brdf(pos, sample1, sample2, wo, normal, params['roughness'], batch_mask)
         stop_gradient_pdf_proxy = pdf_proxy.detach()
-        mlp_brdf, _ = self.eval_brdf(params, wi_proxy, wo, normal, latent, batch_mask)
+        mlp_brdf, _ = self.eval_brdf(params, pos, wi_proxy, wo, normal, latent, batch_mask)
         mlp_brdf = mlp_brdf * pdf_proxy / (stop_gradient_pdf_proxy + 1e-8)
         brdf_weight = torch.where(pdf_proxy > 0, mlp_brdf / (stop_gradient_pdf_proxy + 1e-8), torch.zeros_like(mlp_brdf))
 
         return wi_proxy, stop_gradient_pdf_proxy, brdf_weight
+    

@@ -4,21 +4,27 @@ import imageio
 from glob import glob
 from tqdm import tqdm
 import argparse
+
 def generate_video_and_gif(output_folder, video_name="results_video.mp4", gif_name="results_video.gif", fps=20):
     # Find matching PNGs
     result_paths = sorted(glob(os.path.join(output_folder, "result_view_*.png")))
     gt_paths = sorted(glob(os.path.join(output_folder, "gt_view_*.png")))
+    error_map_paths = sorted(glob(os.path.join(output_folder, "error_map_view_*.png")))
     
     if len(result_paths) == 0 or len(gt_paths) == 0:
         print(f"[!] Missing result or ground truth images in {output_folder}")
+        return
+
+    if len(error_map_paths) == 0:
+        print(f"[!] Missing error map images in {output_folder}")
         return
 
     # Read size from first images
     first_result = cv2.imread(result_paths[0])
     height, width, _ = first_result.shape
 
-    # Create side-by-side frame size
-    combined_width = width * 2
+    # Create side-by-side-by-side frame size
+    combined_width = width * 3
     combined_size = (combined_width, height)
 
     # === Write MP4 ===
@@ -31,13 +37,14 @@ def generate_video_and_gif(output_folder, video_name="results_video.mp4", gif_na
 
     print(f"[*] Writing side-by-side video & gif for {output_folder}...")
 
-    for gt_path, result_path in tqdm(zip(gt_paths, result_paths), desc="Processing frames", total=len(gt_paths)):
+    for gt_path, result_path, error_map_path in tqdm(zip(gt_paths, result_paths, error_map_paths), desc="Processing frames", total=len(gt_paths)):
         # Read frames
         gt_frame = cv2.imread(gt_path)
         result_frame = cv2.imread(result_path)
+        error_map_frame = cv2.imread(error_map_path)
         
         # Combine side by side
-        combined = cv2.hconcat([gt_frame, result_frame])
+        combined = cv2.hconcat([gt_frame, result_frame, error_map_frame])
         
         writer.write(combined)
 

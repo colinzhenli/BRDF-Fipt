@@ -102,7 +102,7 @@ def batched_path_tracing_dynamic_emitter(scene,emitter_net,material_net,rays_o,r
     emit_weight = emit_weight*emit_vis*G[...,None]/emit_pdf.clamp_min(1e-6)
     
     # Now, reshape and average over light dimension
-    emit_brdf,_ = material_net.eval_brdf(gt_params, wi,wo,normal, latent, batch_mask)
+    emit_brdf,_ = material_net.eval_brdf(gt_params,position, wi,wo,normal, latent, batch_mask)
     L[vis] += (emit_brdf*emit_weight).reshape(-1, N_lights,3).mean(1)
     L = L.reshape(N,spp,3).mean(1)
     return L
@@ -159,7 +159,7 @@ def path_tracing_envmap_emitter(scene,emitter_net,material_net,rays_o,rays_d,dx_
         emit_weight, emit_pdf, _ = emitter_net.eval_emitter(position, wi)
         emit_weight = emit_weight / emit_pdf.clamp_min(1e-6)
         # emit brdf
-        emit_brdf,brdf_pdf = material_net.eval_brdf(gt_params, wi,wo,normal,latent, batch_mask) # gt_params will not be used in neural brdf model
+        emit_brdf,brdf_pdf = material_net.eval_brdf(gt_params,position, wi,wo,normal,latent, batch_mask) # gt_params will not be used in neural brdf model
         w_mis = torch.where((emit_pdf>0)&(~brdf_pdf.isinf()),emit_pdf*emit_pdf/(emit_pdf*emit_pdf+brdf_pdf*brdf_pdf),0)
         w_mis[emit_pdf.isinf()|(brdf_pdf==0)] = 1
         L[active_next] += emit_brdf*emit_weight * w_mis
@@ -169,6 +169,7 @@ def path_tracing_envmap_emitter(scene,emitter_net,material_net,rays_o,rays_d,dx_
     if brdf_sampling:
         wi,brdf_pdf,brdf_weight = material_net.sample_brdf(
             gt_params,
+            position,
             torch.rand(len(normal),device=device),
             torch.rand(len(normal),2,device=device),
             wo,normal,
