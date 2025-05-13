@@ -7,9 +7,13 @@ import argparse
 
 def generate_video_and_gif(output_folder, video_name="results_video.mp4", gif_name="results_video.gif", fps=20):
     # Find matching PNGs
-    result_paths = sorted(glob(os.path.join(output_folder, "result_view_*.png")))
-    gt_paths = sorted(glob(os.path.join(output_folder, "gt_view_*.png")))
-    error_map_paths = sorted(glob(os.path.join(output_folder, "error_map_view_*.png")))
+    # Sort by view number instead of string
+    result_paths = sorted(glob(os.path.join(output_folder, "result_view_*.png")), 
+                         key=lambda x: int(os.path.basename(x).split('_')[-1].split('.')[0]))
+    gt_paths = sorted(glob(os.path.join(output_folder, "gt_view_*.png")), 
+                     key=lambda x: int(os.path.basename(x).split('_')[-1].split('.')[0]))
+    error_map_paths = sorted(glob(os.path.join(output_folder, "error_map_view_*.png")), 
+                            key=lambda x: int(os.path.basename(x).split('_')[-1].split('.')[0]))
     
     if len(result_paths) == 0 or len(gt_paths) == 0:
         print(f"[!] Missing result or ground truth images in {output_folder}")
