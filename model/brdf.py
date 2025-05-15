@@ -7,11 +7,114 @@ import sys
 sys.path.append('..')
 
 from utils.ops import *
-
+# from noise import pnoise3
+from pnoise import pnoise
 from nerfstudio.field_components import encodings as encoding
 
 def hemisphere_detection(pos):
     return (pos[:,0] + pos[:,1] + pos[:,2]) > 0
+# Manual implementation of 3D Perlin noise (naive version, not gradient coherent)
+def fade(t):
+    return t * t * t * (t * (t * 6 - 15) + 10)
+
+def lerp(a, b, t):
+    return a + t * (b - a)
+
+
+def grad(hash, x, y, z):
+    h = hash & 15
+    u = torch.where(h < 8, x, y)
+    cond1 = h < 4
+    cond2 = (h == 12) | (h == 14)
+    v = torch.where(cond1, y, torch.where(cond2, x, z))
+    u_term = torch.where((h & 1) == 0, u, -u)
+    v_term = torch.where((h & 2) == 0, v, -v)
+    return u_term + v_term
+
+
+def perlin_noise_3d(pos, scale=1.0):
+    # torch.manual_seed(42)
+    # permutation = torch.arange(256, dtype=torch.int32)
+    # permutation = permutation[torch.randperm(256)]
+    permutation = torch.tensor([
+        151,160,137,91,90,15,
+        131,13,201,95,96,53,194,233,7,225,
+        140,36,103,30,69,142,8,99,37,240,21,10,23,
+        190, 6,148,247,120,234,75,0,26,197,62,94,252,219,203,117,
+        35,11,32,57,177,33,88,237,149,56,87,174,20,125,136,171,
+        168, 68,175,74,165,71,134,139,48,27,166,77,146,158,231,83,
+        111,229,122,60,211,133,230,220,105,92,41,55,46,245,40,244,
+        102,143,54, 65,25,63,161,1,216,80,73,209,76,132,187,208,
+        89,18,169,200,196,135,130,116,188,159,86,164,100,109,198,173,
+        186, 3,64,52,217,226,250,124,123,5,202,38,147,118,126,255,
+        82,85,212,207,206,59,227,47,16,58,17,182,189,28,42,223,
+        183,170,213,119,248,152, 2,44,154,163,70,221,153,101,155,167,
+        43,172,9,129,22,39,253, 19,98,108,110,79,113,224,232,178,
+        185, 112,104,218,246,97,228,251,34,242,193,238,210,144,12,191,
+        179,162,241,81,51,145,235,249,14,239,107,49,192,214,31,181,
+        199,106,157,184,84,204,176,115,121,50,45,127, 4,150,254,138,
+        236,205,93,222,114,67,29,24,72,243,141,128,195,78,66,215
+        ], dtype=torch.int32).to(pos.device)
+    p = torch.cat([permutation, permutation])
+    pos = pos * scale
+    xi = pos[:, 0].floor().long() & 255
+    yi = pos[:, 1].floor().long() & 255
+    zi = pos[:, 2].floor().long() & 255
+
+    xf = pos[:, 0] - pos[:, 0].floor()
+    yf = pos[:, 1] - pos[:, 1].floor()
+    zf = pos[:, 2] - pos[:, 2].floor()
+
+    u = fade(xf)
+    v = fade(yf)
+    w = fade(zf)
+
+    xi1 = (xi + 1) & 255
+    yi1 = (yi + 1) & 255
+    zi1 = (zi + 1) & 255
+
+    aaa = p[p[p[    xi ] +     yi ] +     zi ]
+    aba = p[p[p[    xi ] +   yi1 ] +     zi ]
+    aab = p[p[p[    xi ] +     yi ] +   zi1 ]
+    abb = p[p[p[    xi ] +   yi1 ] +   zi1 ]
+    baa = p[p[p[  xi1 ] +     yi ] +     zi ]
+    bba = p[p[p[  xi1 ] +   yi1 ] +     zi ]
+    bab = p[p[p[  xi1 ] +     yi ] +   zi1 ]
+    bbb = p[p[p[  xi1 ] +   yi1 ] +   zi1 ]
+
+    x1 = lerp(grad(aaa, xf    , yf    , zf    ),
+              grad(baa, xf-1 , yf    , zf    ), u)
+    x2 = lerp(grad(aba, xf    , yf-1 , zf    ),
+              grad(bba, xf-1 , yf-1 , zf    ), u)
+    y1 = lerp(x1, x2, v)
+
+    x3 = lerp(grad(aab, xf    , yf    , zf-1 ),
+              grad(bab, xf-1 , yf    , zf-1 ), u)
+    x4 = lerp(grad(abb, xf    , yf-1 , zf-1 ),
+              grad(bbb, xf-1 , yf-1 , zf-1 ), u)
+    y2 = lerp(x3, x4, v)
+
+    return lerp(y1, y2, w)
+
+# Generate a blending mask based on 3D Perlin noise
+# Args:
+#   pos: Tensor of shape (N, 3) representing 3D positions
+#   scale: Controls the frequency of the noise
+#   randomness: Controls the blending strength between noise and uniform value 0.5
+# Returns:
+#   A tensor of shape (N, 1) containing values in [0, 1] for blending
+
+def perlin_mask(pos, scale=1.0, randomness=0.5):
+    mask = perlin_noise_3d(pos, scale)
+    # Scale the mask to make it sharper at boundaries and smoother elsewhere
+    # First, blend with a uniform value of 0.5 based on randomness parameter
+    
+    # Apply linear scaling and clipping to create transitions at boundaries
+    # Scale the mask linearly and then clip to ensure values stay in [0, 1]
+    scale_factor = 6  # Controls the scaling strength
+    mask = mask * scale_factor
+    mask = torch.clamp(mask, 0.0, 1.0)  # Ensure values stay within valid range
+    return mask.view(-1, 1)
 
 class PBRBRDF(nn.Module):
     """ Base BRDF class """
@@ -19,8 +122,8 @@ class PBRBRDF(nn.Module):
         super(PBRBRDF,self).__init__()
         # Initialize learnable material parameters
         self.albedo = nn.Parameter(albedo)
-
-    
+        self.perlin_scale = 10.0
+        self.perlin_randomness = 0.8
     def diffuse_sampler(self, sample2, normal):
         """ sampling diffuse lobe: wi ~ NoV/math.pi 
         Args:
@@ -65,60 +168,19 @@ class PBRBRDF(nn.Module):
         wi = 2*(wo*wh).sum(-1,keepdim=True)*wh-wo
         wi = NF.normalize(wi,dim=-1)
         return wi
-    
-    def eval_brdf(self, params, pos, wi, wo, normal, latent=None, batch_mask=None):
-        """ evaluate BRDF and pdf
-            pos: Bx3 position
-            wi: Bx3 light direction
-            wo: Bx3 viewing direction
-            normal: Bx3 normal
-            params: surface BRDF dict with batched parameters
-            latent: optional latent code for material
-            batch_mask: B indices indicating which batch each ray belongs to
-        Return:
-            brdf: Bx3
-            pdf: Bx1
-        """
-        # Check if both directions are on the same side
-        NoL = (wi*normal).sum(-1,keepdim=True)
-        NoV = (wo*normal).sum(-1,keepdim=True)
-        valid_geometry = (NoL > 0) & (NoV > 0)
-        
-        # Early return for invalid geometry
-        if not valid_geometry.any():
-            return torch.zeros_like(wi), torch.zeros(wi.shape[0], 1, device=wi.device)
-        
-        # Reshape albedo tensor to match expected dimensions
-        albedo = self.albedo.expand(normal.shape[0], 3)
-        
-        # Use batch_mask to index into the batched parameters
-        hemisphere_mask = hemisphere_detection(pos).view(-1, 1)
-        roughness = torch.where(
-            hemisphere_mask,
-            params['roughness'][:, 0].expand_as(hemisphere_mask),
-            params['roughness'][:, 1].expand_as(hemisphere_mask)
-        )
-        metallic = torch.where(
-            hemisphere_mask,
-            params['metallic'][:, 0].expand_as(hemisphere_mask),
-            params['metallic'][:, 1].expand_as(hemisphere_mask)
-        )
-        # roughness = roughness[batch_mask]
-        # metallic = metallic[batch_mask]
 
+    def compute_brdf_pdf(self, albedo, roughness, metallic, wi, wo, normal):
         h = NF.normalize(wi+wo,dim=-1)
-        NoL = NoL.relu()  # Now safe to relu after check
-        NoV = NoV.relu()
+        NoL = (wi*normal).sum(-1,keepdim=True).relu()
+        NoV = (wo*normal).sum(-1,keepdim=True).relu()
         VoH = (wo*h).sum(-1,keepdim=True).relu()
         NoH = (normal*h).sum(-1,keepdim=True).relu()
 
-        # get pdf
         D = D_GGX(NoH,roughness)
         pdf_spec = D.data/(4*VoH.clamp_min(1e-4))*NoH
         pdf_diff = NoL/math.pi
         pdf = 0.5*pdf_spec + 0.5*pdf_diff
 
-        # get brdf
         kd = albedo*(1-metallic)
         ks = 0.04*(1-metallic) + albedo*metallic
 
@@ -131,55 +193,85 @@ class PBRBRDF(nn.Module):
 
         return brdf, pdf
     
+    def eval_brdf(self, params, pos, wi, wo, normal, latent=None, batch_mask=None):
+        NoL = (wi*normal).sum(-1, keepdim=True)
+        NoV = (wo*normal).sum(-1, keepdim=True)
+        valid_geometry = (NoL > 0) & (NoV > 0)
+        
+        if not valid_geometry.any():
+            return torch.zeros_like(wi), torch.zeros(wi.shape[0], 1, device=wi.device)
+        
+        albedo = self.albedo.expand(normal.shape[0], 3)
+        mask = perlin_mask(pos, scale=self.perlin_scale, randomness=self.perlin_randomness)
+        roughness0, metallic0 = params['roughness'][:, 0], params['metallic'][:, 0]
+        brdf0, pdf0 = self.compute_brdf_pdf(albedo, roughness0, metallic0, wi, wo, normal)
+        roughness1, metallic1 = params['roughness'][:, 1], params['metallic'][:, 1]
+        brdf1, pdf1 = self.compute_brdf_pdf(albedo, roughness1, metallic1, wi, wo, normal)
+
+        brdf = brdf0 * mask + brdf1 * (1 - mask)
+        # pdf = pdf0 * mask + pdf1 * (1 - mask)
+        pdf = pdf1
+         
+        return brdf, pdf
+    
     def sample_brdf(self, params, pos, sample1, sample2, wo, normal, latent=None, batch_mask=None):
-        """ importance sampling brdf and get brdf/pdf
-        Args:
-            params: Bx2 material parameters
-            pos: Bx3 position
-            sample1: B unifrom samples
-            sample2: Bx2 uniform samples
-            wo: Bx3 viewing direction
-            normal: Bx3 normal
-            batch_mask: B indices indicating which batch each ray belongs to
-        Return:
-            wi: Bx3 sampled direction
-            pdf: Bx1
-            brdf_weight: Bx3 brdf/pdf
-        """
         B = sample1.shape[0]
         device = sample1.device
 
-        pdf = torch.zeros(B,device=device)
-        brdf = torch.zeros(B,3,device=device)
+        # Compute blending mask
+        mask = perlin_mask(pos, scale=self.perlin_scale, randomness=self.perlin_randomness).view(-1)
 
+        # Sample diffuse directions (same across both materials)
+        wi_diffuse = self.diffuse_sampler(sample2, normal)
 
-        mask = (sample1 > 0.5)
-        wi_diffuse = self.diffuse_sampler(sample2[mask], normal[mask])
-        hemisphere_mask = hemisphere_detection(pos).view(-1, 1)
-        roughness = torch.where(
-            hemisphere_mask,
-            params['roughness'][:, 0].expand_as(hemisphere_mask),
-            params['roughness'][:, 1].expand_as(hemisphere_mask)
-        )
-        # roughness = roughness[batch_mask]
-        wi_specular = self.specular_sampler(sample2[~mask], roughness[~mask], wo[~mask], normal[~mask])
+        # Sample specular directions for both materials
+        roughness0 = params['roughness'][:, 0]
+        roughness1 = params['roughness'][:, 1]
+        wi_spec0 = self.specular_sampler(sample2, roughness0, wo, normal)
+        wi_spec1 = self.specular_sampler(sample2, roughness1, wo, normal)
 
-        # Construct wi without gradient-breaking assignment
+        # Mix sampled directions based on mask
+        wi_spec = wi_spec1
+
+        # Choose whether to use diffuse or specular
+        select_diff = sample1 > 0.5
         wi = torch.zeros(B, 3, device=device)
-        wi = wi.clone()  # explicitly ensures gradients
-        wi[mask] = wi_diffuse
-        wi[~mask] = wi_specular
-        # get brdf,pdf
-        brdf,pdf = self.eval_brdf(params, pos,wi, wo, normal, latent, batch_mask)
-        brdf_weight = torch.where(pdf>0,brdf/pdf,0)
+        wi[select_diff] = wi_diffuse[select_diff]
+        wi[~select_diff] = wi_spec[~select_diff]
+
+        # Evaluate blended BRDF
+        brdf, pdf = self.eval_brdf(params, pos, wi, wo, normal, latent, batch_mask)
+        brdf_weight = torch.where(pdf > 0, brdf / pdf, torch.zeros_like(brdf))
         brdf_weight[brdf_weight.isnan()] = 0
-        return wi,pdf,brdf_weight
+
+        return wi, pdf, brdf_weight
     
 class ProxyPBRBRDF(nn.Module):
-    def __init__(self, roughness=0.1):
+    def __init__(self, roughness=0.2):
         super(ProxyPBRBRDF, self).__init__()
+        roughness = 0.21
         self.roughness = nn.Parameter(torch.full((1, 1), roughness).cuda())  # Default roughness parameter
         self.albedo = torch.ones(1, 3).cuda()
+        
+        # Spatial encoder for position-dependent roughness
+        self.spatial_roughness_encoder = nn.Sequential(
+            nn.Linear(3, 64),
+            nn.ReLU(),
+            nn.Linear(64, 32),
+            nn.ReLU(),
+            nn.Linear(32, 1),
+            nn.Sigmoid()  # Ensure roughness is between 0 and 1
+        )
+    
+    def get_roughness(self, pos):
+        """
+        Get position-dependent roughness
+        Args:
+            pos: Bx3 position
+        Return:
+            roughness: Bx1 roughness parameter
+        """
+        return self.spatial_roughness_encoder(pos)
     
     def eval_pdf(self, wi, wo, normal, roughness=None):
         """ evaluate BRDF and pdf
@@ -275,14 +367,12 @@ class ProxyPBRBRDF(nn.Module):
         """
         B = sample1.shape[0]
         device = sample1.device
-        hemisphere_mask = hemisphere_detection(pos).view(-1, 1)
-        roughness = torch.where(
-            hemisphere_mask,
-            roughness[:, 0].expand_as(hemisphere_mask),
-            roughness[:, 1].expand_as(hemisphere_mask)
-        )
-        # roughness = roughness[batch_mask]
-
+        
+        # # Use spatial encoder to get position-dependent roughness if not provided
+        # if roughness is None:
+        # roughness = self.get_roughness(pos)
+        roughness = self.roughness.expand(B, 1)
+        
         pdf = torch.zeros(B, device=device)
 
         mask = (sample1 > 0.5)
@@ -443,4 +533,266 @@ class LatentModel(nn.Module):
         brdf_weight = torch.where(pdf_proxy > 0, mlp_brdf / (stop_gradient_pdf_proxy + 1e-8), torch.zeros_like(mlp_brdf))
 
         return wi_proxy, stop_gradient_pdf_proxy, brdf_weight
+
+
+class SpatialLatentEncoder(nn.Module):
+    """Encodes 3D positions into latent codes for spatially-varying materials"""
+    def __init__(self, latent_dim, hidden_dims=[64, 128, 64], use_pos_enc=True, num_freqs=10, pos_enc_type="spherical"):
+        super(SpatialLatentEncoder, self).__init__()
+        
+        self.use_pos_enc = use_pos_enc
+        self.num_freqs = num_freqs
+        self.pos_enc_type = pos_enc_type  # "spherical" or "sinusoidal"
+        
+        # Calculate input dimension based on whether we use positional encoding
+        input_dim = 3  # Default is 3D position
+        if self.use_pos_enc:
+            if self.pos_enc_type == "spherical":
+                # For each of the 2D spherical coordinates (theta, phi), we have 2*num_freqs features
+                # (sin and cos for each frequency)
+                input_dim = 3 + 2 * 2 * self.num_freqs  # Original 3D + encoded 2D manifold
+            elif self.pos_enc_type == "sinusoidal":
+                # For each of the 3 coordinates, we have 2*num_freqs features (sin and cos)
+                input_dim = 3 + 3 * 2 * self.num_freqs  # Original 3D + encoded 3D
+        
+        # Build MLP layers
+        layers = []
+        prev_dim = input_dim
+        for hidden_dim in hidden_dims:
+            layers.append(nn.Linear(prev_dim, hidden_dim))
+            layers.append(nn.ReLU())
+            prev_dim = hidden_dim
+            
+        # Final layer outputs the latent code
+        layers.append(nn.Linear(prev_dim, latent_dim))
+        
+        self.mlp = nn.Sequential(*layers)
     
+    def positional_encoding(self, pos):
+        """
+        Apply positional encoding to the input positions
+        Args:
+            pos: Bx3 positions
+        Returns:
+            encoded_pos: Bx(encoded_dim) encoded positions
+        """
+        if self.pos_enc_type == "spherical":
+            return self.spherical_encoding(pos)
+        elif self.pos_enc_type == "sinusoidal":
+            return self.sinusoidal_encoding(pos)
+        else:
+            raise ValueError(f"Unknown positional encoding type: {self.pos_enc_type}")
+    
+    def spherical_encoding(self, pos):
+        """
+        Apply spherical positional encoding
+        Args:
+            pos: Bx3 positions on a sphere
+        Returns:
+            encoded_pos: Bx(3+2*2*num_freqs) encoded positions
+        """
+        # Normalize positions to ensure they're on the unit sphere
+        pos_normalized = NF.normalize(pos, dim=-1)
+        
+        # Convert to spherical coordinates (theta, phi)
+        # theta: polar angle (0 to π)
+        # phi: azimuthal angle (0 to 2π)
+        theta = torch.acos(torch.clamp(pos_normalized[:, 2], -1.0, 1.0))
+        phi = torch.atan2(pos_normalized[:, 1], pos_normalized[:, 0])
+        
+        # Create positional encoding
+        encoded_list = [pos]  # Start with original position
+        
+        # Apply encoding to theta and phi
+        for i in range(self.num_freqs):
+            freq = 2.0 ** i
+            for angle in [theta, phi]:
+                encoded_list.append(torch.sin(freq * angle).unsqueeze(-1))
+                encoded_list.append(torch.cos(freq * angle).unsqueeze(-1))
+        
+        # Concatenate all encodings
+        encoded_pos = torch.cat(encoded_list, dim=-1)
+        return encoded_pos
+    
+    def sinusoidal_encoding(self, pos):
+        """
+        Apply standard sinusoidal positional encoding to 3D positions
+        Args:
+            pos: Bx3 positions
+        Returns:
+            encoded_pos: Bx(3+3*2*num_freqs) encoded positions
+        """
+        encoded_list = [pos]  # Start with original position
+        
+        # Apply encoding to each coordinate (x, y, z)
+        for i in range(self.num_freqs):
+            freq = 2.0 ** i
+            for j in range(3):  # For each coordinate
+                coord = pos[:, j]
+                encoded_list.append(torch.sin(freq * coord).unsqueeze(-1))
+                encoded_list.append(torch.cos(freq * coord).unsqueeze(-1))
+        
+        # Concatenate all encodings
+        encoded_pos = torch.cat(encoded_list, dim=-1)
+        return encoded_pos
+    
+    def forward(self, pos):
+        """
+        Args:
+            pos: Bx3 positions in 3D space (on a sphere)
+        Returns:
+            latent: BxD latent codes
+        """
+        if self.use_pos_enc:
+            pos = self.positional_encoding(pos)
+        return self.mlp(pos)
+
+class SvLatentModel(nn.Module):
+    """ MLP-based BRDF class with spatial-varying latent encoding """
+    def __init__(self, cfg):
+        super(SvLatentModel, self).__init__()
+
+        # Latent dimension from config
+        self.latent_dim = cfg.latent_dim
+        
+        # Create spatial encoder
+        self.spatial_encoder = SpatialLatentEncoder(self.latent_dim)
+        
+        # Add SH positional encoding module
+        self.degree = 3
+        self.pos_enc = True
+        if self.pos_enc:
+            self.sh_encoder = lambda x: components_from_spherical_harmonics(self.degree, x)
+            
+        # Calculate input dimension after SH encoding
+        sh_dim = num_sh_bases(self.degree)
+        encoded_input_dim = sh_dim * 3  # wi, wo, normal each encoded by SH
+        
+        # Add latent dimension to input
+        input_dim = encoded_input_dim + self.latent_dim if self.pos_enc else cfg.input_channels + self.latent_dim
+        # Build MLP layers
+        layers = []
+        prev_dim = input_dim
+        for hidden_dim in cfg.hidden_layers:
+            layers.append(nn.Linear(prev_dim, hidden_dim))
+            if cfg.activation.lower() == "relu":
+                layers.append(nn.ReLU())
+            prev_dim = hidden_dim
+            
+        layers.append(nn.Linear(prev_dim, cfg.output_channels))
+        layers.append(nn.LeakyReLU(0.2))
+        
+        self.mlp = nn.Sequential(*layers)
+
+        # Initialize proxy BRDF for importance sampling
+        self.proxy_brdf = ProxyPBRBRDF()  # Default roughness
+
+    def forward(self, pos, wi, wo, normal, latent=None, batch_mask=None):
+        """
+        Evaluate BRDF using MLP with spatial-varying latent encoding
+        Args:
+            pos: Bx3 position in 3D space
+            wi: Bx3 incoming light direction 
+            wo: Bx3 outgoing view direction
+            normal: Bx3 normal
+            latent: ignored (for compatibility)
+        Returns:
+            brdf: Bx1 BRDF values
+        """
+        # Generate latent code from position
+        latent = self.spatial_encoder(pos)
+
+        if self.pos_enc:
+            wi_enc = self.sh_encoder(wi)
+            wo_enc = self.sh_encoder(wo)
+            normal_enc = self.sh_encoder(normal)
+            x = torch.cat([wi_enc, wo_enc, normal_enc, latent], dim=-1)
+        else:
+            x = torch.cat([wi, wo, normal, latent], dim=-1)
+            
+        return self.mlp(x)
+
+    def world_to_local(self, v, normal):
+        
+        # choose arbitrary tangent
+        up = torch.tensor([0.0, 1.0, 0.0], device=normal.device).expand_as(normal)
+        tangent = torch.cross(up, normal)
+        tangent_len = tangent.norm(dim=-1, keepdim=True)
+        
+        # if normal is collinear with [0,1,0], choose another tangent
+        collinear_mask = tangent_len.squeeze(-1) < 1e-6
+        if collinear_mask.any():
+            tangent[collinear_mask] = torch.cross(normal[collinear_mask], torch.tensor([1., 0., 0.].expand_as(normal[collinear_mask])), device=normal.device)
+            tangent_len = tangent.norm(dim=-1, keepdim=True)
+
+        tangent = tangent / tangent_len
+
+        bitangent = torch.cross(normal, tangent)
+
+        v_local = torch.stack([
+            (v * tangent).sum(dim=-1),
+            (v * bitangent).sum(dim=-1),
+            (v * normal).sum(dim=-1)
+        ], dim=-1)
+
+        return v_local
+    
+    def eval_brdf(self, gt_params, pos, wi, wo, normal, latent=None, batch_mask=None):
+        """
+        Evaluate BRDF and pdf after transforming world-space vectors to local space.
+        Args:
+            gt_params: dictionary of ground truth parameters
+            pos: Bx3 position
+            wi: Bx3 light direction in world space
+            wo: Bx3 viewing direction in world space
+            normal: Bx3 normal in world space
+            latent: optional latent code
+            batch_mask: optional batch mask
+        Returns:
+            brdf: Bx3 BRDF values
+            pdf: Bx1 probability
+        """
+        # Ensure normal is normalized
+        NoL = (wi*normal).sum(-1,keepdim=True)
+        NoV = (wo*normal).sum(-1,keepdim=True)
+        wi_local = self.world_to_local(wi, normal)
+        wo_local = self.world_to_local(wo, normal)
+        local_normal = torch.zeros_like(wi_local)
+        local_normal[..., 2] = 1.0  # Normal is always (0,0,1) in local space
+        brdf_value = self.forward(pos, wi_local, wo_local, local_normal, latent, batch_mask)
+        brdf = brdf_value.expand(-1, 3)
+
+        pdf = NoL / math.pi
+
+        return brdf, pdf
+    
+    def sample_brdf(self, params, pos, sample1, sample2, wo, normal, latent=None, batch_mask=None):
+        """
+        Importance sampling BRDF using proxy (PBRBRDF) and evaluating MLP BRDF.
+        
+        Args:
+            params: dictionary of parameters
+            pos: Bx3 position
+            sample1: B uniform samples [0,1] to select diffuse or specular sampling
+            sample2: Bx2 uniform samples for hemisphere sampling
+            wo: Bx3 viewing direction in world space
+            normal: Bx3 normal in world space
+            latent: optional latent code
+            batch_mask: optional batch mask
+
+        Returns:
+            wi: Bx3 sampled incoming directions (world space)
+            pdf: Bx1 sampling pdf values from proxy_brdf
+            brdf_weight: Bx3 ratio (MLP evaluated BRDF / pdf)
+        """
+        # Sample direction using proxy BRDF
+        wi_proxy, pdf_proxy = self.proxy_brdf.sample_brdf(pos, sample1, sample2, wo, normal, params['roughness'], batch_mask)
+        
+        stop_gradient_pdf_proxy = pdf_proxy.detach()
+        mlp_brdf, _ = self.eval_brdf(params, pos, wi_proxy, wo, normal, latent, batch_mask)
+        
+        # Calculate weight (MLP BRDF / PDF)
+        mlp_brdf = mlp_brdf * pdf_proxy / (stop_gradient_pdf_proxy + 1e-8)
+        brdf_weight = torch.where(pdf_proxy > 0, mlp_brdf / (stop_gradient_pdf_proxy + 1e-8), torch.zeros_like(mlp_brdf))
+
+        return wi_proxy, stop_gradient_pdf_proxy, brdf_weight

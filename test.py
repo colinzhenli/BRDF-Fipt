@@ -8,7 +8,7 @@ import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
 from renderer import ForwardRenderer
 from brdf_trainer import BRDFTrainer
-from model.brdf import PBRBRDF, LatentModel
+from model.brdf import PBRBRDF, SvLatentModel
 from model.emitter import DynamicPointEmitter, EnvMapEmitter
 from torch.utils.data import DataLoader
 from itertools import islice
@@ -79,7 +79,7 @@ def main(cfg):
     roughness = gt_material_cfg.roughness
     metallic = gt_material_cfg.metallic
 
-    material = LatentModel(cfg.material)
+    material = SvLatentModel(cfg.material)
     gt_material = PBRBRDF(
         albedo=torch.tensor(albedo)
     )  # Ground truth uses pbr config
@@ -90,18 +90,27 @@ def main(cfg):
     if os.path.isfile(cfg.model.ckpt_path):
         print(f"=> loading model checkpoint '{cfg.model.ckpt_path}'")
         checkpoint = torch.load(cfg.model.ckpt_path, map_location=model.device, weights_only=False)
-        model.load_state_dict(checkpoint['state_dict'])
-        print("=> loaded checkpoint successfully.")
+        # Load parameters that exist in the checkpoint, keep new parameters as initialized
+        model_dict = model.state_dict()
+        pretrained_dict = {k: v for k, v in checkpoint['state_dict'].items() if k in model_dict}
+        model_dict.update(pretrained_dict)
+        model.load_state_dict(model_dict)
+        print(f"=> loaded checkpoint successfully. {len(pretrained_dict)}/{len(model_dict)} parameters loaded.")
     else:
         raise FileNotFoundError(f"No checkpoint found at '{cfg.model.ckpt_path}'.")
 
     print("==> optimizing latents for test materials...")
 
-    # Create a separate tensor for dual-latent codes instead of using model.test_latents
-    test_latents = torch.nn.Embedding(cfg.data.test_num, 2 * cfg.material.latent_dim, device=model.device)
-    torch.nn.init.normal_(test_latents.weight, mean=0.0, std=0.01)
-    # When used, we'll reshape to [B, 2, N] where N is the latent dimension
-    optimizer = torch.optim.Adam([test_latents.weight], lr=cfg.model.optimizer.inference_lr, betas=(0.9, 0.999), weight_decay=cfg.model.optimizer.weight_decay)
+    # # Create a separate tensor for dual-latent codes instead of using model.test_latents
+    # test_latents = torch.nn.Embedding(cfg.data.test_num, 2 * cfg.material.latent_dim, device=model.device)
+    # torch.nn.init.normal_(test_latents.weight, mean=0.0, std=0.01)
+    # # When used, we'll reshape to [B, 2, N] where N is the latent dimension
+    
+    # Optimize the spatial latent encoder and proxy BRDF parameters instead of test latents
+    optimizer = torch.optim.Adam([
+        {'params': material.spatial_encoder.parameters()},
+        {'params': material.proxy_brdf.parameters()}
+    ], lr=cfg.model.optimizer.inference_lr, betas=(0.9, 0.999), weight_decay=cfg.model.optimizer.weight_decay)
     
     # Setup cosine learning rate decay
     warmup_steps = int(0.5 * cfg.model.optimizer.inference_steps)  # 50% warmup
@@ -156,7 +165,8 @@ def main(cfg):
             batch_indices = torch.tensor([0], device=model.device)
             
             # # Get latents for the batch using the indices
-            latents = test_latents(batch_indices)
+            # latents = test_latents(batch_indices)
+            latents = None
             
             # Render all samples in batch
             rgbs = model.renderer.render(emitter, rays, point_emitter_cfg.renderer.spp.test, None, latents)
@@ -169,9 +179,9 @@ def main(cfg):
             
             # Compute loss for the entire batch
             recon_loss = torch.nn.functional.l1_loss(rgbs, rgbs_gt)
-            latent_reg = torch.norm(latents, p=2, dim=1).mean()
-            total_loss = recon_loss + cfg.model.loss.latent_reg_loss.weight * latent_reg
-            
+            # latent_reg = torch.norm(latents, p=2, dim=1).mean()
+            # total_loss = recon_loss + cfg.model.loss.latent_reg_loss.weight * latent_reg
+            total_loss = recon_loss
             # Backward and optimize
             total_loss.backward()
             optimizer.step()
@@ -182,7 +192,7 @@ def main(cfg):
             
             if step % 100 == 0:
                 current_lr = optimizer.param_groups[0]['lr']
-                tqdm.write(f"Step {step}/{cfg.model.optimizer.inference_steps}, Loss: {total_loss.item():.6f}, Recon: {recon_loss.item():.6f}, Reg: {latent_reg.item():.6f}, LR: {current_lr:.6f}")
+                tqdm.write(f"Step {step}/{cfg.model.optimizer.inference_steps}, Loss: {total_loss.item():.6f}, Recon: {recon_loss.item():.6f}, LR: {current_lr:.6f}")
     else:
         print("==> skipping latent optimization...")
 
@@ -216,7 +226,8 @@ def main(cfg):
                     model.roughness_metallic_to_index[param_key] = len(model.roughness_metallic_to_index)
                 latent = model.train_latents(torch.tensor([model.roughness_metallic_to_index[param_key]], device=model.device)) # use the learned latents in the training set
             else:
-                latent = test_latents(torch.tensor([0], device=model.device))
+                # latent = test_latents(torch.tensor([0], device=model.device))
+                latent = None
             psnr_list = []
 
             for view_idx in tqdm(range(dataset.number_of_views), desc=f"Rendering views for {param_key}", leave=False):
@@ -239,11 +250,19 @@ def main(cfg):
                 # Signed error as sum over RGB channels
                 error_map = img_pred - img_gt  # shape: [H, W, 3]
                 error_scalar = error_map.sum(dim=-1, keepdim=True)  # shape: [H, W, 1]
-                error_magnitude = error_scalar.abs()
-                error_map_r = torch.zeros_like(error_scalar)
-                error_map_b = torch.zeros_like(error_scalar)
-                error_map_r[error_scalar > 0] = error_magnitude[error_scalar > 0]
-                error_map_b[error_scalar < 0] = error_magnitude[error_scalar < 0]
+                
+                # Calculate brightness of ground truth for normalization
+                brightness = img_gt.sum(dim=-1, keepdim=True).clamp_min(1e-6)  # Avoid division by zero
+                
+                # Normalize error by the brightness (relative error)
+                relative_error = error_scalar / brightness
+                error_magnitude = relative_error.abs()
+                
+                # Create red-blue error visualization
+                error_map_r = torch.zeros_like(relative_error)
+                error_map_b = torch.zeros_like(relative_error)
+                error_map_r[relative_error > 0] = error_magnitude[relative_error > 0]
+                error_map_b[relative_error < 0] = error_magnitude[relative_error < 0]
                 error_map_display = torch.cat([error_map_r, torch.zeros_like(error_map_r), error_map_b], dim=-1)
                 
                 # Save error map
