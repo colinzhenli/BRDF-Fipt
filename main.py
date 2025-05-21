@@ -8,7 +8,7 @@ import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
 from renderer import ForwardRenderer
 from brdf_trainer import BRDFTrainer
-from model.brdf import LatentModel, PBRBRDF
+from model.brdf import SvLatentModel, SvPBRBRDF
 from torch.utils.data import DataLoader
 from utils.dataset import SphereIterableDataset, SphereValDataset
 import hydra
@@ -43,12 +43,12 @@ def main(cfg):
     roughness = gt_material_cfg.roughness
     metallic = gt_material_cfg.metallic
     
-    output_folder = os.path.join(cfg.exp_output_root_path, f'roughness_{roughness:.2f}_metallic_{metallic:.2f}')
+    output_folder = os.path.join(cfg.exp_output_root_path, f'fabric_pattern_07_4k')
     os.makedirs(output_folder, exist_ok=True)
 
     # Initialize materials using different configs
-    material = LatentModel(cfg.material)  # MLP model uses mlp_pbr config
-    gt_material = PBRBRDF(
+    material = SvLatentModel(cfg.material)  # MLP model uses mlp_pbr config
+    gt_material = SvPBRBRDF(
         albedo=torch.tensor(albedo)
     )  # Ground truth uses pbr config
 

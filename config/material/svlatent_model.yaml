@@ -5,5 +5,5 @@ hidden_layers: [128, 128, 64, 32, 16]
 
 activation: "relu"
 input_channels: 9
-output_channels: 1
+output_channels: 3
 

@@ -10,14 +10,14 @@
             "name": "Python: Current File",
             "type": "python",
             "request": "launch",
-            "program": "test.py",
+            "program": "main.py",
             "console": "integratedTerminal",
             "justMyCode": true,
             "args": [
-                "renderer=envmap_emitter",
+                "renderer=dynamicpoint_emitter",
                 "material=svlatent_model",
-                "experiment_name=Spherical-positional-encoding-Highest-frequency-Zoomed-signal-Relative-error-map-More-inference-steps-Roughness-1-test-samplingPerlin-Sv-latent-encoder_test_debug",
-                "model.ckpt_path=/localhome/zla247/theia2_data/output/BRDF-Fipt/Over-fit_experiments_2/sphere/Correct-cameras-Miltiple-material-Batched-train_run_1/training/model_0.20_0.20/last-v1.ckpt",
+                "experiment_name=Colorful-Spherical-encoding-Svbrdf_training_run_1",
+                // "model.ckpt_path=/localhome/zla247/theia2_data/output/BRDF-Fipt/Over-fit_experiments_2/sphere/Correct-cameras-Miltiple-material-Batched-train_run_1/training/model_0.20_0.20/last-v1.ckpt",
                 "test_on_train=False"
             ]
         }

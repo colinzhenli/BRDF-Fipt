@@ -21,13 +21,7 @@ class BRDFTrainer(pl.LightningModule):
         self.gt_folder = cfg.gt_folder
         
         self.latent_dim = cfg.material.latent_dim
-        self.train_latents = torch.nn.Embedding(int(cfg.data.train_num), self.latent_dim)
         # Create a mapping from roughness-metallic pairs to train latent indices
-        self.roughness_metallic_to_index = {}
-        
-        # Store roughness and metallic values for test rendering
-        self.roughness = roughness
-        self.metallic = metallic
 
         
         self.latent_reg_weight = cfg.model.latent_reg_weight if hasattr(cfg.model, 'latent_reg_weight') else 1e-4
@@ -38,12 +32,37 @@ class BRDFTrainer(pl.LightningModule):
         self.gt_renderer = ForwardRenderer(cfg, self.gt_material)
         self.img_hw = cfg.renderer.resolution
 
-    def gamma(self, x):
-        mask = x <= 0.0031308
-        ret = torch.empty_like(x)
-        ret[mask] = 12.92 * x[mask]
-        ret[~mask] = 1.055 * x[~mask].pow(1/2.4) - 0.055
-        return ret
+    # def gamma(self, x):
+    #     mask = x <= 0.0031308
+    #     ret = torch.empty_like(x)
+    #     ret[mask] = 12.92 * x[mask]
+    #     ret[~mask] = 1.055 * x[~mask].pow(1/2.4) - 0.055
+    #     return ret
+    def gamma(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Convert a tensor of linear-light RGB values to sRGB.
+        Matches Blender's built-in OCIO conversion (Standard view-transform).
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            *Linear* RGB values in **[0 … ∞)**. Negative values are clamped to 0.
+
+        Returns
+        -------
+        torch.Tensor
+            sRGB-encoded values in the display range **[0 … 1]**.
+        """
+        # --- constants taken from the official sRGB transfer function ---
+        _A   = 0.055           # 1.055 - 1
+        _K0  = 0.0031308       # linear-to-sRGB break-point
+        _PHI = 1.0 / 2.4       # 0.416̅  = 1/γ
+
+        x_lin = x.clamp(min=0.0)               # Blender never shows negative light
+        low   = 12.92 * x_lin                  # linear segment
+        high  = 1.055 * torch.pow(x_lin, _PHI) - _A
+
+        return torch.where(x_lin <= _K0, low, high).clamp(0.0, 1.0)
 
     def configure_optimizers(self):  
         params_to_optimize = self.parameters()
@@ -84,15 +103,7 @@ class BRDFTrainer(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         # Handle batch of roughness and metallic values
         batch_indices = []
-        roughness = batch['gt_params']['roughness']
-        metallic = batch['gt_params']['metallic']
-        keys = [f"{r:.2f}_{m:.2f}" for r, m in zip(roughness, metallic)]
-        for key in keys:
-            if key not in self.roughness_metallic_to_index:
-                self.roughness_metallic_to_index[key] = len(self.roughness_metallic_to_index)
-        batch_indices = [self.roughness_metallic_to_index[key] for key in keys]
-        # Get latents for the batch using the indices
-        latent = self.train_latents(torch.tensor(batch_indices, device=self.device))
+        gt_params = batch['gt_params']
         
         # randomly initialize emitter
         emitter = DynamicPointEmitter(
@@ -102,7 +113,7 @@ class BRDFTrainer(pl.LightningModule):
         
         # Render step
         rays, gt_params = batch['rays'], batch['gt_params']
-        rgbs = self.renderer.render(emitter, rays, self.cfg.renderer.spp.train, None, latent)
+        rgbs = self.renderer.render(emitter, rays, self.cfg.renderer.spp.train, None, None)
 
         if self.gt_folder is None:
             with torch.no_grad():
@@ -112,7 +123,7 @@ class BRDFTrainer(pl.LightningModule):
         
         # Reconstruction loss
         recon_loss = NF.l1_loss(rgbs, rgbs_gt)
-        latent_reg = torch.norm(latent, p=2)
+        latent_reg = 0
         loss = recon_loss + self.hparams.model.loss.latent_reg_loss.weight * latent_reg
         
         psnr_loss = NF.mse_loss(self.gamma(rgbs), self.gamma(rgbs_gt))
@@ -126,16 +137,10 @@ class BRDFTrainer(pl.LightningModule):
         return loss
 
     def validation_step(self, batch, batch_idx):
+        """ batch pbr texture: [B, H, W, 16] """
         batch_indices = []
-        roughness = batch['gt_params']['roughness']
-        metallic = batch['gt_params']['metallic']
-        keys = [f"{r:.2f}_{m:.2f}" for r, m in zip(roughness, metallic)]
-        for key in keys:
-            if key not in self.roughness_metallic_to_index:
-                self.roughness_metallic_to_index[key] = len(self.roughness_metallic_to_index)
-        batch_indices = [self.roughness_metallic_to_index[key] for key in keys]
+        gt_params = batch['gt_params']
         # Get latents for the batch using the indices
-        latent = self.train_latents(torch.tensor(batch_indices, device=self.device))
 
         emitter = DynamicPointEmitter(
             dist=self.cfg.renderer.emitter.dist,
@@ -144,7 +149,7 @@ class BRDFTrainer(pl.LightningModule):
         
         # Render step logic
         rays, gt_params = batch['rays'], batch['gt_params']
-        rgbs = self.renderer.render(emitter, rays, self.cfg.renderer.spp.train, None, latent)
+        rgbs = self.renderer.render(emitter, rays, self.cfg.renderer.spp.train, None, None)
 
         if self.gt_folder is None:
             with torch.no_grad():
@@ -156,11 +161,11 @@ class BRDFTrainer(pl.LightningModule):
         psnr = -10.0 * torch.log10(psnr_loss.clamp_min(1e-5))
         
         recon_loss = NF.l1_loss(rgbs, rgbs_gt)
-        latent_reg = torch.norm(latent, p=2)
+        latent_reg = 0
         loss = recon_loss + self.hparams.model.loss.latent_reg_loss.weight * latent_reg
         
         # Handle batch of images
-        batch_size = roughness.shape[0]
+        batch_size = 1
         batched_rgbs = rgbs.reshape(batch_size, *self.img_hw, -1)
         batched_rgbs_gt = rgbs_gt.reshape(batch_size, *self.img_hw, -1)
         for b in range(batch_size):
@@ -171,7 +176,7 @@ class BRDFTrainer(pl.LightningModule):
             # Create output directory for each sample
             output_dir = os.path.join(
                 self.cfg.exp_output_root_path,
-                f'val_roughness_{roughness[b].item():.2f}_metallic_{metallic[b].item():.2f}'
+                f'fabric_pattern_07_4k'
             )
             os.makedirs(output_dir, exist_ok=True)
             
@@ -179,6 +184,11 @@ class BRDFTrainer(pl.LightningModule):
             torchvision.utils.save_image(
                 self.gamma(sample_rgbs_gt.permute(2, 0, 1)),
                 os.path.join(output_dir, f'gt_view_{batch_idx}_{b}.png')
+            )
+            # Save non-gamma-corrected result image
+            torchvision.utils.save_image(
+                sample_rgbs_gt.permute(2, 0, 1),
+                os.path.join(output_dir, f'gt_view_linear_{batch_idx}_{b}.png')
             )
             torchvision.utils.save_image(
                 self.gamma(sample_rgbs.permute(2, 0, 1)),

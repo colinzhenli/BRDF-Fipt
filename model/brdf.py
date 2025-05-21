@@ -116,6 +116,158 @@ def perlin_mask(pos, scale=1.0, randomness=0.5):
     mask = torch.clamp(mask, 0.0, 1.0)  # Ensure values stay within valid range
     return mask.view(-1, 1)
 
+def xyz_to_uv(pos, radius):
+    """Convert xyz on a sphere of radius `radius` to uv in [0,1]².
+    pos : [...,3] tensor (world units)
+    returns : [...,2] tensor (u,v)"""
+    xyz_norm = pos / radius
+    x, y, z = xyz_norm.unbind(-1)
+    u = torch.atan2(z, x) / (2 * torch.pi) + 0.5
+    v = torch.asin(y.clamp(-1, 1)) / torch.pi + 0.5
+    return torch.stack([u, v], dim=-1)
+
+class SvPBRBRDF(nn.Module):
+    """ Base BRDF class """
+    def __init__(self, albedo=torch.ones(1, 3)):
+        super(SvPBRBRDF,self).__init__()
+        # Initialize learnable material parameters
+        self.albedo = nn.Parameter(albedo)
+    def diffuse_sampler(self, sample2, normal):
+        """ sampling diffuse lobe: wi ~ NoV/math.pi 
+        Args:
+            sample2: Bx2 unIform samples
+            normal: Bx3 normal
+        Return:
+            wi: Bx3 sampled direction in world space
+        """
+        theta = torch.asin(sample2[...,0].sqrt())
+        phi = math.pi*2*sample2[...,1]
+        wi = angle2xyz(theta,phi)
+        
+        Nmat = get_normal_space(normal)
+        wi = (wi[:,None]@Nmat.permute(0,2,1)).squeeze(1)    
+        if wi.isnan().any():
+            print("wi is nan")
+        return wi
+
+
+    def specular_sampler(self, sample2,roughness, wo, normal):
+        """ sampling ggx lobe: h ~ D/(VoH*4)*NoH
+        Args:
+            sample2: Bx3 uniform samples
+            roughness: Bx1 roughness
+            wo: Bx3 viewing direction
+            normal: Bx3 normal
+        Return:
+            wi: Bx3 sampled direction in world space
+        """
+        alpha = (roughness * roughness).squeeze(-1)
+        
+        # sample half vector
+        theta = (1-sample2[...,0])/((sample2[...,0]*(alpha*alpha-1)+1))
+        theta = torch.acos(theta.sqrt())
+
+        phi = 2*math.pi*sample2[...,1]
+        wh = angle2xyz(theta,phi)
+
+        # half vector to wi
+        Nmat = get_normal_space(normal)
+        wh = (wh[:,None]@Nmat.permute(0,2,1)).squeeze(1)
+        wi = 2*(wo*wh).sum(-1,keepdim=True)*wh-wo
+        wi = NF.normalize(wi,dim=-1)
+        return wi
+
+    def compute_svbrdf_pdf(self, albedo, roughness, metallic, wi, wo, normal):
+        h = NF.normalize(wi+wo,dim=-1)
+        NoL = (wi*normal).sum(-1,keepdim=True).relu()
+        NoV = (wo*normal).sum(-1,keepdim=True).relu()
+        VoH = (wo*h).sum(-1,keepdim=True).relu()
+        NoH = (normal*h).sum(-1,keepdim=True).relu()
+
+        D = D_GGX(NoH,roughness)
+        pdf_spec = D.data/(4*VoH.clamp_min(1e-4))*NoH
+        pdf_diff = NoL/math.pi
+        pdf = 0.5*pdf_spec + 0.5*pdf_diff
+
+        kd = albedo*(1-metallic)
+        ks = 0.04*(1-metallic) + albedo*metallic
+
+        G = G_Smith(NoV,NoL,roughness)
+        F = fresnelSchlick(VoH,ks)
+        brdf_diff = kd/math.pi*NoL
+        brdf_spec = D*G*F/4.0*NoL
+
+        brdf = brdf_diff + brdf_spec
+
+        return brdf, pdf
+    
+    def eval_brdf(self, params, pos, wi, wo, normal, latent=None, batch_mask=None):
+        NoL = (wi*normal).sum(-1, keepdim=True)
+        NoV = (wo*normal).sum(-1, keepdim=True)
+        valid_geometry = (NoL > 0) & (NoV > 0)
+        
+        if not valid_geometry.any():
+            return torch.zeros_like(wi), torch.zeros(wi.shape[0], 1, device=wi.device)
+        radius = 0.2
+        uv = xyz_to_uv(pos, radius) 
+        # Get PBR texture values at the given UV coordinates
+        # params has shape [B, H, W, 16]
+        # uv has shape [N, 2]
+        
+        # Convert UV coordinates to pixel coordinates
+        H, W = params.shape[1:3]
+        u_pixel = (uv[:, 0] * (W - 1)).clamp(0, W - 1).long()
+        v_pixel = (uv[:, 1] * (H - 1)).clamp(0, H - 1).long()
+        pbr_values = params.squeeze(0)[u_pixel, v_pixel]
+        base_color = pbr_values[:, 0:3]
+        
+        # ARM texture (channels 6-8)
+        arm = pbr_values[:, 6:9]
+        albedo = arm[:, 0:1]
+        roughness = arm[:, 1:2]  # Roughness from ARM
+        metallic = arm[:, 2:3]   # Metallic from ARM
+        
+        # Normal from normal map GL (channels 13-15)
+        normal_map = pbr_values[:, 13:16]
+        
+        brdf, pdf = self.compute_svbrdf_pdf(albedo, roughness, metallic, wi, wo, normal)
+        brdf = base_color * brdf
+         
+        return brdf, pdf
+    
+    def sample_brdf(self, params, pos, sample1, sample2, wo, normal, latent=None, batch_mask=None):
+        """ TODO """
+        B = sample1.shape[0]
+        device = sample1.device
+
+        # Compute blending mask
+        mask = perlin_mask(pos, scale=self.perlin_scale, randomness=self.perlin_randomness).view(-1)
+
+        # Sample diffuse directions (same across both materials)
+        wi_diffuse = self.diffuse_sampler(sample2, normal)
+
+        # Sample specular directions for both materials
+        roughness0 = params['roughness'][:, 0]
+        roughness1 = params['roughness'][:, 1]
+        wi_spec0 = self.specular_sampler(sample2, roughness0, wo, normal)
+        wi_spec1 = self.specular_sampler(sample2, roughness1, wo, normal)
+
+        # Mix sampled directions based on mask
+        wi_spec = wi_spec1
+
+        # Choose whether to use diffuse or specular
+        select_diff = sample1 > 0.5
+        wi = torch.zeros(B, 3, device=device)
+        wi[select_diff] = wi_diffuse[select_diff]
+        wi[~select_diff] = wi_spec[~select_diff]
+
+        # Evaluate blended BRDF
+        brdf, pdf = self.eval_brdf(params, pos, wi, wo, normal, latent, batch_mask)
+        brdf_weight = torch.where(pdf > 0, brdf / pdf, torch.zeros_like(brdf))
+        brdf_weight[brdf_weight.isnan()] = 0
+
+        return wi, pdf, brdf_weight
+    
 class PBRBRDF(nn.Module):
     """ Base BRDF class """
     def __init__(self, albedo=torch.ones(1, 3)):
@@ -760,8 +912,8 @@ class SvLatentModel(nn.Module):
         local_normal = torch.zeros_like(wi_local)
         local_normal[..., 2] = 1.0  # Normal is always (0,0,1) in local space
         brdf_value = self.forward(pos, wi_local, wo_local, local_normal, latent, batch_mask)
-        brdf = brdf_value.expand(-1, 3)
-
+        # brdf = brdf_value.expand(-1, 3)
+        brdf = brdf_value
         pdf = NoL / math.pi
 
         return brdf, pdf

@@ -2,7 +2,7 @@ defaults:
   - base
 
 dataset_name: "sphere"
-dataset_path: None
+pbr_path: '/localhome/zla247/theia2_data/theia2_data/BRDF-Fipt/fabric_pattern_07_4k/textures'
 shape:
   type: "sphere"
   center: [0.0, 0.0, 0.0]
