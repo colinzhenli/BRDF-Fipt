@@ -120,11 +120,13 @@ def xyz_to_uv(pos, radius):
     """Convert xyz on a sphere of radius `radius` to uv in [0,1]².
     pos : [...,3] tensor (world units)
     returns : [...,2] tensor (u,v)"""
+    scale = 0.1
     xyz_norm = pos / radius
     x, y, z = xyz_norm.unbind(-1)
     u = torch.atan2(z, x) / (2 * torch.pi) + 0.5
     v = torch.asin(y.clamp(-1, 1)) / torch.pi + 0.5
-    return torch.stack([u, v], dim=-1)
+    uv =  torch.stack([u, v], dim=-1) * scale
+    return torch.frac(uv)
 
 class SvPBRBRDF(nn.Module):
     """ Base BRDF class """
@@ -231,7 +233,7 @@ class SvPBRBRDF(nn.Module):
         normal_map = pbr_values[:, 13:16]
         
         brdf, pdf = self.compute_svbrdf_pdf(albedo, roughness, metallic, wi, wo, normal)
-        brdf = base_color * brdf
+        # brdf = base_color * brdf
          
         return brdf, pdf
     
@@ -689,7 +691,7 @@ class LatentModel(nn.Module):
 
 class SpatialLatentEncoder(nn.Module):
     """Encodes 3D positions into latent codes for spatially-varying materials"""
-    def __init__(self, latent_dim, hidden_dims=[64, 128, 64], use_pos_enc=True, num_freqs=10, pos_enc_type="spherical"):
+    def __init__(self, latent_dim, hidden_dims=[64, 128, 64], use_pos_enc=True, num_freqs=10, pos_enc_type="sinusoidal"):
         super(SpatialLatentEncoder, self).__init__()
         
         self.use_pos_enc = use_pos_enc

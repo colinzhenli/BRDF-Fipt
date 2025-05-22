@@ -267,6 +267,7 @@ class SphereValDataset(Dataset):
         self.cfg = cfg
         self.pixel = False
         self.gt_folder = gt_folder
+        self.number_of_views = cfg.renderer.camera.number_of_views
 
         self.img_hw = cfg.renderer.resolution
         h, w = self.img_hw
@@ -274,8 +275,9 @@ class SphereValDataset(Dataset):
         self.focal = (0.5 * w / np.tan(0.5 * self.camera_angle_x)).item()
         self.directions = get_ray_directions(h, w, self.focal)
         self.distance = cfg.renderer.camera.distance
-        self.get_camera_dicts()
+        self.get_camera_rotation_dicts()
         self.pbr_texture = load_pbr_texture_stack(self.cfg.data.pbr_path)
+
     def get_camera_dicts(self):
         # Initialize camera dicts list
         self.camera_dict = []
@@ -331,11 +333,36 @@ class SphereValDataset(Dataset):
         }
         self.camera_dict.append(south_pole)
 
+    def get_camera_rotation_dicts(self):
+        # Initialize camera dicts list  
+        self.camera_dict = []
+        
+        look_at = self.cfg.renderer.camera.look_at
+        up = self.cfg.renderer.camera.up
+        dist = self.distance
+        phi = np.pi
+        n_steps = self.number_of_views  # Can be adjusted for more/fewer views
+        self.total = n_steps
+        thetas = np.linspace(0, 2*np.pi, n_steps, endpoint=False)
+        for theta in thetas:
+            x = dist * np.sin(theta) * np.cos(phi)  # Using cos(0)=1 for fixed phi
+            y = dist * np.sin(theta) * np.sin(phi)  # Using sin(0)=0 for fixed phi
+            z = dist * np.cos(theta)
+            
+            # Create camera dict for this position
+            camera_dict = {
+                "position": [x, y, z],
+                "look_at": look_at,
+                "up": up
+            }
+            
+            self.camera_dict.append(camera_dict)
+
     def __len__(self):
-        return 1
+        return len(self.camera_dict)
 
     def __getitem__(self, idx):
-        c2w = get_c2w(self.camera_dict[0])
+        c2w = get_c2w(self.camera_dict[idx])
         rays_o, rays_d, dxdu, dydv = get_rays(self.directions, c2w, focal=self.focal)
         rays = torch.cat([rays_o, rays_d, dxdu, dydv], dim=-1)
         if self.gt_folder is not None:

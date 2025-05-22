@@ -108,7 +108,8 @@ class BRDFTrainer(pl.LightningModule):
         # randomly initialize emitter
         emitter = DynamicPointEmitter(
             dist=self.cfg.renderer.emitter.dist,
-            num_lights=self.cfg.renderer.emitter.num_lights
+            num_lights=self.cfg.renderer.emitter.num_lights,
+            fix_seed = False
         )
         
         # Render step
@@ -138,13 +139,13 @@ class BRDFTrainer(pl.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         """ batch pbr texture: [B, H, W, 16] """
-        batch_indices = []
         gt_params = batch['gt_params']
         # Get latents for the batch using the indices
 
         emitter = DynamicPointEmitter(
             dist=self.cfg.renderer.emitter.dist,
-            num_lights=self.cfg.renderer.emitter.num_lights
+            num_lights=self.cfg.renderer.emitter.num_lights,
+            fix_seed = True
         )
         
         # Render step logic

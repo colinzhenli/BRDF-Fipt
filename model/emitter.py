@@ -85,20 +85,27 @@ class EnvMapEmitter(nn.Module):
 
     
 class DynamicPointEmitter(nn.Module):
-    def __init__(self, dist=4.0, num_lights=8):
+    def __init__(self, dist=4.0, num_lights=8, fix_seed=False):
         """
         Args:
             dist: Radius of the sphere
             num_lights: Number of lights to sample
+            fix_seed: Whether to fix the seed
         """
         super(DynamicPointEmitter, self).__init__()
 
         self.dist = dist
         self.num_lights = num_lights
-
-        # Sample spherical coordinates on GPU
-        theta = torch.arccos(1 - 2 * torch.rand(num_lights, device='cuda'))  # theta ∈ [0, pi]
-        phi = 2 * torch.pi * torch.rand(num_lights, device='cuda')          # phi ∈ [0, 2pi]
+        self.fix_seed = fix_seed
+        if fix_seed:
+            torch.manual_seed(0)
+            # Sample spherical coordinates on GPU
+            theta = torch.arccos(1 - 2 * torch.rand(num_lights, device='cuda'))  # theta ∈ [0, pi]
+            phi = 2 * torch.pi * torch.rand(num_lights, device='cuda')          # phi ∈ [0, 2pi]
+        else:
+            # Sample spherical coordinates on GPU
+            theta = torch.arccos(1 - 2 * torch.rand(num_lights, device='cuda'))  # theta ∈ [0, pi]
+            phi = 2 * torch.pi * torch.rand(num_lights, device='cuda')          # phi ∈ [0, 2pi]
 
         x = dist * torch.sin(theta) * torch.cos(phi)
         y = dist * torch.sin(theta) * torch.sin(phi)
