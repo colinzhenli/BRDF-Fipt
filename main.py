@@ -8,7 +8,7 @@ import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
 from renderer import ForwardRenderer
 from brdf_trainer import BRDFTrainer
-from model.brdf import SvLatentModel, SvPBRBRDF
+from model.brdf import SvLatentModel, SvPBRBRDF, LatentTexturedModel
 from torch.utils.data import DataLoader
 from utils.dataset import SphereIterableDataset, SphereValDataset
 import hydra
@@ -47,7 +47,7 @@ def main(cfg):
     os.makedirs(output_folder, exist_ok=True)
 
     # Initialize materials using different configs
-    material = SvLatentModel(cfg.material)  # MLP model uses mlp_pbr config
+    material = LatentTexturedModel(cfg.material)  # MLP model uses mlp_pbr config
     gt_material = SvPBRBRDF(
         albedo=torch.tensor(albedo)
     )  # Ground truth uses pbr config
@@ -65,7 +65,7 @@ def main(cfg):
     val_dataset = SphereValDataset(cfg, gt_folder=None)
     val_loader = DataLoader(
         val_dataset,
-        batch_size=2,
+        batch_size=1,
         num_workers=cfg.data.num_workers,
     )
 

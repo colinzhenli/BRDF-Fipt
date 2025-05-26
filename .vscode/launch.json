@@ -10,14 +10,14 @@
             "name": "Python: Current File",
             "type": "python",
             "request": "launch",
-            "program": "pointlight_test.py",
+            "program": "main.py",
             "console": "integratedTerminal",
             "justMyCode": true,
             "args": [
                 "renderer=dynamicpoint_emitter",
-                "material=svlatent_model",
-                "experiment_name=L2-loss_Test_Biggest-pattern-Non-Colorful-Sin-encoding-Svbrdf_training_run_1",
-                "model.ckpt_path=/localhome/zla247/theia2_data/output/BRDF-Fipt/Over-fit_experiments_2/sphere/Theia2_L2-loss-biggest-pattern_Non-colorful_Sin-encoding_Svbrdf-train_1/training/model_0.20_0.20/epoch44.ckpt",
+                "material=latent_texture_model",
+                "experiment_name=L1-loss_Latenttexture-run_2",
+                // "model.ckpt_path=/localhome/zla247/theia2_data/output/BRDF-Fipt/Over-fit_experiments_2/sphere/Theia2_L2-loss-biggest-pattern_Non-colorful_Sin-encoding_Svbrdf-train_1/training/model_0.20_0.20/epoch44.ckpt",
                 "test_on_train=False"
             ]
         }

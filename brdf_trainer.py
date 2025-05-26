@@ -127,7 +127,7 @@ class BRDFTrainer(pl.LightningModule):
         latent_reg = 0
         loss = recon_loss + self.hparams.model.loss.latent_reg_loss.weight * latent_reg
         
-        psnr_loss = NF.mse_loss(self.gamma(rgbs), self.gamma(rgbs_gt))
+        psnr_loss = NF.l1_loss(self.gamma(rgbs), self.gamma(rgbs_gt))
         psnr = -10.0 * torch.log10(psnr_loss.clamp_min(1e-5))
         
         self.log('train/recon_loss', recon_loss)
@@ -158,7 +158,7 @@ class BRDFTrainer(pl.LightningModule):
         else:
             rgbs_gt = batch['rgbs']
 
-        psnr_loss = NF.mse_loss(self.gamma(rgbs), self.gamma(rgbs_gt))
+        psnr_loss = NF.l1_loss(self.gamma(rgbs), self.gamma(rgbs_gt))
         psnr = -10.0 * torch.log10(psnr_loss.clamp_min(1e-5))
         
         recon_loss = NF.l1_loss(rgbs, rgbs_gt)
