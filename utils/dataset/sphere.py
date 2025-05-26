@@ -176,9 +176,15 @@ class SphereIterableDataset(IterableDataset):
         up = self.cfg.renderer.camera.up
         dist = self.distance
         
-        # Parameters to control sampling density
-        n_theta = 7  # number of theta samples (excluding poles)
-        n_phi = 6    # number of phi samples
+        # Parameters to control sampling density based on number_of_views
+        # We want approximately self.number_of_views total camera positions
+        # Formula: total = (n_theta-2) * n_phi + 2 (for poles)
+        # So: (n_theta-2) * n_phi = self.number_of_views - 2
+        
+        # Choose n_phi and calculate n_theta accordingly
+        n_phi = max(4, int(np.sqrt(self.number_of_views - 2)))  # At least 4 phi samples
+        n_theta = max(3, int((self.number_of_views - 2) / n_phi) + 2)  # At least 3 theta samples (excluding poles)
+        
         self.total = (n_theta-2) * n_phi + 2  # Add 2 for poles
         
         # Generate uniform samples for spherical coordinates, excluding poles
@@ -239,7 +245,7 @@ class SphereIterableDataset(IterableDataset):
 
         while True:
             # for idx in torch.randperm(len(self.metadata)):
-            view_indices = torch.randint(0, self.number_of_views, (self.num_view_batch,))
+            view_indices = torch.randint(0, self.total, (self.num_view_batch,))
             total_indices = []
             for view_idx in view_indices:
                 base = view_idx.item() * rays_per_view
@@ -267,7 +273,7 @@ class SphereValDataset(Dataset):
         self.cfg = cfg
         self.pixel = False
         self.gt_folder = gt_folder
-        self.number_of_views = cfg.renderer.camera.number_of_views
+        self.number_of_views = cfg.renderer.camera.number_of_view_test
 
         self.img_hw = cfg.renderer.resolution
         h, w = self.img_hw
@@ -278,60 +284,62 @@ class SphereValDataset(Dataset):
         self.get_camera_rotation_dicts()
         self.pbr_texture = load_pbr_texture_stack(self.cfg.data.pbr_path)
 
-    def get_camera_dicts(self):
-        # Initialize camera dicts list
-        self.camera_dict = []
+    # def get_camera_dicts(self):
+    #     # Initialize camera dicts list
+    #     self.camera_dict = []
         
-        # Keep look_at and up vectors fixed from initial camera settings
-        look_at = self.cfg.renderer.camera.look_at
-        up = self.cfg.renderer.camera.up
-        dist = self.distance
+    #     # Keep look_at and up vectors fixed from initial camera settings
+    #     look_at = self.cfg.renderer.camera.look_at
+    #     up = self.cfg.renderer.camera.up
+    #     dist = self.distance
         
-        # Parameters to control sampling density
-        n_theta = 7  # number of theta samples (excluding poles)
-        n_phi = 6    # number of phi samples
-        self.total = (n_theta-2) * n_phi + 2  # Add 2 for poles
+    #     # Parameters to control sampling density
+    #     # Choose n_phi and calculate n_theta accordingly
+    #     n_phi = max(4, int(np.sqrt(self.number_of_views - 2)))  # At least 4 phi samples
+    #     n_theta = max(3, int((self.number_of_views - 2) / n_phi) + 2)  # At least 3 theta samples (excluding poles)
         
-        # Generate uniform samples for spherical coordinates, excluding poles
-        thetas = np.linspace(0, np.pi, n_theta)  # Exclude 0 and pi
-        thetas = thetas[1:-1]  # Remove the first and last elements
-        phis = np.linspace(0, 2*np.pi, n_phi)
+    #     self.total = (n_theta-2) * n_phi + 2  # Add 2 for poles
         
-        # Add poles separately - they only need one phi value since they're at top/bottom
+    #     # Generate uniform samples for spherical coordinates, excluding poles
+    #     thetas = np.linspace(0, np.pi, n_theta)  # Exclude 0 and pi
+    #     thetas = thetas[1:-1]  # Remove the first and last elements
+    #     phis = np.linspace(0, 2*np.pi, n_phi)
         
-        # Create grid of angles
-        theta_grid, phi_grid = np.meshgrid(thetas, phis)
-        thetas_flat = theta_grid.flatten()
-        phis_flat = phi_grid.flatten()
+    #     # Add poles separately - they only need one phi value since they're at top/bottom
         
-        # Convert spherical to cartesian coordinates
-        for theta, phi in zip(thetas_flat, phis_flat):
-            # Calculate camera position
-            x = dist * np.sin(theta) * np.cos(phi)
-            y = dist * np.sin(theta) * np.sin(phi) 
-            z = dist * np.cos(theta)
+    #     # Create grid of angles
+    #     theta_grid, phi_grid = np.meshgrid(thetas, phis)
+    #     thetas_flat = theta_grid.flatten()
+    #     phis_flat = phi_grid.flatten()
+        
+    #     # Convert spherical to cartesian coordinates
+    #     for theta, phi in zip(thetas_flat, phis_flat):
+    #         # Calculate camera position
+    #         x = dist * np.sin(theta) * np.cos(phi)
+    #         y = dist * np.sin(theta) * np.sin(phi) 
+    #         z = dist * np.cos(theta)
             
-            # Create camera dict for this position
-            camera_dict = {
-                "position": [x, y, z],
-                "look_at": look_at,
-                "up": up
-            }
+    #         # Create camera dict for this position
+    #         camera_dict = {
+    #             "position": [x, y, z],
+    #             "look_at": look_at,
+    #             "up": up
+    #         }
             
-            self.camera_dict.append(camera_dict)
-        north_pole = {
-            "position": [0, 0, dist],  # x=0, y=0, z=dist
-            "look_at": look_at,
-            "up": up
-        }
-        self.camera_dict.append(north_pole)
+    #         self.camera_dict.append(camera_dict)
+    #     north_pole = {
+    #         "position": [0, 0, dist],  # x=0, y=0, z=dist
+    #         "look_at": look_at,
+    #         "up": up
+    #     }
+    #     self.camera_dict.append(north_pole)
 
-        south_pole = {
-            "position": [0, 0, -dist],  # x=0, y=0, z=-dist
-            "look_at": look_at,
-            "up": up
-        }
-        self.camera_dict.append(south_pole)
+    #     south_pole = {
+    #         "position": [0, 0, -dist],  # x=0, y=0, z=-dist
+    #         "look_at": look_at,
+    #         "up": up
+    #     }
+    #     self.camera_dict.append(south_pole)
 
     def get_camera_rotation_dicts(self):
         # Initialize camera dicts list  
@@ -382,7 +390,7 @@ class SphereTestDataset(Dataset):
         self.gt_folder = gt_folder
         self.img_hw = cfg.renderer.resolution
         h, w = self.img_hw
-        self.number_of_views = cfg.renderer.camera.number_of_views
+        self.number_of_views = cfg.renderer.camera.number_of_view_test
         self.distance = cfg.renderer.camera.distance
         self.camera_angle_x = cfg.renderer.camera.camera_angle_x
         self.focal = (0.5 * w / np.tan(0.5 * self.camera_angle_x)).item()

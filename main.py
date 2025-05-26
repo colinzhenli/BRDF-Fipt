@@ -47,6 +47,8 @@ def main(cfg):
     os.makedirs(output_folder, exist_ok=True)
 
     # Initialize materials using different configs
+    # material_module = importlib.import_module('model.brdf')
+    # material = getattr(material_module, cfg.material.type)(cfg)
     material = LatentTexturedModel(cfg.material)  # MLP model uses mlp_pbr config
     gt_material = SvPBRBRDF(
         albedo=torch.tensor(albedo)

@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as NF
 import math
-
+from pytorch_lightning import LightningModule
 import sys
 sys.path.append('..')
 
@@ -801,7 +801,7 @@ class SpatialLatentEncoder(nn.Module):
             pos = self.positional_encoding(pos)
         return self.mlp(pos)
 
-class SvLatentModel(nn.Module):
+class SvLatentModel(LightningModule):
     """ MLP-based BRDF class with spatial-varying latent encoding """
     def __init__(self, cfg):
         super(SvLatentModel, self).__init__()
@@ -951,10 +951,10 @@ class SvLatentModel(nn.Module):
 
         return wi_proxy, stop_gradient_pdf_proxy, brdf_weight
     
-class LatentTexturedModel(nn.Module):
+class LatentTexturedModel(LightningModule):
     """ MLP-based BRDF class with 2D texture latent grids """
     def __init__(self, cfg):
-        super(LatentTexturedModel, self).__init__()
+        super().__init__()
 
         # Latent dimension from config
         self.latent_dim = cfg.latent_dim
@@ -964,7 +964,10 @@ class LatentTexturedModel(nn.Module):
         self.latent_texture = nn.Parameter(
             torch.randn(1, self.latent_dim, self.texture_resolution, self.texture_resolution) * 0.1
         )
-        
+        # gaussian blur parameters
+        self.Gaussian_blur = cfg.Gaussian_blur
+        self.blur_sigma0 = 8.0
+        self.blur_half_life = 3333
         # Add SH positional encoding module
         self.degree = 3
         self.pos_enc = True
@@ -994,6 +997,33 @@ class LatentTexturedModel(nn.Module):
         # Initialize proxy BRDF for importance sampling
         self.proxy_brdf = ProxyPBRBRDF()  # Default roughness
 
+    def _gaussian_kernel(self, sigma: float, channels: int):
+        """Return a (C×1×k×k) kernel usable by depth-wise conv2d."""
+        if sigma < 0.5:                       # almost no blur → skip
+            return None
+        radius  = int(math.ceil(3 * sigma))
+        ksize   = 2 * radius + 1
+        grid    = torch.arange(-radius, radius + 1,
+                               dtype=self.latent_texture.dtype,
+                               device=self.latent_texture.device)
+        g1d     = torch.exp(-0.5 * (grid / sigma) ** 2)
+        g1d     = g1d / g1d.sum()
+        g2d     = (g1d[:, None] * g1d[None, :]).expand(
+                    channels, 1, ksize, ksize)
+        return g2d
+
+    def _blur_latent(self, step: int):
+        """Return blurred copy of latent texture for this training step."""
+        # σ(t) = σ₀ · 2^{-t/h}
+        sigma = self.blur_sigma0 * (0.5 ** (step / self.blur_half_life))
+        kernel = self._gaussian_kernel(sigma, self.latent_texture.shape[1])
+        if kernel is None:                       # σ<0.5 → no-op
+            return self.latent_texture
+        pad = kernel.shape[-1] // 2
+        # depth-wise ⇒ groups = channels
+        return NF.conv2d(self.latent_texture, kernel,
+                        padding=pad, groups=self.latent_texture.shape[1])
+    
     def sphere_to_uv(self, pos):
         """
         Convert 3D sphere surface positions to UV coordinates
@@ -1014,7 +1044,7 @@ class LatentTexturedModel(nn.Module):
         
         return torch.stack([u, v], dim=-1)
 
-    def sample_latent_from_texture(self, pos):
+    def sample_latent_from_texture(self, pos, texture):
         """
         Sample latent codes from 2D texture using bilinear interpolation
         Args:
@@ -1032,7 +1062,7 @@ class LatentTexturedModel(nn.Module):
         
         # Sample from latent texture using bilinear interpolation
         latent = NF.grid_sample(
-            self.latent_texture,  # 1xDxHxW
+            texture,  # 1xDxHxW
             grid_coords,          # 1x1xBx2
             mode='bilinear',
             padding_mode='border',
@@ -1053,11 +1083,16 @@ class LatentTexturedModel(nn.Module):
             wo: Bx3 outgoing view direction
             normal: Bx3 normal
             latent: ignored (for compatibility)
+            global_step: ignored (for compatibility)
         Returns:
             brdf: Bx1 BRDF values
         """
-        # Generate latent code from position using texture sampling
-        latent = self.sample_latent_from_texture(pos)
+        if self.training and self.Gaussian_blur:
+            tex = self._blur_latent(self.global_step)
+        else:
+            tex = self.latent_texture
+
+        latent = self.sample_latent_from_texture(pos, tex)
 
         if self.pos_enc:
             wi_enc = self.sh_encoder(wi)

@@ -16,7 +16,7 @@
             "args": [
                 "renderer=dynamicpoint_emitter",
                 "material=latent_texture_model",
-                "experiment_name=L1-loss_Latenttexture-run_2",
+                "experiment_name=Gaussian-blurL1-loss_Latenttexture-debug_1",
                 // "model.ckpt_path=/localhome/zla247/theia2_data/output/BRDF-Fipt/Over-fit_experiments_2/sphere/Theia2_L2-loss-biggest-pattern_Non-colorful_Sin-encoding_Svbrdf-train_1/training/model_0.20_0.20/epoch44.ckpt",
                 "test_on_train=False"
             ]
