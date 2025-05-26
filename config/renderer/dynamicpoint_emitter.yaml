@@ -5,7 +5,7 @@ indir_depth: 0
 
 camera:
   distance: 2.0
-  number_of_views: 1
+  number_of_views: 32
   look_at: [0.0, 0.0, 0.0]
   up: [0.0, 1.0, 0.0]
   position: [0.0, 0.0, -2.0]
@@ -23,4 +23,4 @@ spp:
   test: 1
 SPP_chunk: 4
 
-resolution: [1024, 1024]
+resolution: [512, 512]

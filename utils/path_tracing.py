@@ -60,6 +60,7 @@ def batched_path_tracing_dynamic_emitter(scene,emitter_net,material_net,rays_o,r
     # Create batch mask where each row contains the same batch index
     # For rays with shape B, N, 3, create mask with shape B, N
     batch_mask = torch.arange(len(rays_o), device=rays_o.device).view(rays_o.shape[0], 1).expand(rays_o.shape[0], rays_o.shape[1])
+    # batch_mask = torch.zeros(len(rays_o), device=rays_o.device)
     rays_o = rays_o.reshape(-1,3)
     rays_d = rays_d.reshape(-1,3)
     dx_du = dx_du.reshape(-1,3)

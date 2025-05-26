@@ -1,7 +1,7 @@
 train_num: 44
 val_num: 9
 test_num: 1
-num_workers: 8
+num_workers: 2
 # batch_num: 2048 #4096 # steps per epoch
 rays_num: 128 # rays per batch
 batch_size: 1 # equal to train_num

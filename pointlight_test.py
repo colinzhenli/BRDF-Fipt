@@ -102,7 +102,7 @@ def main(cfg):
 
     
     # Initialize the dataset for batch processing
-    dataset = SphereValDataset(point_emitter_cfg, gt_folder=None, split="test")
+    dataset = SphereValDataset(point_emitter_cfg, gt_folder=None)
     dataloader = DataLoader(dataset, batch_size=cfg.data.batch_size, num_workers=cfg.data.num_workers)
 
     print("==> rendering ground truth and predictions using environmental map...")
@@ -120,7 +120,7 @@ def main(cfg):
     with torch.no_grad():
         for idx, batch in tqdm(enumerate(dataset), total=len(dataset), desc="Processing materials"):
             # Render step logic
-            rays, gt_params = batch['rays'].to(model.device), batch['gt_params'].to(model.device)
+            rays, gt_params = batch['rays'].to(model.device).unsqueeze(0), batch['gt_params'].to(model.device).unsqueeze(0)
             
             rgbs_pred = renderer.render(emitter, rays, cfg.renderer.spp.test, None, None)
             if cfg.gt_folder is None:
@@ -160,6 +160,7 @@ def main(cfg):
                 cfg.exp_output_root_path,
                 f'fabric_pattern_07_4k'
             )
+            os.makedirs(output_dir, exist_ok=True)
             torchvision.utils.save_image(
                 error_map_display.permute(2, 0, 1), 
                 os.path.join(output_dir, f'error_map_view_{idx}.png')
