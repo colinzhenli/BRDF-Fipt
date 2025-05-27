@@ -130,6 +130,60 @@ def get_c2w(camera):
     c2w = c2w[:3,:4]
     return c2w
 
+class UniformSphereIterableDataset(IterableDataset):
+    """ Simple dataset that generates random sphere positions and directions """
+    def __init__(self, cfg, gt_folder=None, split='train'):
+        self.cfg = cfg
+        self.rays_num = cfg.data.rays_num
+        self.gt_folder = gt_folder
+        self.pbr_texture = load_pbr_texture_stack(self.cfg.data.pbr_path)
+
+        self.radius = 0.2  # Fixed sphere radius
+        
+    def __iter__(self):
+        return self
+        
+    def __next__(self):
+        # Generate N random positions on sphere surface
+        N = self.rays_num
+        
+        # Generate random points on unit sphere using normal distribution
+        pos = torch.randn(N, 3)
+        pos = pos / torch.norm(pos, dim=-1, keepdim=True)  # Normalize to unit sphere
+
+        pos = pos * self.radius  # Scale to desired radius
+
+        # # Save positions as point cloud using open3d
+        # import open3d as o3d
+        # import tempfile
+        # import os
+        
+        # # Create point cloud
+        # pcd = o3d.geometry.PointCloud()
+        # pcd.points = o3d.utility.Vector3dVector(pos.numpy())
+        
+        # # Save to temporary file
+        # import open3d as o3d
+        # import os
+        # import numpy as np
+        # temp_file = "sphere_positions.ply"
+        # o3d.io.write_point_cloud(temp_file, pcd)
+
+        # Generate random incident directions (wi)
+        wi = torch.randn(N, 3)
+        wi = wi / torch.norm(wi, dim=-1, keepdim=True)  # Normalize
+        
+        # Generate random view directions (wo)
+        wo = torch.randn(N, 3)
+        wo = wo / torch.norm(wo, dim=-1, keepdim=True)  # Normalize
+        
+        # Concatenate pos, wi, wo into single tensor of shape [N, 9]
+        data = torch.cat([pos, wi, wo], dim=-1)  # Nx9
+        
+        return {
+            'data': data,
+            'gt_params': self.pbr_texture
+        }
 class SphereIterableDataset(IterableDataset):
     """ training dataset, return random view and pixel-level rays"""
     def __init__(self, cfg, gt_folder, split):

@@ -10,7 +10,7 @@ from renderer import ForwardRenderer
 from brdf_trainer import BRDFTrainer
 from model.brdf import SvLatentModel, SvPBRBRDF, LatentTexturedModel
 from torch.utils.data import DataLoader
-from utils.dataset import SphereIterableDataset, SphereValDataset
+from utils.dataset import SphereIterableDataset, SphereValDataset, UniformSphereIterableDataset
 import hydra
 from omegaconf import DictConfig
 from pytorch_lightning.strategies import DDPStrategy
@@ -49,7 +49,10 @@ def main(cfg):
     # Initialize materials using different configs
     # material_module = importlib.import_module('model.brdf')
     # material = getattr(material_module, cfg.material.type)(cfg)
-    material = LatentTexturedModel(cfg.material)  # MLP model uses mlp_pbr config
+    if cfg.material.type == "SvLatentModel":
+        material = SvLatentModel(cfg.material)  # MLP model uses mlp_pbr config
+    elif cfg.material.type == "LatentTexturedModel":
+        material = LatentTexturedModel(cfg.material)  # MLP model uses mlp_pbr config
     gt_material = SvPBRBRDF(
         albedo=torch.tensor(albedo)
     )  # Ground truth uses pbr config
@@ -57,7 +60,7 @@ def main(cfg):
     model = BRDFTrainer(cfg, material, gt_material, roughness, metallic)
 
     print("==> initializing data ...")          
-    train_dataset = SphereIterableDataset(cfg, gt_folder=None, split="train")
+    train_dataset = UniformSphereIterableDataset(cfg, gt_folder=None, split="train")
     train_loader = DataLoader(
         train_dataset,
         batch_size=cfg.data.batch_size,

@@ -71,6 +71,9 @@ def batched_path_tracing_dynamic_emitter(scene,emitter_net,material_net,rays_o,r
     device = rays_o.device
     
     # sample camera ray
+    # Set fixed random seed for reproducibility
+    torch.manual_seed(42)    
+    # Generate random offsets for ray sampling
     du,dv = torch.rand(2,len(rays_o),spp,1,device=device)-0.5
     wi = NF.normalize(rays_d[:,None]+dx_du[:,None]*du+dy_dv[:,None]*dv,dim=-1).reshape(-1,3)
     
@@ -87,7 +90,36 @@ def batched_path_tracing_dynamic_emitter(scene,emitter_net,material_net,rays_o,r
     normal = normal[vis]
     batch_mask = batch_mask[vis]
     wo = -wi[vis]
+
+    # # Read existing sphere positions from temporary file and add current positions
+    # import open3d as o3d
+    # import os
+    # import numpy as np
+    # temp_file = "sphere_positions.ply"
     
+    # if os.path.exists(temp_file):
+    #     # Read existing point cloud
+    #     existing_pcd = o3d.io.read_point_cloud(temp_file)
+    #     existing_points = torch.tensor(np.asarray(existing_pcd.points), dtype=torch.float32).to(device)
+    #     existing_colors = torch.tensor(np.asarray(existing_pcd.colors), dtype=torch.float32).to(device) if existing_pcd.has_colors() else torch.ones(len(existing_points), 3).to(device) * 0.5
+        
+    #     # Combine with new positions
+    #     all_points = torch.cat([existing_points, position], dim=0)
+        
+    #     # Create colors: existing points in gray, new points in red
+    #     new_colors = torch.tensor([1.0, 0.0, 0.0]).expand(len(position), 3).to(device)  # Red for new points
+    #     all_colors = torch.cat([existing_colors, new_colors], dim=0)
+    # else: 
+    #     # First time, just use current positions
+    #     all_points = position
+    #     all_colors = torch.tensor([1.0, 0.0, 0.0]).expand(len(position), 3).to(device)  # Red for new points
+    
+    # # Create and save updated point cloud
+    # updated_pcd = o3d.geometry.PointCloud()
+    # updated_pcd.points = o3d.utility.Vector3dVector(all_points.cpu().numpy())
+    # updated_pcd.colors = o3d.utility.Vector3dVector(all_colors.cpu().numpy())
+    # o3d.io.write_point_cloud(temp_file, updated_pcd)
+
     # deterministic sampling
     wi,emit_pdf, emit_position, idx = emitter_net.sample_emitter(position)
     normal = normal.repeat_interleave(emitter_net.light_positions.shape[0],0)
@@ -106,7 +138,7 @@ def batched_path_tracing_dynamic_emitter(scene,emitter_net,material_net,rays_o,r
     emit_brdf,_ = material_net.eval_brdf(gt_params,position, wi,wo,normal, latent, batch_mask)
     L[vis] += (emit_brdf*emit_weight).reshape(-1, N_lights,3).mean(1)
     L = L.reshape(N,spp,3).mean(1)
-    return L
+    return L, emit_brdf
 
 
 def path_tracing_envmap_emitter(scene,emitter_net,material_net,rays_o,rays_d,dx_du,dy_dv,spp, brdf_sampling, emitter_sampling, gt_params=None, latent=None):

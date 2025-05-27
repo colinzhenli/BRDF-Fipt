@@ -34,16 +34,17 @@ class ForwardRenderer:
             self.SPP_chunk = spp
         if emitter is None:
             for _ in range(spp // self.SPP_chunk):
-                L += self.ray_tracer(
+                L0, brdf = self.ray_tracer(
                     self.scene, self.emitter, self.material,
                     rays_x, rays_d, dxdu, dydv, 
                     self.SPP_chunk, brdf_sampling=self.cfg.renderer.brdf_sampling, emitter_sampling=self.cfg.renderer.emitter_sampling, gt_params=gt_params, latent=latent
                 )
         else:
-            L = self.ray_tracer(
+            L0, brdf = self.ray_tracer(
                 self.scene, emitter, self.material,
                 rays_x, rays_d, dxdu, dydv, 
                 self.SPP_chunk, brdf_sampling=self.cfg.renderer.brdf_sampling, emitter_sampling=self.cfg.renderer.emitter_sampling, gt_params=gt_params, latent=latent
             )
+        L += L0
         rgbs = L / (spp // self.SPP_chunk)
-        return rgbs
+        return rgbs, brdf
