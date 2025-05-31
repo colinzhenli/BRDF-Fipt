@@ -49,7 +49,12 @@ def main(cfg):
     # Initialize materials using different configs
     # material_module = importlib.import_module('model.brdf')
     # material = getattr(material_module, cfg.material.type)(cfg)
-    material = LatentTexturedModel(cfg.material)  # MLP model uses mlp_pbr config
+    if cfg.material.type == "LatentTexturedModel":
+        material = LatentTexturedModel(cfg.material)  # MLP model uses mlp_pbr config
+    elif cfg.material.type == "SvLatentModel":
+        material = SvLatentModel(cfg.material)  # MLP model uses mlp_pbr config
+    else:
+        raise ValueError(f"Invalid material type: {cfg.material.type}")
     gt_material = SvPBRBRDF(
         albedo=torch.tensor(albedo)
     )  # Ground truth uses pbr config
