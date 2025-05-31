@@ -39,12 +39,13 @@ class ForwardRenderer:
                     rays_x, rays_d, dxdu, dydv, 
                     self.SPP_chunk, brdf_sampling=self.cfg.renderer.brdf_sampling, emitter_sampling=self.cfg.renderer.emitter_sampling, gt_params=gt_params, latent=latent
                 )
+                L += L0
         else:
             L0, brdf = self.ray_tracer(
                 self.scene, emitter, self.material,
                 rays_x, rays_d, dxdu, dydv, 
                 self.SPP_chunk, brdf_sampling=self.cfg.renderer.brdf_sampling, emitter_sampling=self.cfg.renderer.emitter_sampling, gt_params=gt_params, latent=latent
             )
-        L += L0
+            L += L0
         rgbs = L / (spp // self.SPP_chunk)
         return rgbs, brdf

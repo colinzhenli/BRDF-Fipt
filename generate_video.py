@@ -71,4 +71,4 @@ if __name__ == "__main__":
     for folder in subfolders:
         print(f"Processing folder: {folder}")
         generate_video_and_gif(folder, video_name="comparison_video.mp4",
-                          gif_name="comparison_video.gif", fps=5)
+                          gif_name="comparison_video.gif", fps=20)

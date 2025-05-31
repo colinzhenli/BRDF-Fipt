@@ -293,7 +293,7 @@ class BRDFTrainer(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         # Get training data from UniformSphereIterableDataset
         data = batch['data'].squeeze(0)  # [N, 9] - pos(3) + wi(3) + wo(3)
-        gt_params = batch['gt_params'].squeeze(0)  # PBR texture [H, W, 16]
+        gt_params = batch['gt_params']  # PBR texture [H, W, 16]
         
         # Extract position, incident direction, and view direction
         pos = data[:, :3]    # [N, 3]
@@ -323,7 +323,7 @@ class BRDFTrainer(pl.LightningModule):
             )
         
         # BRDF reconstruction loss
-        recon_loss = NF.l1_loss(brdf_pred, brdf_gt)
+        recon_loss = NF.mse_loss(brdf_pred, brdf_gt)
         latent_reg = 0
         loss = recon_loss + self.hparams.model.loss.latent_reg_loss.weight * latent_reg
         
@@ -359,11 +359,11 @@ class BRDFTrainer(pl.LightningModule):
         else:
             rgbs_gt = batch['rgbs']
 
-        brdf_loss = NF.l1_loss(brdf, brdf_gt)
+        brdf_loss = NF.mse_loss(brdf, brdf_gt)
         psnr_loss = NF.l1_loss(self.gamma(rgbs), self.gamma(rgbs_gt))
         psnr = -10.0 * torch.log10(psnr_loss.clamp_min(1e-5))
         
-        recon_loss = NF.l1_loss(rgbs, rgbs_gt)
+        recon_loss = NF.mse_loss(rgbs, rgbs_gt)
         latent_reg = 0
         loss = recon_loss + self.hparams.model.loss.latent_reg_loss.weight * latent_reg
         

@@ -117,22 +117,24 @@ def main(cfg):
         fix_seed = True
     )
     psnr_list = []
+    brdf_loss_list = []
     with torch.no_grad():
         for idx, batch in tqdm(enumerate(dataset), total=len(dataset), desc="Processing materials"):
             # Render step logic
             rays, gt_params = batch['rays'].to(model.device).unsqueeze(0), batch['gt_params'].to(model.device).unsqueeze(0)
             
-            rgbs_pred = renderer.render(emitter, rays, cfg.renderer.spp.test, None, None)
+            rgbs_pred, brdf_pred = renderer.render(emitter, rays, cfg.renderer.spp.test, None, None)
             if cfg.gt_folder is None:
                 with torch.no_grad():
-                    rgbs_gt = gt_renderer.render(emitter, rays, cfg.renderer.spp.test, gt_params, None)
+                    rgbs_gt, brdf_gt = gt_renderer.render(emitter, rays, cfg.renderer.spp.test, gt_params, None)
             else:
                 rgbs_gt = batch['rgbs'].to(model.device)
-
-            psnr_loss = torch.nn.functional.mse_loss(model.gamma(rgbs_pred), model.gamma(rgbs_gt))
+                brdf_gt = None
+            brdf_loss = torch.nn.functional.l1_loss(brdf_pred, brdf_gt)
+            psnr_loss = torch.nn.functional.l1_loss(model.gamma(rgbs_pred), model.gamma(rgbs_gt))
             psnr = -10.0 * torch.log10(psnr_loss.clamp_min(1e-5))
             psnr_list.append(psnr.item())
-
+            brdf_loss_list.append(brdf_loss.item())
             # Reshape for visualization
             img_pred = rgbs_pred.reshape(*resolution, -1)
             img_gt = rgbs_gt.reshape(*resolution, -1)
@@ -170,6 +172,8 @@ def main(cfg):
 
     avg_psnr = sum(psnr_list) / len(psnr_list)
     print(f"Final average PSNR across all test materials: {avg_psnr:.2f}")
+    avg_brdf_loss = sum(brdf_loss_list) / len(brdf_loss_list)
+    print(f"Final average BRDF loss across all test materials: {avg_brdf_loss:.2f}")
 
 if __name__ == "__main__":
     main()

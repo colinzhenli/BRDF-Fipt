@@ -153,6 +153,9 @@ class UniformSphereIterableDataset(IterableDataset):
 
         pos = pos * self.radius  # Scale to desired radius
 
+        # For a sphere, the normal at any point is the normalized position vector
+        normals = pos / torch.norm(pos, dim=-1, keepdim=True)
+
         # # Save positions as point cloud using open3d
         # import open3d as o3d
         # import tempfile
@@ -169,21 +172,71 @@ class UniformSphereIterableDataset(IterableDataset):
         # temp_file = "sphere_positions.ply"
         # o3d.io.write_point_cloud(temp_file, pcd)
 
-        # Generate random incident directions (wi)
-        wi = torch.randn(N, 3)
-        wi = wi / torch.norm(wi, dim=-1, keepdim=True)  # Normalize
+        # Generate random incident directions (wi) in the hemisphere defined by the normal
+        # Sample uniformly on hemisphere using spherical coordinates
+        u1 = torch.rand(N)
+        u2 = torch.rand(N)
         
-        # Generate random view directions (wo)
-        wo = torch.randn(N, 3)
-        wo = wo / torch.norm(wo, dim=-1, keepdim=True)  # Normalize
+        # Convert to spherical coordinates for hemisphere sampling
+        cos_theta = u1  # cos(theta) where theta is angle from normal
+        sin_theta = torch.sqrt(1 - cos_theta**2)
+        phi = 2 * torch.pi * u2
+        
+        # Convert to Cartesian coordinates in local frame (normal as z-axis)
+        wi_local = torch.stack([
+            sin_theta * torch.cos(phi),
+            sin_theta * torch.sin(phi),
+            cos_theta
+        ], dim=-1)
+        
+        # Transform from local frame to world frame
+        # Create orthonormal basis with normal as z-axis
+        # Find a vector not parallel to normal
+        temp = torch.tensor([1.0, 0.0, 0.0]).expand_as(normals)
+        mask = torch.abs(torch.sum(normals * temp, dim=-1)) > 0.9
+        temp[mask] = torch.tensor([0.0, 1.0, 0.0]).expand_as(temp[mask])
+        
+        # Create tangent vectors
+        tangent1 = torch.cross(normals, temp)
+        tangent1 = tangent1 / torch.norm(tangent1, dim=-1, keepdim=True)
+        tangent2 = torch.cross(normals, tangent1)
+        
+        # Transform wi from local to world coordinates
+        wi = (wi_local[..., 0:1] * tangent1 + 
+              wi_local[..., 1:2] * tangent2 + 
+              wi_local[..., 2:3] * normals)
+        
+        # Generate random view directions (wo) in the hemisphere defined by the normal
+        # Sample uniformly on hemisphere using spherical coordinates
+        u3 = torch.rand(N)
+        u4 = torch.rand(N)
+        
+        # Convert to spherical coordinates for hemisphere sampling
+        cos_theta_wo = u3  # cos(theta) where theta is angle from normal
+        sin_theta_wo = torch.sqrt(1 - cos_theta_wo**2)
+        phi_wo = 2 * torch.pi * u4
+        
+        # Convert to Cartesian coordinates in local frame (normal as z-axis)
+        wo_local = torch.stack([
+            sin_theta_wo * torch.cos(phi_wo),
+            sin_theta_wo * torch.sin(phi_wo),
+            cos_theta_wo
+        ], dim=-1)
+        
+        # Transform wo from local to world coordinates
+        wo = (wo_local[..., 0:1] * tangent1 + 
+              wo_local[..., 1:2] * tangent2 + 
+              wo_local[..., 2:3] * normals)
         
         # Concatenate pos, wi, wo into single tensor of shape [N, 9]
         data = torch.cat([pos, wi, wo], dim=-1)  # Nx9
+        
         
         return {
             'data': data,
             'gt_params': self.pbr_texture
         }
+    
 class SphereIterableDataset(IterableDataset):
     """ training dataset, return random view and pixel-level rays"""
     def __init__(self, cfg, gt_folder, split):

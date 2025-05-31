@@ -231,6 +231,13 @@ class SvPBRBRDF(nn.Module):
         
         # Normal from normal map GL (channels 13-15)
         normal_map = pbr_values[:, 13:16]
+
+        debug = False
+        # Use fixed values for debugging
+        if debug:
+            albedo = torch.ones_like(roughness)  # Fixed albedo (1, )
+            # roughness = torch.full_like(roughness, 0.2)  # Fixed roughness 0.2
+            # metallic = torch.full_like(metallic, 0.2)    # Fixed metallic 0.2
         
         brdf, pdf = self.compute_svbrdf_pdf(albedo, roughness, metallic, wi, wo, normal)
         # brdf = base_color * brdf
@@ -834,7 +841,7 @@ class SvLatentModel(LightningModule):
             prev_dim = hidden_dim
             
         layers.append(nn.Linear(prev_dim, cfg.output_channels))
-        layers.append(nn.LeakyReLU(0.2))
+        layers.append(nn.LeakyReLU(0.02))
         
         self.mlp = nn.Sequential(*layers)
 
