@@ -16,7 +16,7 @@
             "args": [
                 "renderer=dynamicpoint_emitter",
                 "material=svlatent_model",
-                "experiment_name=Debug_1",
+                "experiment_name=L1-loss-Neural-field_Importance-sampling-all-pixels_debug_1",
                 // "model.ckpt_path=/localhome/zla247/theia2_data/output/BRDF-Fipt/Over-fit_experiments_2/sphere/Theia2_L2-loss-biggest-pattern_Non-colorful_Sin-encoding_Svbrdf-train_1/training/model_0.20_0.20/epoch44.ckpt",
                 "test_on_train=False"
             ]

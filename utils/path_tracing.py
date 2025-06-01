@@ -54,7 +54,7 @@ def batched_path_tracing_dynamic_emitter(scene,emitter_net,material_net,rays_o,r
         gt_params: optional ground truth material parameters
         latent: optional batched latent code for material network
     Return:
-        L: Bx3 traced results
+        L: (B*N)x3 traced results unbatched
     """
     # flatten the rays
     # Create batch mask where each row contains the same batch index
@@ -164,7 +164,7 @@ def path_tracing_envmap_emitter(scene,emitter_net,material_net,rays_o,rays_d,dx_
         w_mis = torch.where((emit_pdf>0)&(~brdf_pdf.isinf()),emit_pdf*emit_pdf/(emit_pdf*emit_pdf+brdf_pdf*brdf_pdf),0)
         w_mis[emit_pdf.isinf()|(brdf_pdf==0)] = 1
         L[active_next] += emit_brdf*emit_weight * w_mis
-    
+    abs(rgbs_s - rgbs_gt_s).mean(dim=-1) 
 
     # sample brdf
     if brdf_sampling:

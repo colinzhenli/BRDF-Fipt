@@ -100,41 +100,116 @@ class BRDFTrainer(pl.LightningModule):
         else:
             logging.error('Optimizer type not supported')
 
-    def training_step(self, batch, batch_idx):
-        # Handle batch of roughness and metallic values
-        batch_indices = []
-        gt_params = batch['gt_params']
+    # def training_step(self, batch, batch_idx):
+    #     # Handle batch of roughness and metallic values
+    #     batch_indices = []
+    #     gt_params = batch['gt_params']
         
-        # randomly initialize emitter
+    #     # randomly initialize emitter
+    #     emitter = DynamicPointEmitter(
+    #         dist=self.cfg.renderer.emitter.dist,
+    #         num_lights=self.cfg.renderer.emitter.num_lights,
+    #         fix_seed = False
+    #     )
+        
+    #     # Render step
+    #     rays, gt_params = batch['rays'], batch['gt_params']
+    #     rgbs = self.renderer.render(emitter, rays, self.cfg.renderer.spp.train, None, None)
+
+    #     if self.gt_folder is None:
+    #         with torch.no_grad():
+    #             rgbs_gt = self.gt_renderer.render(emitter, rays, self.cfg.renderer.spp.train, gt_params, None)
+    #     else:
+    #         rgbs_gt = batch['rgbs']
+        
+    #     # Reconstruction loss
+    #     recon_loss = NF.l1_loss(rgbs, rgbs_gt)
+    #     latent_reg = 0
+    #     loss = recon_loss + self.hparams.model.loss.latent_reg_loss.weight * latent_reg
+        
+    #     psnr_loss = NF.l1_loss(self.gamma(rgbs), self.gamma(rgbs_gt))
+    #     psnr = -10.0 * torch.log10(psnr_loss.clamp_min(1e-5))
+        
+    #     self.log('train/recon_loss', recon_loss)
+    #     self.log('train/latent_reg', latent_reg)
+    #     self.log('train/total_loss', loss)
+    #     self.log('train/psnr', psnr)
+        
+    #     return loss
+    def training_step(self, batch, batch_idx):
+        """
+        with importance sampling
+        """
+        # ------------------------------------------------------------------
+        # 1. Un-pack inputs
+        # ------------------------------------------------------------------
+        rays,  gt_params = batch['rays'], batch['gt_params']
+        # rays: [B, N, 3]
+        # gt_params: [B, N, 16]
         emitter = DynamicPointEmitter(
             dist=self.cfg.renderer.emitter.dist,
             num_lights=self.cfg.renderer.emitter.num_lights,
-            fix_seed = False
+            fix_seed=False
         )
-        
-        # Render step
-        rays, gt_params = batch['rays'], batch['gt_params']
-        rgbs = self.renderer.render(emitter, rays, self.cfg.renderer.spp.train, None, None)
 
-        if self.gt_folder is None:
+        # forward renders
+        rgbs = self.renderer.render(emitter, rays, self.cfg.renderer.spp.train,
+                                        None, None)                       # f(r)
+        if self.gt_folder is None:                                        # f̂ target
             with torch.no_grad():
-                rgbs_gt = self.gt_renderer.render(emitter, rays, self.cfg.renderer.spp.train, gt_params, None)
+                rgbs_gt = self.gt_renderer.render(
+                    emitter, rays, self.cfg.renderer.spp.train, gt_params, None)
         else:
             rgbs_gt = batch['rgbs']
-        
-        # Reconstruction loss
-        recon_loss = NF.l1_loss(rgbs, rgbs_gt)
-        latent_reg = 0
-        loss = recon_loss + self.hparams.model.loss.latent_reg_loss.weight * latent_reg
-        
+
+        if self.cfg.data.importance_sampling:
+            luminance = (0.2126 * rgbs_gt[..., 0] +
+                        0.7152 * rgbs_gt[..., 1] +
+                        0.0722 * rgbs_gt[..., 2]).clamp(min=1e-6)    # (N,)
+
+            pdf = luminance.detach() / luminance.sum()               # f̂(r),  stops grad
+
+            # When every pixel is black the above becomes NaN; fall back to uniform.
+            if not torch.isfinite(pdf).all():
+                pdf = torch.full_like(pdf, 1.0 / pdf.numel())
+            N_tot        = rays.shape[1]
+            n_samples    = getattr(self.cfg.data, "importance_sampling_num", N_tot)   # use all by default
+            sample_idx   = torch.multinomial(pdf, n_samples, replacement=True)   # (S,)
+
+            # gather the sampled quantities
+            rgbs_s       = rgbs[sample_idx]
+            rgbs_gt_s    = rgbs_gt[sample_idx]
+            pdf_s        = pdf[sample_idx]                                # f̂(r_i)
+            if self.hparams.model.loss.recon_loss.name == "l1":
+                per_pix_l1 = torch.abs(rgbs_s - rgbs_gt_s).mean(dim=-1) 
+                weighted   = per_pix_l1 / pdf_s                               # multiply by Q=1
+            elif self.hparams.model.loss.recon_loss.name == "l2":
+                per_pix_l2 = torch.pow(rgbs_s - rgbs_gt_s, 2).mean(dim=-1)       # (S,)
+                weighted   = per_pix_l2 / pdf_s                               # multiply by Q=1
+            recon_loss = weighted.mean()
+
+        else:
+            if self.cfg.loss.recon_loss.name == "l1":
+                recon_loss = NF.l1_loss(rgbs, rgbs_gt)
+            elif self.cfg.loss.recon_loss.name == "l2":
+                recon_loss = NF.mse_loss(rgbs, rgbs_gt)
+
+        latent_reg = 0.0
+        loss       = recon_loss + self.hparams.model.loss.latent_reg_loss.weight * latent_reg
+
         psnr_loss = NF.l1_loss(self.gamma(rgbs), self.gamma(rgbs_gt))
-        psnr = -10.0 * torch.log10(psnr_loss.clamp_min(1e-5))
-        
-        self.log('train/recon_loss', recon_loss)
-        self.log('train/latent_reg', latent_reg)
-        self.log('train/total_loss', loss)
-        self.log('train/psnr', psnr)
-        
+        psnr      = -10.0 * torch.log10(psnr_loss.clamp_min(1e-5))
+
+        # ------------------------------------------------------------------
+        # 6. Logging
+        # ------------------------------------------------------------------
+        self.log_dict({
+            'train/recon_loss': recon_loss,
+            'train/latent_reg': latent_reg,
+            'train/total_loss': loss,
+            'train/psnr':       psnr
+        }, prog_bar=True, batch_size=rays.shape[0])
+
         return loss
 
     def validation_step(self, batch, batch_idx):
@@ -161,7 +236,10 @@ class BRDFTrainer(pl.LightningModule):
         psnr_loss = NF.l1_loss(self.gamma(rgbs), self.gamma(rgbs_gt))
         psnr = -10.0 * torch.log10(psnr_loss.clamp_min(1e-5))
         
-        recon_loss = NF.l1_loss(rgbs, rgbs_gt)
+        if self.hparams.model.loss.recon_loss.name == "l1":
+            recon_loss = NF.l1_loss(rgbs, rgbs_gt)
+        elif self.hparams.model.loss.recon_loss.name == "l2":
+            recon_loss = NF.mse_loss(rgbs, rgbs_gt)
         latent_reg = 0
         loss = recon_loss + self.hparams.model.loss.latent_reg_loss.weight * latent_reg
         
