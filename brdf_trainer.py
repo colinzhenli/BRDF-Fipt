@@ -7,6 +7,7 @@ import torchvision
 from torchviz import make_dot
 from viztracer import VizTracer
 from tqdm import tqdm
+import math
 from model.emitter import DynamicPointEmitter
 import os
 
@@ -153,16 +154,51 @@ class BRDFTrainer(pl.LightningModule):
         )
 
         # forward renders
-        rgbs = self.renderer.render(emitter, rays, self.cfg.renderer.spp.train,
+        rgbs, vis, ray_params = self.renderer.render(emitter, rays, self.cfg.renderer.spp.train,
                                         None, None)                       # f(r)
         if self.gt_folder is None:                                        # f̂ target
             with torch.no_grad():
-                rgbs_gt = self.gt_renderer.render(
+                rgbs_gt, *_ = self.gt_renderer.render(
                     emitter, rays, self.cfg.renderer.spp.train, gt_params, None)
         else:
             rgbs_gt = batch['rgbs']
+        if self.cfg.data.uniform_sampling:
+            x, wi, wo = ray_params.split([3, 3, 3], dim=-1)
+            assert x.shape == wi.shape == wo.shape
+            r        = 0.20                      # object-sphere radius
+            R_cam    = 2.00                      # camera-sphere radius
+            R_lgt    = 4.00                      # light-sphere radius   (⇐ new)
+            theta_fov= 0.5 * 0.5   # half field-of-view angle
+            Omega    = 2.0 * math.pi * (1.0 - math.cos(theta_fov))   # solid angle
+            eps      = 1e-6                      # numerical guard
 
-        if self.cfg.data.importance_sampling:
+            # ---------- helper: endpoint on a sphere of given radius -------------------
+            def endpoint_along(dir_vec, R_target):
+                """Return y = x + s*dir that lies on |y| == R_target."""
+                dot = (x * dir_vec).sum(-1, keepdim=True)            # <x,u>
+                s   = -dot + torch.sqrt(dot**2 + R_target*R_target - r*r)
+                return x + s * dir_vec                               # (N,3)
+
+            # ---------- reconstruct camera & light centres -----------------------------
+            c = endpoint_along(-wo, R_cam)   # camera centre
+            l = endpoint_along( wi, R_lgt)   # light  centre
+
+            # ---------- geometric terms -------------------------------------------------
+            nx        = x / r                                 # unit normal
+            cos_o_pos = torch.clamp((nx * wo).sum(-1), min=eps)
+            cos_i_pos = torch.clamp((nx * wi).sum(-1), min=eps)
+            dist2_cam = ((x - c) ** 2).sum(-1)                # |x-c|^2
+            dist2_lgt = ((x - l) ** 2).sum(-1)                # |x-l|^2
+
+            # ---------- importance weight  w ∝ 1 / p(x,wi,wo) --------------------------
+            w  = (dist2_cam / cos_o_pos) * (cos_i_pos / dist2_lgt) * Omega
+            w  = w / w.mean()          # optional: stabilise magnitude
+
+            # ---------- weighted L1 loss -----------------------------------------------
+            per_pix_l1 = torch.abs(rgbs - rgbs_gt).mean(-1)      # (N,)
+            recon_loss = (w * per_pix_l1[vis]).mean()
+
+        elif self.cfg.data.importance_sampling:
             luminance = (0.2126 * rgbs_gt[..., 0] +
                         0.7152 * rgbs_gt[..., 1] +
                         0.0722 * rgbs_gt[..., 2]).clamp(min=1e-6)    # (N,)
@@ -225,11 +261,11 @@ class BRDFTrainer(pl.LightningModule):
         
         # Render step logic
         rays, gt_params = batch['rays'], batch['gt_params']
-        rgbs = self.renderer.render(emitter, rays, self.cfg.renderer.spp.train, None, None)
+        rgbs, *_ = self.renderer.render(emitter, rays, self.cfg.renderer.spp.train, None, None)
 
         if self.gt_folder is None:
             with torch.no_grad():
-                rgbs_gt = self.gt_renderer.render(emitter, rays, self.cfg.renderer.spp.train, gt_params, None)
+                rgbs_gt, *_ = self.gt_renderer.render(emitter, rays, self.cfg.renderer.spp.train, gt_params, None)
         else:
             rgbs_gt = batch['rgbs']
 

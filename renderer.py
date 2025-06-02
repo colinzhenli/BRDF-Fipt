@@ -30,20 +30,24 @@ class ForwardRenderer:
     def render(self, emitter, rays, spp, gt_params=None, latent=None):
         rays_x, rays_d, dxdu, dydv = rays[..., :3], rays[..., 3:6], rays[..., 6:9], rays[..., 9:12]
         L = torch.zeros_like(rays_x)
+        ray_params = torch.zeros_like(rays)
         if spp < self.SPP_chunk:
             self.SPP_chunk = spp
         if emitter is None:
             for _ in range(spp // self.SPP_chunk):
-                L += self.ray_tracer(
+                L0, vis, ray_params = self.ray_tracer(
                     self.scene, self.emitter, self.material,
                     rays_x, rays_d, dxdu, dydv, 
                     self.SPP_chunk, brdf_sampling=self.cfg.renderer.brdf_sampling, emitter_sampling=self.cfg.renderer.emitter_sampling, gt_params=gt_params, latent=latent
                 )
+                L += L0
         else:
-            L = self.ray_tracer(
+            L0, vis, ray_params = self.ray_tracer(
                 self.scene, emitter, self.material,
                 rays_x, rays_d, dxdu, dydv, 
                 self.SPP_chunk, brdf_sampling=self.cfg.renderer.brdf_sampling, emitter_sampling=self.cfg.renderer.emitter_sampling, gt_params=gt_params, latent=latent
             )
+            L += L0
         rgbs = L / (spp // self.SPP_chunk)
-        return rgbs
+        rgbs = rgbs.squeeze(0) # squeeze the batch dimension
+        return rgbs, vis, ray_params

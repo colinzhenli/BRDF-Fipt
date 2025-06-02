@@ -106,7 +106,8 @@ def batched_path_tracing_dynamic_emitter(scene,emitter_net,material_net,rays_o,r
     emit_brdf,_ = material_net.eval_brdf(gt_params,position, wi,wo,normal, latent, batch_mask)
     L[vis] += (emit_brdf*emit_weight).reshape(-1, N_lights,3).mean(1)
     L = L.reshape(N,spp,3).mean(1)
-    return L
+    ray_params = torch.cat([position, wi, wo], dim=-1)
+    return L, vis, ray_params
 
 
 def path_tracing_envmap_emitter(scene,emitter_net,material_net,rays_o,rays_d,dx_du,dy_dv,spp, brdf_sampling, emitter_sampling, gt_params=None, latent=None):
@@ -164,7 +165,6 @@ def path_tracing_envmap_emitter(scene,emitter_net,material_net,rays_o,rays_d,dx_
         w_mis = torch.where((emit_pdf>0)&(~brdf_pdf.isinf()),emit_pdf*emit_pdf/(emit_pdf*emit_pdf+brdf_pdf*brdf_pdf),0)
         w_mis[emit_pdf.isinf()|(brdf_pdf==0)] = 1
         L[active_next] += emit_brdf*emit_weight * w_mis
-    abs(rgbs_s - rgbs_gt_s).mean(dim=-1) 
 
     # sample brdf
     if brdf_sampling:

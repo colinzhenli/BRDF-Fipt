@@ -3,7 +3,8 @@ val_num: 9
 test_num: 1
 num_workers: 2
 # batch_num: 2048 #4096 # steps per epoch
-rays_num: 128 # pixels per batch
-importance_sampling: True
-importance_sampling_num: 128 # number of pixels to sample with importance sampling
+rays_num: 8192 # pixels per batch
+importance_sampling: False
+uniform_sampling: True
+importance_sampling_num: 8192 # number of pixels to sample with importance sampling
 batch_size: 1 # equal to train_num
