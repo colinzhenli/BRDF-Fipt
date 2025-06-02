@@ -122,10 +122,10 @@ def main(cfg):
             # Render step logic
             rays, gt_params = batch['rays'].to(model.device).unsqueeze(0), batch['gt_params'].to(model.device).unsqueeze(0)
             
-            rgbs_pred = renderer.render(emitter, rays, cfg.renderer.spp.test, None, None)
+            rgbs_pred, *_ = renderer.render(emitter, rays, cfg.renderer.spp.test, None, None)
             if cfg.gt_folder is None:
                 with torch.no_grad():
-                    rgbs_gt = gt_renderer.render(emitter, rays, cfg.renderer.spp.test, gt_params, None)
+                    rgbs_gt, *_ = gt_renderer.render(emitter, rays, cfg.renderer.spp.test, gt_params, None)
             else:
                 rgbs_gt = batch['rgbs'].to(model.device)
 

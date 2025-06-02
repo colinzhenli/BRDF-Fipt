@@ -165,38 +165,50 @@ class BRDFTrainer(pl.LightningModule):
         if self.cfg.data.uniform_sampling:
             x, wi, wo = ray_params.split([3, 3, 3], dim=-1)
             assert x.shape == wi.shape == wo.shape
-            r        = 0.20                      # object-sphere radius
-            R_cam    = 2.00                      # camera-sphere radius
-            R_lgt    = 4.00                      # light-sphere radius   (⇐ new)
-            theta_fov= 0.5 * 0.5   # half field-of-view angle
-            Omega    = 2.0 * math.pi * (1.0 - math.cos(theta_fov))   # solid angle
-            eps      = 1e-6                      # numerical guard
+            L = self.cfg.renderer.emitter.num_lights
+            x, wo = x.view(-1, L, 3)[:, 0], wo.view(-1, L, 3)[:, 0]  # → (N, 3)
+            wi = wi.view(-1, L, 3)                          # (N,M,3)
 
-            # ---------- helper: endpoint on a sphere of given radius -------------------
+            # ------------ scene constants ----------------------------
+            r        = 0.20
+            R_cam    = 2.00
+            R_lgt    = 4.00
+            theta_fov= 0.5 * 0.5                              # radians
+            Omega    = 2.0 * math.pi * (1.0-math.cos(theta_fov))
+            eps      = 1e-6
+
+            # ------------ unit normal --------------------------------
+            nx = x / r                                         # (N,3)
+
+            # ------------ cosines wrt camera (shared for all m) -------
+            cos_o_pos = torch.clamp((nx * wo).sum(-1), min=eps)        # (N,)
+
+            # ------------ helper: endpoint on given radius ------------
             def endpoint_along(dir_vec, R_target):
-                """Return y = x + s*dir that lies on |y| == R_target."""
-                dot = (x * dir_vec).sum(-1, keepdim=True)            # <x,u>
+                # dir_vec: (N,M,3) or (N,1,3) broadcasting ok
+                dot = (x.unsqueeze(1) * dir_vec).sum(-1, keepdim=True)  # (N,M,1)
                 s   = -dot + torch.sqrt(dot**2 + R_target*R_target - r*r)
-                return x + s * dir_vec                               # (N,3)
+                return x.unsqueeze(1) + s * dir_vec                     # (N,M,3)
 
-            # ---------- reconstruct camera & light centres -----------------------------
-            c = endpoint_along(-wo, R_cam)   # camera centre
-            l = endpoint_along( wi, R_lgt)   # light  centre
+            # ------------ camera & light centres ----------------------
+            c = endpoint_along(-wo.unsqueeze(1), R_cam)[:,0]  # (N,3) (same for all m)
+            l = endpoint_along( wi, R_lgt)                    # (N,M,3)
 
-            # ---------- geometric terms -------------------------------------------------
-            nx        = x / r                                 # unit normal
-            cos_o_pos = torch.clamp((nx * wo).sum(-1), min=eps)
-            cos_i_pos = torch.clamp((nx * wi).sum(-1), min=eps)
-            dist2_cam = ((x - c) ** 2).sum(-1)                # |x-c|^2
-            dist2_lgt = ((x - l) ** 2).sum(-1)                # |x-l|^2
+            # ------------ geometric terms -----------------------------
+            dist2_cam = ((x - c) ** 2).sum(-1, keepdim=True)           # (N,1)
+            dist2_lgt = ((x.unsqueeze(1) - l) ** 2).sum(-1)            # (N,M)
 
-            # ---------- importance weight  w ∝ 1 / p(x,wi,wo) --------------------------
-            w  = (dist2_cam / cos_o_pos) * (cos_i_pos / dist2_lgt) * Omega
-            w  = w / w.mean()          # optional: stabilise magnitude
+            cos_i_pos = torch.clamp((nx.unsqueeze(1) * wi).sum(-1), min=eps)  # (N,M)
 
-            # ---------- weighted L1 loss -----------------------------------------------
-            per_pix_l1 = torch.abs(rgbs - rgbs_gt).mean(-1)      # (N,)
-            recon_loss = (w * per_pix_l1[vis]).mean()
+            # ------------ per-sample weights, then average ------------
+            w_each = (dist2_cam / cos_o_pos.unsqueeze(1)) * (cos_i_pos / dist2_lgt) * Omega  # (N,M)
+            w_px   = w_each.mean(dim=1)                               # (N,)   equation (★)
+            w_px   = w_px / w_px.mean()                               # optional normalise
+
+            # ------------ pixel-wise L1 loss --------------------------
+            per_pix_l1 = torch.abs(rgbs - rgbs_gt).mean(-1)             # (N,)
+
+            recon_loss = (w_px * per_pix_l1[vis]).mean()
 
         elif self.cfg.data.importance_sampling:
             luminance = (0.2126 * rgbs_gt[..., 0] +
