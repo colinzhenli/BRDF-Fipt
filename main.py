@@ -36,7 +36,7 @@ def main(cfg):
     os.makedirs(checkpoint_output_path, exist_ok=True)
 
     # Load ground truth material parameters from pbr config
-    gt_material_cfg = hydra.compose(config_name="config", overrides=["material=pbr"]).material
+    gt_material_cfg = hydra.compose(config_name="config", overrides=["material=svpbr"]).material
     
     # Use ground truth parameters from pbr.yaml
     albedo = gt_material_cfg.albedo
@@ -56,6 +56,7 @@ def main(cfg):
     else:
         raise ValueError(f"Invalid material type: {cfg.material.type}")
     gt_material = SvPBRBRDF(
+        cfg=gt_material_cfg,
         albedo=torch.tensor(albedo)
     )  # Ground truth uses pbr config
 

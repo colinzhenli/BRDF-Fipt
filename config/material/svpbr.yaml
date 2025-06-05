@@ -1,0 +1,9 @@
+type: "SvPBRBRDF"
+
+roughness: 0.2
+metallic: 0.2
+albedo: [1.0, 1.0, 1.0]
+perlin_scale: 0.1
+perlin_randomness: 0.1
+normal_map: True
+scale_factor: 0.2

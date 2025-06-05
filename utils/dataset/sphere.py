@@ -17,6 +17,9 @@ def load_pbr_texture_stack(pbr_folder):
         path = os.path.join(pbr_folder, fname)
         if path.endswith(".exr"):
             exr = cv2.imread(path, cv2.IMREAD_UNCHANGED)  # H × W × C, float32
+            # Convert BGR to RGB for OpenCV
+            exr = exr[..., ::-1]
+
             tensor = torch.from_numpy(exr.copy())         # torch.float32
             # Check if it's only two channels and unsqueeze if needed
             if len(tensor.shape) == 2:
@@ -41,12 +44,12 @@ def load_pbr_texture_stack(pbr_folder):
         # Combine all available channels into a texture
         # [Color (3) + AO (3) + ARM (3) + Roughness (1) + Normal DX (1) + Normal GL (1)] = 12 channels
         tex = torch.cat([
-            col_1,                # RGB color (3 channels)
-            ao,                   # Ambient occlusion (3 channels)
-            arm,                  # ARM texture (3 channels)
-            rough,                # Roughness map (1 channel)
-            nor_dx,               # Normal map X (3 channel)
-            nor_gl                # Normal map GL (3 channel)
+            col_1,                # RGB color (3 channels) 0:3
+            ao,                   # Ambient occlusion (3 channels) 3:6
+            arm,                  # ARM texture (3 channels) 6:9
+            rough,                # Roughness map (1 channel) 9:10
+            nor_dx,               # Normal map X (3 channel) 10:13
+            nor_gl                # Normal map GL (3 channel) 13:16
         ], dim=0)  # [16,H,W]
         
         return tex.permute(1, 2, 0).contiguous()  # [H,W,6] => [U,V,6]

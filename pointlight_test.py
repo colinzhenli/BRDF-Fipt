@@ -73,7 +73,7 @@ def main(cfg):
     checkpoint_output_path = os.path.join(cfg.exp_output_root_path, "training")
     os.makedirs(checkpoint_output_path, exist_ok=True)
 
-    gt_material_cfg = hydra.compose(config_name="config", overrides=["material=pbr"]).material
+    gt_material_cfg = hydra.compose(config_name="config", overrides=["material=svpbr"]).material  
     point_emitter_cfg = hydra.compose(config_name="config", overrides=["renderer=dynamicpoint_emitter"])
     albedo = gt_material_cfg.albedo
     roughness = gt_material_cfg.roughness
@@ -81,6 +81,7 @@ def main(cfg):
 
     material = SvLatentModel(cfg.material)
     gt_material = SvPBRBRDF(
+        cfg=gt_material_cfg,
         albedo=torch.tensor(albedo)
     )  # Ground truth uses pbr config
 

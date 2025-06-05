@@ -97,15 +97,35 @@ class DynamicPointEmitter(nn.Module):
         self.dist = dist
         self.num_lights = num_lights
         self.fix_seed = fix_seed
-        if fix_seed:
-            torch.manual_seed(0)
-            # Sample spherical coordinates on GPU
+        self.uniform = False
+        if not self.fix_seed:
+            # randomly sample during training
             theta = torch.arccos(1 - 2 * torch.rand(num_lights, device='cuda'))  # theta ∈ [0, pi]
             phi = 2 * torch.pi * torch.rand(num_lights, device='cuda')          # phi ∈ [0, 2pi]
+        
         else:
-            # Sample spherical coordinates on GPU
-            theta = torch.arccos(1 - 2 * torch.rand(num_lights, device='cuda'))  # theta ∈ [0, pi]
-            phi = 2 * torch.pi * torch.rand(num_lights, device='cuda')          # phi ∈ [0, 2pi]
+            if not self.uniform:
+                torch.manual_seed(0)
+                theta = torch.arccos(1 - 2 * torch.rand(num_lights, device='cuda'))  # theta ∈ [0, pi]
+                phi = 2 * torch.pi * torch.rand(num_lights, device='cuda')          # phi ∈ [0, 2pi]
+            
+            else:
+                # Create a grid for uniform distribution on sphere
+                if num_lights > 1:
+                    # For multiple lights, create a more uniform distribution
+                    n_theta = int(torch.sqrt(torch.tensor(num_lights)).item())
+                    n_phi = num_lights // n_theta
+                    
+                    theta_vals = torch.linspace(0, torch.pi, n_theta + 1)[1:]  # Exclude 0
+                    phi_vals = torch.linspace(0, 2 * torch.pi, n_phi, endpoint=False)
+                    
+                    theta_grid, phi_grid = torch.meshgrid(theta_vals, phi_vals, indexing='ij')
+                    theta = theta_grid.flatten()[:num_lights]
+                    phi = phi_grid.flatten()[:num_lights]
+                else:
+                    theta = torch.tensor([torch.pi / 2], device='cuda')  # Single light at equator
+                    phi = torch.tensor([0.0], device='cuda')
+                    
 
         x = dist * torch.sin(theta) * torch.cos(phi)
         y = dist * torch.sin(theta) * torch.sin(phi)

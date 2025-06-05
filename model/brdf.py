@@ -116,24 +116,131 @@ def perlin_mask(pos, scale=1.0, randomness=0.5):
     mask = torch.clamp(mask, 0.0, 1.0)  # Ensure values stay within valid range
     return mask.view(-1, 1)
 
-def xyz_to_uv(pos, radius):
-    """Convert xyz on a sphere of radius `radius` to uv in [0,1]².
-    pos : [...,3] tensor (world units)
-    returns : [...,2] tensor (u,v)"""
-    scale = 0.1
-    xyz_norm = pos / radius
-    x, y, z = xyz_norm.unbind(-1)
-    u = torch.atan2(z, x) / (2 * torch.pi) + 0.5
-    v = torch.asin(y.clamp(-1, 1)) / torch.pi + 0.5
-    uv =  torch.stack([u, v], dim=-1) * scale
-    return torch.frac(uv)
+# def xyz_to_uv_TBN(pos, radius=1.0):
+#     """
+#     Args
+#     ----
+#     pos    : (..., 3) tensor – world-space point(s) on a sphere
+#     radius : sphere radius (default 1)
+
+#     Returns
+#     -------
+#     uv : (..., 2) tensor   – identical to the output of your original xyz_to_uv
+#     M  : (..., 3, 3) tensor – tangent-frame matrix whose columns are [T, B, N]
+#     """
+#     scale = 1.0
+#     # ---------- 1. UV coordinates (same math as your reference) --------------
+#     xyz_norm = pos / radius
+#     x, y, z  = xyz_norm.unbind(-1)
+
+#     u = torch.atan2(z, x) / (2 * torch.pi) + 0.5
+#     v = torch.asin(y.clamp(-1, 1)) / torch.pi + 0.5
+
+#     uv = torch.stack([u, v], dim=-1)                    # shape (..., 2)
+#     uv = torch.frac(uv)                                 # wrap to [0,1)
+
+#     # 2. local frame ---------------------------------------------------
+#     sin_t, cos_t = torch.sin((v-0.5) * math.pi), torch.cos((v-0.5) * math.pi)
+#     sin_p, cos_p = torch.sin((u - 0.5) * 2 * math.pi), torch.cos((u - 0.5) * 2 * math.pi)
+
+#     # derivatives on unit sphere
+#     dp_du = torch.stack((-cos_t * sin_p,
+#                           torch.zeros_like(x),
+#                           cos_t * cos_p), -1) * (2 * math.pi)
+
+#     dp_dv = torch.stack((-sin_t * cos_p,
+#                           cos_t,
+#                          -sin_t * sin_p), -1) * math.pi
+
+#     T = torch.nn.functional.normalize(dp_du, dim=-1)          # +u  (red)
+#     B = torch.nn.functional.normalize(dp_dv, dim=-1)          # +v  (green)
+#     N = torch.nn.functional.normalize(pos, dim=-1)      # outward (+blue in Blender)
+
+#     # guarantee right-handedness
+#     det = torch.det(torch.stack((T, B, N), -1))
+#     # B = torch.where(det[..., None] < 0, -B, B)
+#     B = -B
+
+#     M = torch.stack((T, B, N), -1)
+
+#     return uv*scale, M, dp_du, dp_dv
+
+def compute_uv(pos, radius=0.2):
+    dx, dy, dz = pos[:, 0], pos[:, 1], pos[:, 2]
+    u = 0.5 + torch.atan2(dz, dx) / (2 * math.pi)
+    v = 0.5 + torch.asin(dy / radius) / math.pi
+    uv = torch.stack([u, v], dim=-1)
+    return uv
+
+def sample_texture(params, uv):
+    B, H, W, C = params.shape
+    # Prepare ARM and Normal maps
+    arm_map = params[..., 6:9].permute(0, 3, 1, 2)  # shape: [1,3,H,W]
+    normal_map = params[..., 13:16].permute(0, 3, 1, 2)  # shape: [1,3,H,W]
+
+    # UV coordinates adjustment for grid_sample
+    uv_grid = uv.unsqueeze(0).unsqueeze(2) * 2 - 1  # [1,N,1,2]
+
+    # Sample textures
+    sampled_arm = torch.nn.functional.grid_sample(
+        arm_map, uv_grid, mode='bilinear', align_corners=True
+    ).squeeze(-1).permute(0, 2, 1).squeeze(0)  # [N,3]
+
+    sampled_normal = torch.nn.functional.grid_sample(
+        normal_map, uv_grid, mode='bilinear', align_corners=True
+    ).squeeze(-1).permute(0, 2, 1).squeeze(0)  # [N,3]
+
+    return sampled_arm, sampled_normal
+
+def compute_tbn(pos, uv, radius=0.2):
+    x, y, z = pos[:, 0], pos[:, 1], pos[:, 2]
+    u, v = uv[:, 0], uv[:, 1]
+
+    # Partial derivatives
+    theta = u * 2 * math.pi - math.pi
+    phi = (v - 0.5) * math.pi
+
+    # Compute T and B
+    dtheta_dx = -radius * torch.sin(theta) * torch.cos(phi)
+    dtheta_dy = torch.zeros_like(dtheta_dx)
+    dtheta_dz = radius * torch.cos(theta) * torch.cos(phi)
+    T = torch.stack([dtheta_dx, dtheta_dy, dtheta_dz], dim=-1)
+
+    dphi_dx = -radius * torch.cos(theta) * torch.sin(phi)
+    dphi_dy = radius * torch.cos(phi)
+    dphi_dz = -radius * torch.sin(theta) * torch.sin(phi)
+    B = torch.stack([dphi_dx, dphi_dy, dphi_dz], dim=-1)
+
+    # Normal vector
+    N = torch.nn.functional.normalize(torch.cross(B, T, dim=-1), dim=-1)
+
+    T = torch.nn.functional.normalize(T, dim=-1)
+    B = torch.nn.functional.normalize(B, dim=-1)
+
+    return T, B, N
+
+def local_to_world_normal(sampled_normal, T, B, N):
+    # Adjust normal map from [0,1] to [-1,1]
+    sampled_normal = sampled_normal * 2 - 1
+    sampled_normal = torch.nn.functional.normalize(sampled_normal, dim=-1)
+    n_world = (
+        sampled_normal[:, 0:1] * T +
+        sampled_normal[:, 1:2] * B +
+        sampled_normal[:, 2:3] * N
+    )
+    n_world = torch.nn.functional.normalize(n_world, dim=-1)
+    return n_world
 
 class SvPBRBRDF(nn.Module):
     """ Base BRDF class """
-    def __init__(self, albedo=torch.ones(1, 3)):
+    def __init__(self, cfg, albedo=torch.ones(1, 3)):
         super(SvPBRBRDF,self).__init__()
         # Initialize learnable material parameters
         self.albedo = nn.Parameter(albedo)
+        self.perlin_scale = cfg.perlin_scale
+        self.perlin_randomness = cfg.perlin_randomness
+        self.scale_factor = cfg.scale_factor
+        self.normal_map = cfg.normal_map
     def diffuse_sampler(self, sample2, normal):
         """ sampling diffuse lobe: wi ~ NoV/math.pi 
         Args:
@@ -211,30 +318,30 @@ class SvPBRBRDF(nn.Module):
         if not valid_geometry.any():
             return torch.zeros_like(wi), torch.zeros(wi.shape[0], 1, device=wi.device)
         radius = 0.2
-        uv = xyz_to_uv(pos, radius) 
-        # Get PBR texture values at the given UV coordinates
-        # params has shape [B, H, W, 16]
-        # uv has shape [N, 2]
-        
-        # Convert UV coordinates to pixel coordinates
-        H, W = params.shape[1:3]
-        u_pixel = (uv[:, 0] * (W - 1)).clamp(0, W - 1).long()
-        v_pixel = (uv[:, 1] * (H - 1)).clamp(0, H - 1).long()
-        pbr_values = params.squeeze(0)[u_pixel, v_pixel]
-        base_color = pbr_values[:, 0:3]
-        
-        # ARM texture (channels 6-8)
-        arm = pbr_values[:, 6:9]
-        albedo = arm[:, 0:1]
-        roughness = arm[:, 1:2]  # Roughness from ARM
-        metallic = arm[:, 2:3]   # Metallic from ARM
-        
-        # Normal from normal map GL (channels 13-15)
-        normal_map = pbr_values[:, 13:16]
-        
-        brdf, pdf = self.compute_svbrdf_pdf(albedo, roughness, metallic, wi, wo, normal)
-        # brdf = base_color * brdf
-         
+        factor = self.scale_factor
+        H, W = params.shape[1], params.shape[2]
+        crop_h = int((H - H * factor) // 2)
+        crop_w = int((W - W * factor) // 2)
+        new_h = int(H * factor)
+        new_w = int(W * factor)
+        params = params[:, crop_h:crop_h+new_h, crop_w:crop_w+new_w, :]
+        uv = compute_uv(pos, radius)
+
+        # Step 2: Texture sampling
+        arm, normal_local = sample_texture(params, uv)
+        albedo, roughness, metallic = arm[:, 0:1], arm[:, 1:2], arm[:, 2:3]
+
+        # Step 3: TBN frame
+        T, B, N_geo = compute_tbn(pos, uv, radius)
+
+        # Step 4: Transform local normal to world
+        n_world = local_to_world_normal(normal_local, T, B, N_geo)
+
+        # Evaluate BRDF with mapped parameters
+        if self.normal_map:
+            brdf, pdf = self.compute_svbrdf_pdf(albedo, roughness, metallic, wi, wo, n_world)
+        else:
+            brdf, pdf = self.compute_svbrdf_pdf(albedo, roughness, metallic, wi, wo, normal)
         return brdf, pdf
     
     def sample_brdf(self, params, pos, sample1, sample2, wo, normal, latent=None, batch_mask=None):
