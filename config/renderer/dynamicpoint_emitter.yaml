@@ -16,7 +16,7 @@ camera:
 emitter:
   type: "dynamicpoint"
   dist: 4.0
-  num_lights: 4
+  num_lights: 1
 
 spp:
   train: 1

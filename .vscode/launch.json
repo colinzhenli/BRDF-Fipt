@@ -16,8 +16,8 @@
             "args": [
                 "renderer=dynamicpoint_emitter",
                 "material=svlatent_model",
-                "experiment_name=No-normal-map-adjusting_IS_factor-TBN-transferred_normal-map_2-view-1-light_debug_1",
-                // "model.ckpt_path=/localhome/zla247/theia2_data/output/BRDF-Fipt/Over-fit_experiments_2/sphere/Theia2_Correct-rays_200-epoches_L1-loss-Neural-field_Importance-sampling-8192-rays_all-pixels_run_1/training/model_0.20_0.20/last.ckpt",
+                "experiment_name=Factor-1.0-reference_test",
+                // "model.ckpt_path=/localhome/zla247/theia2_data/output/BRDF-Fipt/Over-fit_experiments_2/sphere/Theia2_Normal-map_Scale-0.1_200-epoches_L1-loss-Neural-field_Baseline-IS-8192-rays_all-pixels_run_1/training/model_0.20_0.20/last.ckpt",
                 // "test_on_train=False"
             ]
         }

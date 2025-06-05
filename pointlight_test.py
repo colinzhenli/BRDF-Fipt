@@ -130,7 +130,7 @@ def main(cfg):
             else:
                 rgbs_gt = batch['rgbs'].to(model.device)
 
-            psnr_loss = torch.nn.functional.mse_loss(model.gamma(rgbs_pred), model.gamma(rgbs_gt))
+            psnr_loss = torch.nn.functional.l1_loss(model.gamma(rgbs_pred), model.gamma(rgbs_gt))
             psnr = -10.0 * torch.log10(psnr_loss.clamp_min(1e-5))
             psnr_list.append(psnr.item())
 

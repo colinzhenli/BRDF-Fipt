@@ -97,7 +97,7 @@ class DynamicPointEmitter(nn.Module):
         self.dist = dist
         self.num_lights = num_lights
         self.fix_seed = fix_seed
-        self.uniform = False
+        self.uniform = True
         if not self.fix_seed:
             # randomly sample during training
             theta = torch.arccos(1 - 2 * torch.rand(num_lights, device='cuda'))  # theta ∈ [0, pi]
@@ -133,6 +133,7 @@ class DynamicPointEmitter(nn.Module):
 
         positions = torch.stack([x, y, z], dim=1)  # [N, 3]
         intensities = torch.rand(num_lights, 1, device='cuda') * 49.0 + 1.0  # Uniform [1.0, 50.0]
+        # intensities = torch.full((num_lights, 1), 50.0, device='cuda')  # Fixed maximum intensity
 
         self.register_buffer('light_positions', positions)  # [N, 3]
         self.register_buffer('light_intensities', intensities)  # [N, 1]
