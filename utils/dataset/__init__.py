@@ -1,6 +1,5 @@
 from .real import RealDataset,InvRealDataset
-from .synthetic import SyntheticDataset,InvSyntheticDataset, SphereDataset
+from .sphere import SphereIterableDataset, SphereTestDataset, SphereValDataset
 
 
-__all__ = [RealDataset,InvRealDataset,
-           SyntheticDataset,InvSyntheticDataset, SphereDataset]
+__all__ = [RealDataset,InvRealDataset, SphereIterableDataset, SphereTestDataset, SphereValDataset]

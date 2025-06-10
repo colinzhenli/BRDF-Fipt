@@ -1,0 +1,9 @@
+type: "LatentModel"
+latent_dim: 64
+hidden_layers: [128, 128, 64, 32, 16]
+# hidden_layers: [256, 256, 128, 64, 32, 16]
+
+activation: "relu"
+input_channels: 9
+output_channels: 1
+

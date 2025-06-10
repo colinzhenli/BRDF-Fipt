@@ -1,3 +1,5 @@
+
+
 {
     // Use IntelliSense to learn about possible attributes.
     // Hover to view descriptions of existing attributes.
@@ -8,18 +10,17 @@
             "name": "Python: Current File",
             "type": "python",
             "request": "launch",
-            "program": "train_brdf.py",
+            "program": "main.py",
             "console": "integratedTerminal",
             "justMyCode": true,
             "args": [
-                "--experiment_name", "Over_fit-no-weight-decay_MLP_With-normal_0.2-0.2_run_2",
-                "--device", "0",
-                "--max_epochs", "50"
+                "renderer=dynamicpoint_emitter",
+                "material=svlatent_model",
+                "experiment_name=Time_recording_brdf-class_read-pbr-texture_5-epochs-128-iter_baseline",
+                // "model.ckpt_path=/localhome/zla247/theia2_data/output/BRDF-Fipt/Over-fit_experiments_2/sphere/Theia2_Normal-map_Scale-0.2_200-epoches_L1-loss-Neural-field_IS-8192-rays_all-pixels_run_1/training/model_0.20_0.20/last.ckpt",
+                // "test_on_train=False"
             ]
         }
     ]
 
 }
-
-
-
