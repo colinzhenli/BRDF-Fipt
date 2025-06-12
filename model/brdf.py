@@ -168,12 +168,59 @@ def load_pbr_texture(pbr_folder):
         H, W = 1024, 1024
         return torch.ones(H, W, 6)
 
-def compute_uv(pos, radius=0.2):
-    dx, dy, dz = pos[:, 0], pos[:, 1], pos[:, 2]
-    u = 0.5 + torch.atan2(dz, dx) / (2 * math.pi)
-    v = 0.5 + torch.asin(dy / radius) / math.pi
-    uv = torch.stack([u, v], dim=-1)
-    return uv
+# ──────────────────────────────────────────────────────────────────────
+# 1.  UV mapping for a centred 0.4 × 0.4 m patch in the x-z plane
+#    x,z ∈ [-0.2 , +0.2]  →  u,v ∈ [0 , 1]
+# ──────────────────────────────────────────────────────────────────────
+def compute_uv(pos, width=0.4, length=0.4):
+    half_w   = width  * 0.5               # 0.2
+    half_l   = length * 0.5               # 0.2
+    x, z     = pos[:, 0], pos[:, 2]
+
+    u = (x + half_w) / width              # (-0.2→0,  +0.2→1)
+    v = (z + half_l) / length             # (-0.2→0,  +0.2→1)
+
+    return torch.stack([u, v], dim=-1)     # (N,2)
+
+
+
+# ──────────────────────────────────────────────────────────────────────
+# 2.  TBN frame – constant over the whole patch
+#     ∂p/∂u = (width, 0, 0)       → T  ∥  +x
+#     ∂p/∂v = (0, 0, length)      → B  ∥  +z
+#     N     = B × T               → +y
+# ──────────────────────────────────────────────────────────────────────
+def compute_tbn(pos, uv, width: float = 0.4, length: float = 0.4):
+    """
+    Build a fixed T-B-N frame for each point.
+
+    Args
+    ----
+    pos   : (B, 3)  xyz positions (only used for device / dtype)
+    uv    : (B, 2)  – not used here but kept for API compatibility
+    width : float   tangent scale along +X
+    length: float   bitangent scale along +Z
+    """
+    batch  = pos.shape[0]
+    device = pos.device
+    dtype  = pos.dtype
+
+    # Constant tangent  (width, 0, 0)
+    T = pos.new_tensor([width, 0.0, 0.0]).repeat(batch, 1)  # (B, 3)
+
+    # Constant bitangent (0, 0, length)
+    B = pos.new_tensor([0.0, 0.0, length]).repeat(batch, 1)  # (B, 3)
+
+    # Normal = B × T   (right-handed)
+    N = torch.cross(B, T, dim=-1)
+
+    # Normalise
+    T = NF.normalize(T, dim=-1)
+    B = NF.normalize(B, dim=-1)
+    N = NF.normalize(N, dim=-1)
+
+    return T, B, N
+
 
 def sample_texture(params, uv):
     B, H, W, C = params.shape
@@ -199,33 +246,6 @@ def sample_texture(params, uv):
     ).squeeze(-1).permute(0, 2, 1).squeeze(0)  # [N,3]
 
     return sampled_arm, sampled_color, sampled_normal
-
-def compute_tbn(pos, uv, radius=0.2):
-    x, y, z = pos[:, 0], pos[:, 1], pos[:, 2]
-    u, v = uv[:, 0], uv[:, 1]
-
-    # Partial derivatives
-    theta = u * 2 * math.pi - math.pi
-    phi = (v - 0.5) * math.pi
-
-    # Compute T and B
-    dtheta_dx = -radius * torch.sin(theta) * torch.cos(phi)
-    dtheta_dy = torch.zeros_like(dtheta_dx)
-    dtheta_dz = radius * torch.cos(theta) * torch.cos(phi)
-    T = torch.stack([dtheta_dx, dtheta_dy, dtheta_dz], dim=-1)
-
-    dphi_dx = -radius * torch.cos(theta) * torch.sin(phi)
-    dphi_dy = radius * torch.cos(phi)
-    dphi_dz = -radius * torch.sin(theta) * torch.sin(phi)
-    B = torch.stack([dphi_dx, dphi_dy, dphi_dz], dim=-1)
-
-    # Normal vector
-    N = torch.nn.functional.normalize(torch.cross(B, T, dim=-1), dim=-1)
-
-    T = torch.nn.functional.normalize(T, dim=-1)
-    B = torch.nn.functional.normalize(B, dim=-1)
-
-    return T, B, N
 
 def local_to_world_normal(sampled_normal, T, B, N):
     # Adjust normal map from [0,1] to [-1,1]
@@ -336,14 +356,14 @@ class SvPBRBRDF(nn.Module):
         new_h = int(H * factor)
         new_w = int(W * factor)
         params = params[:, crop_h:crop_h+new_h, crop_w:crop_w+new_w, :]
-        uv = compute_uv(pos, radius)
+        uv = compute_uv(pos, 0.8, 0.8)
 
         # Step 2: Texture sampling
         arm, color, normal_local = sample_texture(params, uv)
         albedo, roughness, metallic = arm[:, 0:1], arm[:, 1:2], arm[:, 2:3]
 
         # Step 3: TBN frame
-        T, B, N_geo = compute_tbn(pos, uv, radius)
+        T, B, N_geo = compute_tbn(pos, uv, 0.8, 0.8)
 
         # Step 4: Transform local normal to world
         n_world = local_to_world_normal(normal_local, T, B, N_geo)
@@ -811,7 +831,7 @@ class LatentModel(nn.Module):
 
 class SpatialLatentEncoder(nn.Module):
     """Encodes 3D positions into latent codes for spatially-varying materials"""
-    def __init__(self, latent_dim, hidden_dims=[64, 128, 64], use_pos_enc=True, num_freqs=10, pos_enc_type="sinusoidal"):
+    def __init__(self, latent_dim, hidden_dims=[128, 128, 128], use_pos_enc=True, num_freqs=12, pos_enc_type="sinusoidal"):
         super(SpatialLatentEncoder, self).__init__()
         
         self.use_pos_enc = use_pos_enc
@@ -957,6 +977,7 @@ class SvLatentModel(LightningModule):
         layers.append(nn.LeakyReLU(0.2))
         
         self.mlp = nn.Sequential(*layers)
+        self.pbr_texture = load_pbr_texture('/mnt/data/colin/colin/BRDF-Fipt/fabric_pattern_07_4k/textures').unsqueeze(0).cuda()
 
         # Initialize proxy BRDF for importance sampling
         self.proxy_brdf = ProxyPBRBRDF()  # Default roughness
@@ -985,7 +1006,7 @@ class SvLatentModel(LightningModule):
             x = torch.cat([wi, wo, normal, latent], dim=-1)
             
         return self.mlp(x)
-
+    
     def world_to_local(self, v, normal):
         
         # choose arbitrary tangent
@@ -995,9 +1016,9 @@ class SvLatentModel(LightningModule):
         
         # if normal is collinear with [0,1,0], choose another tangent
         collinear_mask = tangent_len.squeeze(-1) < 1e-6
-        if collinear_mask.any():
-            tangent[collinear_mask] = torch.cross(normal[collinear_mask], torch.tensor([1., 0., 0.].expand_as(normal[collinear_mask])), device=normal.device)
-            tangent_len = tangent.norm(dim=-1, keepdim=True)
+        # if collinear_mask.any():
+        #     tangent[collinear_mask] = torch.cross(normal[collinear_mask], torch.tensor([1., 0., 0.].expand_as(normal[collinear_mask])), device=normal.device)
+        #     tangent_len = tangent.norm(dim=-1, keepdim=True)
 
         tangent = tangent / tangent_len
 
@@ -1036,16 +1057,18 @@ class SvLatentModel(LightningModule):
         brdf_value = self.forward(pos, wi_local, wo_local, local_normal, latent, batch_mask)
         brdf = brdf_value
         """ load gt color for reference """
-        # radius = 0.2
-        # factor = 0.2
-        # H, W = gt_params.shape[1], gt_params.shape[2]
-        # crop_h = int((H - H * factor) // 2)
-        # crop_w = int((W - W * factor) // 2)
-        # new_h = int(H * factor)
-        # new_w = int(W * factor)
-        # gt_params = gt_params[:, crop_h:crop_h+new_h, crop_w:crop_w+new_w, :]
-        # uv = compute_uv(pos, radius)
-        # arm, color, normal_local = sample_texture(gt_params, uv)
+        factor = 1.0
+        params = self.pbr_texture
+        H, W = params.shape[1], params.shape[2]
+        crop_h = int((H - H * factor) // 2)
+        crop_w = int((W - W * factor) // 2)
+        new_h = int(H * factor)
+        new_w = int(W * factor)
+        params = params[:, crop_h:crop_h+new_h, crop_w:crop_w+new_w, :]
+        uv = compute_uv(pos, 0.8, 0.8)
+
+        # Step 2: Texture sampling
+        arm, color, normal_local = sample_texture(params, uv)
         # brdf = brdf * color
 
         pdf = NoL / math.pi
@@ -1090,6 +1113,8 @@ class LatentTexturedModel(LightningModule):
 
         # Latent dimension from config
         self.latent_dim = cfg.latent_dim
+        self.pbr_texture = load_pbr_texture('/mnt/data/colin/colin/BRDF-Fipt/fabric_pattern_07_4k/textures').unsqueeze(0).cuda()
+        
         
         # Create 2D texture latent grids
         self.texture_resolution = getattr(cfg, 'texture_resolution', 256)
@@ -1156,25 +1181,35 @@ class LatentTexturedModel(LightningModule):
         return NF.conv2d(self.latent_texture, kernel,
                         padding=pad, groups=self.latent_texture.shape[1])
     
-    def sphere_to_uv(self, pos):
-        """
-        Convert 3D sphere surface positions to UV coordinates
-        Args:
-            pos: Bx3 positions on sphere surface
-        Returns:
-            uv: Bx2 UV coordinates in [0,1] range
-        """
-        # Normalize positions to ensure they're on unit sphere
-        pos_norm = pos / (pos.norm(dim=-1, keepdim=True) + 1e-8)
+    # def sphere_to_uv(self, pos):
+    #     """
+    #     Convert 3D sphere surface positions to UV coordinates
+    #     Args:
+    #         pos: Bx3 positions on sphere surface
+    #     Returns:
+    #         uv: Bx2 UV coordinates in [0,1] range
+    #     """
+    #     # Normalize positions to ensure they're on unit sphere
+    #     pos_norm = pos / (pos.norm(dim=-1, keepdim=True) + 1e-8)
         
-        # Convert to spherical coordinates
-        x, y, z = pos_norm[..., 0], pos_norm[..., 1], pos_norm[..., 2]
+    #     # Convert to spherical coordinates
+    #     x, y, z = pos_norm[..., 0], pos_norm[..., 1], pos_norm[..., 2]
         
-        # Calculate UV coordinates
-        u = 0.5 + torch.atan2(x, z) / (2 * math.pi)
-        v = 0.5 - torch.asin(torch.clamp(y, -1.0, 1.0)) / math.pi
+    #     # Calculate UV coordinates
+    #     u = 0.5 + torch.atan2(x, z) / (2 * math.pi)
+    #     v = 0.5 - torch.asin(torch.clamp(y, -1.0, 1.0)) / math.pi
         
-        return torch.stack([u, v], dim=-1)
+    #     return torch.stack([u, v], dim=-1)
+
+    def compute_uv(self, pos, width=0.4, length=0.4):
+        half_w   = width  * 0.5               # 0.2
+        half_l   = length * 0.5               # 0.2
+        x, z     = pos[:, 0], pos[:, 2]
+
+        u = (x + half_w) / width              # (-0.2→0,  +0.2→1)
+        v = (z + half_l) / length             # (-0.2→0,  +0.2→1)
+
+        return torch.stack([u, v], dim=-1)     # (N,2)
 
     def sample_latent_from_texture(self, pos, texture):
         """
@@ -1185,7 +1220,7 @@ class LatentTexturedModel(LightningModule):
             latent: BxD latent codes
         """
         # Convert sphere positions to UV coordinates
-        uv = self.sphere_to_uv(pos)  # Bx2
+        uv = self.compute_uv(pos, 0.8, 0.8)  # Bx2
         
         # Convert UV to grid coordinates for F.grid_sample
         # grid_sample expects coordinates in [-1, 1] range
@@ -1244,10 +1279,10 @@ class LatentTexturedModel(LightningModule):
         tangent_len = tangent.norm(dim=-1, keepdim=True)
         
         # if normal is collinear with [0,1,0], choose another tangent
-        collinear_mask = tangent_len.squeeze(-1) < 1e-6
-        if collinear_mask.any():
-            tangent[collinear_mask] = torch.cross(normal[collinear_mask], torch.tensor([1., 0., 0.].expand_as(normal[collinear_mask])), device=normal.device)
-            tangent_len = tangent.norm(dim=-1, keepdim=True)
+        # collinear_mask = tangent_len.squeeze(-1) < 1e-6
+        # if collinear_mask.any():
+        #     tangent[collinear_mask] = torch.cross(normal[collinear_mask], torch.tensor([1., 0., 0.].expand_as(normal[collinear_mask])), device=normal.device)
+        #     tangent_len = tangent.norm(dim=-1, keepdim=True)
 
         tangent = tangent / tangent_len
 
@@ -1286,6 +1321,20 @@ class LatentTexturedModel(LightningModule):
         brdf_value = self.forward(pos, wi_local, wo_local, local_normal, latent, batch_mask)
         # brdf = brdf_value.expand(-1, 3)
         brdf = brdf_value
+        """ load gt color for reference """
+        factor = 1.0
+        params = self.pbr_texture
+        H, W = params.shape[1], params.shape[2]
+        crop_h = int((H - H * factor) // 2)
+        crop_w = int((W - W * factor) // 2)
+        new_h = int(H * factor)
+        new_w = int(W * factor)
+        params = params[:, crop_h:crop_h+new_h, crop_w:crop_w+new_w, :]
+        uv = compute_uv(pos, 0.8, 0.8)
+
+        # Step 2: Texture sampling
+        arm, color, normal_local = sample_texture(params, uv)
+        # brdf = brdf * color
         pdf = NoL / math.pi
 
         return brdf, pdf

@@ -171,65 +171,43 @@ class SphereIterableDataset(IterableDataset):
         return camera_dicts
 
     def get_camera_dicts(self):
-        # Initialize camera dicts list
+        """Populate self.camera_dict with views on the +Y hemisphere (y > 0)."""
         self.camera_dict = []
-        
-        # Keep look_at and up vectors fixed from initial camera settings
-        look_at = self.cfg.renderer.camera.look_at
-        up = self.cfg.renderer.camera.up
-        dist = self.distance
-        
-        # Parameters to control sampling density based on number_of_views
-        # We want approximately self.number_of_views total camera positions
-        # Formula: total = (n_theta-2) * n_phi + 2 (for poles)
-        # So: (n_theta-2) * n_phi = self.number_of_views - 2
-        
-        # Choose n_phi and calculate n_theta accordingly
-        n_phi = max(4, int(np.sqrt(self.number_of_views - 2)))  # At least 4 phi samples
-        n_theta = max(3, int((self.number_of_views - 2) / n_phi) + 2)  # At least 3 theta samples (excluding poles)
-        
-        self.total = (n_theta-2) * n_phi + 2  # Add 2 for poles
-        
-        # Generate uniform samples for spherical coordinates, excluding poles
-        thetas = np.linspace(0, np.pi, n_theta)  # Exclude 0 and pi
-        thetas = thetas[1:-1]  # Remove the first and last elements
-        phis = np.linspace(0, 2*np.pi, n_phi)
-        
-        # Add poles separately - they only need one phi value since they're at top/bottom
-        
-        # Create grid of angles
-        theta_grid, phi_grid = np.meshgrid(thetas, phis)
-        thetas_flat = theta_grid.flatten()
-        phis_flat = phi_grid.flatten()
-        
-        # Convert spherical to cartesian coordinates
-        for theta, phi in zip(thetas_flat, phis_flat):
-            # Calculate camera position
-            x = dist * np.sin(theta) * np.cos(phi)
-            y = dist * np.sin(theta) * np.sin(phi) 
-            z = dist * np.cos(theta)
-            
-            # Create camera dict for this position
-            camera_dict = {
-                "position": [x, y, z],
-                "look_at": look_at,
-                "up": up
-            }
-            
-            self.camera_dict.append(camera_dict)
-        north_pole = {
-            "position": [0, 0, dist],  # x=0, y=0, z=dist
-            "look_at": look_at,
-            "up": up
-        }
-        self.camera_dict.append(north_pole)
 
-        south_pole = {
-            "position": [0, 0, -dist],  # x=0, y=0, z=-dist
-            "look_at": look_at,
-            "up": up
-        }
-        self.camera_dict.append(south_pole)
+        look_at = self.cfg.renderer.camera.look_at
+        up      = self.cfg.renderer.camera.up
+        dist    = self.distance
+
+        n_phi   = max(4, int(np.sqrt(max(self.number_of_views - 1, 1))))
+        n_theta = max(2, int(np.ceil((self.number_of_views - 1) / n_phi)) + 1)
+
+        # θ in (0, π/2)  ⇒  y > 0, exclude equator (θ = π/2) and pole (θ = 0)
+        thetas = np.linspace(0.0, np.pi / 2.0, n_theta, endpoint=True)[1:-1]
+        phis   = np.linspace(0.0, 2.0 * np.pi, n_phi, endpoint=False)
+
+        theta_grid, phi_grid = np.meshgrid(thetas, phis, indexing="ij")
+        for theta, phi in zip(theta_grid.ravel(), phi_grid.ravel()):
+            x = dist * np.sin(theta) * np.cos(phi)
+            z = dist * np.sin(theta) * np.sin(phi)
+            y = dist * np.cos(theta)             # guaranteed y > 0
+
+            self.camera_dict.append({
+                "position": [x, y, z],
+                "look_at":  look_at,
+                "up":       up
+            })
+
+        # Add the single north-pole view (θ = 0, y = +dist)
+        self.camera_dict.append({
+            "position": [0.0, dist, 0.0],
+            "look_at":  look_at,
+            "up":       up,
+            "phi":      phi
+        })
+
+        # Store how many views we actually generated
+        self.total = len(self.camera_dict)
+
 
     def preload_rays_and_rgbs(self):
         all_rays = []
@@ -267,7 +245,7 @@ class SphereIterableDataset(IterableDataset):
             yield {
                 'rays': rays,
                 'rgbs': rgbs,
-                'gt_params': torch.zeros(1)
+                'gt_params': torch.zeros(1),
             }
 
 class SphereValDataset(Dataset):
@@ -284,7 +262,7 @@ class SphereValDataset(Dataset):
         self.focal = (0.5 * w / np.tan(0.5 * self.camera_angle_x)).item()
         self.directions = get_ray_directions(h, w, self.focal)
         self.distance = cfg.renderer.camera.distance
-        self.get_camera_rotation_dicts()
+        self.get_camera_rotation_dicts(cfg.renderer.camera.theta_angle)
         # self.pbr_texture = load_pbr_texture_stack(self.cfg.data.pbr_path)
 
     # def get_camera_dicts(self):
@@ -344,30 +322,41 @@ class SphereValDataset(Dataset):
     #     }
     #     self.camera_dict.append(south_pole)
 
-    def get_camera_rotation_dicts(self):
-        # Initialize camera dicts list  
+    def get_camera_rotation_dicts(self, elevation_deg: float = 60):
+        """
+        Generate self.number_of_views cameras on a horizontal ring
+        in the +Y hemisphere (y > 0).
+
+        Args
+        ----
+        elevation_deg : float
+            Polar elevation from the +Y axis (0 = pole, 90 = equator).
+            Must be between 0 and 90° (exclusive).  Default is 45°.
+        """
         self.camera_dict = []
-        
+
         look_at = self.cfg.renderer.camera.look_at
-        up = self.cfg.renderer.camera.up
-        dist = self.distance
-        phi = np.pi
-        n_steps = self.number_of_views  # Can be adjusted for more/fewer views
-        self.total = n_steps
-        thetas = np.linspace(0, 2*np.pi, n_steps, endpoint=False)
-        for theta in thetas:
-            x = dist * np.sin(theta) * np.cos(phi)  # Using cos(0)=1 for fixed phi
-            y = dist * np.sin(theta) * np.sin(phi)  # Using sin(0)=0 for fixed phi
-            z = dist * np.cos(theta)
-            
-            # Create camera dict for this position
-            camera_dict = {
+        up      = self.cfg.renderer.camera.up
+        dist    = self.distance
+
+        theta0  = np.deg2rad(np.clip(elevation_deg, 1e-3, 89.999))
+        n_steps = max(1, int(self.number_of_views))
+        phis    = np.linspace(0.0, 2.0 * np.pi, n_steps, endpoint=False)
+
+        for phi in phis:
+            # Spherical → Cartesian (with Y as the polar axis)
+            x = dist * np.sin(theta0) * np.cos(phi)
+            z = dist * np.sin(theta0) * np.sin(phi)
+            y = dist * np.cos(theta0)          # strictly positive
+
+            self.camera_dict.append({
                 "position": [x, y, z],
-                "look_at": look_at,
-                "up": up
-            }
-            
-            self.camera_dict.append(camera_dict)
+                "look_at":  look_at,
+                "up":       up,
+                "phi":      phi
+            })
+
+        self.total = len(self.camera_dict)
 
     def __len__(self):
         return len(self.camera_dict)
@@ -383,7 +372,8 @@ class SphereValDataset(Dataset):
         return {
             'rays': rays,
             'rgbs': img,
-            'gt_params': torch.zeros(1)
+            'gt_params': torch.zeros(1),
+            'phi': self.camera_dict[idx]['phi']
         }
     
 class SphereTestDataset(Dataset):

@@ -1,6 +1,7 @@
 import torch
 from utils.path_tracing import path_tracing_envmap_emitter, batched_path_tracing_dynamic_emitter
 from mitsuba import load_dict
+import mitsuba as mi
 from model.emitter import EnvMapEmitter, DynamicPointEmitter
 class ForwardRenderer:
     def __init__(self, cfg, material):
@@ -9,9 +10,11 @@ class ForwardRenderer:
         self.scene = load_dict({
             "type": "scene",
             "shape_id": {
-                "type": "sphere",
-                "center": [0, 0, 0], 
-                "radius": 0.2,
+                "type": "rectangle",
+                "to_world": (
+                    mi.ScalarTransform4f.rotate([1, 0, 0], -90) @   # xy → xz
+                    mi.ScalarTransform4f.scale(0.4)                 # 1 m → 0.4 m
+                ),
                 "flip_normals": False
             }
         })

@@ -13,6 +13,7 @@ from model.emitter import DynamicPointEmitter, EnvMapEmitter
 from torch.utils.data import DataLoader
 from itertools import islice
 from utils.dataset import SphereTestDataset, SphereIterableDataset
+from model.brdf import LatentTexturedModel
 import hydra
 
 from pytorch_lightning.strategies import DDPStrategy
@@ -78,8 +79,14 @@ def main(cfg):
     albedo = gt_material_cfg.albedo
     roughness = gt_material_cfg.roughness
     metallic = gt_material_cfg.metallic
-
-    material = SvLatentModel(cfg.material)
+    
+    if cfg.material.type == "LatentTexturedModel":
+        material = LatentTexturedModel(cfg.material)  # MLP model uses mlp_pbr config
+    elif cfg.material.type == "SvLatentModel":
+        material = SvLatentModel(cfg.material)  # MLP model uses mlp_pbr config
+    else:
+        raise ValueError(f"Invalid material type: {cfg.material.type}")
+    
     gt_material = PBRBRDF(
         albedo=torch.tensor(albedo)
     )  # Ground truth uses pbr config
