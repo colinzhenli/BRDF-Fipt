@@ -1,6 +1,6 @@
 type: "LatentTexturedModel"
-latent_dim: 64
-texture_resolution: 512
+latent_dim: 8
+texture_resolution: 2048
 hidden_layers: [128, 128, 64, 32, 16]
 # hidden_layers: [256, 256, 128, 64, 32, 16]
 Gaussian_blur: True
