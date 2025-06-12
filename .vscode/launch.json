@@ -10,7 +10,7 @@
             "name": "Python: Current File",
             "type": "python",
             "request": "launch",
-            "program": "pointlight_test.py",
+            "program": "main.py",
             "console": "integratedTerminal",
             "justMyCode": true,
             "env": {
@@ -18,9 +18,9 @@
             },
             "args": [
                 "renderer=dynamicpoint_emitter",
-                "material=svlatent_model",
-                "experiment_name=PSNR-computation-Rotated-emitter-60-deg_Corrected_No-Color_Scale-1.0_Larger-neural-field_128-128-128_Freqs-12_run_1",
-                "model.ckpt_path=/mnt/data/colin/colin/output/BRDF-Fipt/Over-fit_experiments_2/sphere/Theia2_Scale-1.0_Correct-cameras_Pixel-center-rays_Larger-neural-field_128-128-128_Freqs-12_run_1/training/model_0.20_0.20/last-v1.ckpt",
+                "material=latent_texture_model",
+                "experiment_name=Debug_1",
+                // "model.ckpt_path=/mnt/data/colin/colin/output/BRDF-Fipt/Over-fit_experiments_2/sphere/Theia2_Scale-1.0_Correct-cameras_Pixel-center-rays_Larger-neural-field_128-128-128_Freqs-12_run_1/training/model_0.20_0.20/last-v1.ckpt",
                 // "test_on_train=False"
             ]
         }
