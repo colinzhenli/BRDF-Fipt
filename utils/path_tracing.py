@@ -71,9 +71,9 @@ def batched_path_tracing_dynamic_emitter(scene,emitter_net,material_net,rays_o,r
     device = rays_o.device
     
     # sample camera ray
-    du,dv = torch.rand(2,len(rays_o),spp,1,device=device)-0.5
-    wi = NF.normalize(rays_d[:,None]+dx_du[:,None]*du+dy_dv[:,None]*dv,dim=-1).reshape(-1,3)
-    
+    # du,dv = torch.rand(2,len(rays_o),spp,1,device=device)-0.5
+    # wi = NF.normalize(rays_d[:,None]+dx_du[:,None]*du+dy_dv[:,None]*dv,dim=-1).reshape(-1,3)
+    wi = rays_d
     # Add mask for wi z component
     position = rays_o.repeat_interleave(spp,0)
     
@@ -82,7 +82,8 @@ def batched_path_tracing_dynamic_emitter(scene,emitter_net,material_net,rays_o,r
     # position, normal, vis = ray_sphere_intersect(scene,position,wi)
     L = torch.zeros(vis.shape[0],3,device=device)
     if not vis.any():
-        return L.reshape(N,spp,3).mean(1)
+        print("No valid intersection")
+        return L.reshape(N,spp,3).mean(1), None, None
     position = position[vis]
     normal = normal[vis]
     batch_mask = batch_mask[vis]

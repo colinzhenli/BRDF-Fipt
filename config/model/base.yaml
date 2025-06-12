@@ -11,7 +11,7 @@ trainer:
   devices: auto
   num_nodes: 1
   max_epochs: 200           # ← will be respected
-  check_val_every_n_epoch: 5
+  check_val_every_n_epoch: 50
   limit_train_batches: 512   # ← e.g., 200 iterations per epoch
 
 # https://pytorch-lightning.readthedocs.io/en/stable/api/pytorch_lightning.callbacks.ModelCheckpoint.html
