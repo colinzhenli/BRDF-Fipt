@@ -374,7 +374,7 @@ class SvPBRBRDF(nn.Module):
         else:
             brdf, pdf = self.compute_svbrdf_pdf(albedo, roughness, metallic, wi, wo, normal)
             
-        # brdf = color * brdf
+        brdf = color * brdf
         return brdf, pdf
     
     def sample_brdf(self, params, pos, sample1, sample2, wo, normal, latent=None, batch_mask=None):
@@ -1054,22 +1054,35 @@ class SvLatentModel(LightningModule):
         wo_local = self.world_to_local(wo, normal)
         local_normal = torch.zeros_like(wi_local)
         local_normal[..., 2] = 1.0  # Normal is always (0,0,1) in local space
-        brdf_value = self.forward(pos, wi_local, wo_local, local_normal, latent, batch_mask)
-        brdf = brdf_value
-        """ load gt color for reference """
-        factor = 1.0
-        params = self.pbr_texture
-        H, W = params.shape[1], params.shape[2]
-        crop_h = int((H - H * factor) // 2)
-        crop_w = int((W - W * factor) // 2)
-        new_h = int(H * factor)
-        new_w = int(W * factor)
-        params = params[:, crop_h:crop_h+new_h, crop_w:crop_w+new_w, :]
-        uv = compute_uv(pos, 0.8, 0.8)
+        # Split latent into three parts for RGB channels
+        latent_dim = latent.shape[-1] // 3
+        latent_r = latent[..., :latent_dim]
+        latent_g = latent[..., latent_dim:2*latent_dim]
+        latent_b = latent[..., 2*latent_dim:]
+        
+        # Get BRDF value for each channel
+        brdf_r = self.forward(pos, wi_local, wo_local, local_normal, latent_r, batch_mask)
+        brdf_g = self.forward(pos, wi_local, wo_local, local_normal, latent_g, batch_mask)
+        brdf_b = self.forward(pos, wi_local, wo_local, local_normal, latent_b, batch_mask)
+        
+        # Combine channels
+        brdf = torch.cat([brdf_r, brdf_g, brdf_b], dim=-1)
 
-        # Step 2: Texture sampling
-        arm, color, normal_local = sample_texture(params, uv)
+        # """ load gt color for reference """
+        # factor = 1.0
+        # params = self.pbr_texture
+        # H, W = params.shape[1], params.shape[2]
+        # crop_h = int((H - H * factor) // 2)
+        # crop_w = int((W - W * factor) // 2)
+        # new_h = int(H * factor)
+        # new_w = int(W * factor)
+        # params = params[:, crop_h:crop_h+new_h, crop_w:crop_w+new_w, :]
+        # uv = compute_uv(pos, 0.8, 0.8)
+
+        # # Step 2: Texture sampling
+        # arm, color, normal_local = sample_texture(params, uv)
         # brdf = brdf * color
+        
 
         pdf = NoL / math.pi
 
@@ -1113,13 +1126,20 @@ class LatentTexturedModel(LightningModule):
 
         # Latent dimension from config
         self.latent_dim = cfg.latent_dim
+        self.colorful_texture = cfg.colorful_texture
+        self.larger_latent_dim = cfg.larger_latent_dim
+        self.different_decoder = cfg.different_decoder
+        if self.colorful_texture and self.larger_latent_dim:
+            total_latent_dim = self.latent_dim * 3
+        else:
+            total_latent_dim = self.latent_dim
         self.pbr_texture = load_pbr_texture('/mnt/data/colin/colin/BRDF-Fipt/fabric_pattern_07_4k/textures').unsqueeze(0).cuda()
         
         
         # Create 2D texture latent grids
         self.texture_resolution = getattr(cfg, 'texture_resolution', 256)
         self.latent_texture = nn.Parameter(
-            torch.randn(1, self.latent_dim, self.texture_resolution, self.texture_resolution) * 0.1
+            torch.randn(1, total_latent_dim, self.texture_resolution, self.texture_resolution) * 0.1
         )
         # gaussian blur parameters
         self.Gaussian_blur = cfg.Gaussian_blur
@@ -1137,19 +1157,40 @@ class LatentTexturedModel(LightningModule):
         
         # Add latent dimension to input
         input_dim = encoded_input_dim + self.latent_dim if self.pos_enc else cfg.input_channels + self.latent_dim
-        # Build MLP layers
-        layers = []
-        prev_dim = input_dim
-        for hidden_dim in cfg.hidden_layers:
-            layers.append(nn.Linear(prev_dim, hidden_dim))
-            if cfg.activation.lower() == "relu":
-                layers.append(nn.ReLU())
-            prev_dim = hidden_dim
-            
-        layers.append(nn.Linear(prev_dim, cfg.output_channels))
-        layers.append(nn.LeakyReLU(0.2))
         
-        self.mlp = nn.Sequential(*layers)
+        # Build MLP layers
+        if self.different_decoder:
+            # Create separate MLPs for RGB channels
+            def build_mlp():
+                layers = []
+                prev_dim = input_dim
+                for hidden_dim in cfg.hidden_layers:
+                    layers.append(nn.Linear(prev_dim, hidden_dim))
+                    if cfg.activation.lower() == "relu":
+                        layers.append(nn.ReLU())
+                    prev_dim = hidden_dim
+                    
+                layers.append(nn.Linear(prev_dim, cfg.output_channels))
+                layers.append(nn.LeakyReLU(0.2))
+                return nn.Sequential(*layers)
+            
+            self.mlp_r = build_mlp()
+            self.mlp_g = build_mlp()
+            self.mlp_b = build_mlp()
+        else:
+            # Single MLP for all channels
+            layers = []
+            prev_dim = input_dim
+            for hidden_dim in cfg.hidden_layers:
+                layers.append(nn.Linear(prev_dim, hidden_dim))
+                if cfg.activation.lower() == "relu":
+                    layers.append(nn.ReLU())
+                prev_dim = hidden_dim
+                
+            layers.append(nn.Linear(prev_dim, cfg.output_channels))
+            layers.append(nn.LeakyReLU(0.2))
+            
+            self.mlp = nn.Sequential(*layers)
 
         # Initialize proxy BRDF for importance sampling
         self.proxy_brdf = ProxyPBRBRDF()  # Default roughness
@@ -1241,7 +1282,7 @@ class LatentTexturedModel(LightningModule):
         
         return latent
 
-    def forward(self, pos, wi, wo, normal, latent=None, batch_mask=None):
+    def forward(self, pos, wi, wo, normal, latent=None, batch_mask=None, channel=None):
         """
         Evaluate BRDF using MLP with 2D texture latent encoding
         Args:
@@ -1254,13 +1295,6 @@ class LatentTexturedModel(LightningModule):
         Returns:
             brdf: Bx1 BRDF values
         """
-        if self.training and self.Gaussian_blur:
-            tex = self._blur_latent(self.global_step)
-        else:
-            tex = self.latent_texture
-
-        latent = self.sample_latent_from_texture(pos, tex)
-
         if self.pos_enc:
             wi_enc = self.sh_encoder(wi)
             wo_enc = self.sh_encoder(wo)
@@ -1269,7 +1303,15 @@ class LatentTexturedModel(LightningModule):
         else:
             x = torch.cat([wi, wo, normal, latent], dim=-1)
             
-        return self.mlp(x)
+        if self.different_decoder:
+            if channel == 'r':
+                return self.mlp_r(x)
+            elif channel == 'g':
+                return self.mlp_g(x)
+            else:
+                return self.mlp_b(x)
+        else:
+            return self.mlp(x)
 
     def world_to_local(self, v, normal):
         
@@ -1318,23 +1360,45 @@ class LatentTexturedModel(LightningModule):
         wo_local = self.world_to_local(wo, normal)
         local_normal = torch.zeros_like(wi_local)
         local_normal[..., 2] = 1.0  # Normal is always (0,0,1) in local space
-        brdf_value = self.forward(pos, wi_local, wo_local, local_normal, latent, batch_mask)
-        # brdf = brdf_value.expand(-1, 3)
-        brdf = brdf_value
-        """ load gt color for reference """
-        factor = 1.0
-        params = self.pbr_texture
-        H, W = params.shape[1], params.shape[2]
-        crop_h = int((H - H * factor) // 2)
-        crop_w = int((W - W * factor) // 2)
-        new_h = int(H * factor)
-        new_w = int(W * factor)
-        params = params[:, crop_h:crop_h+new_h, crop_w:crop_w+new_w, :]
-        uv = compute_uv(pos, 0.8, 0.8)
+        if self.training and self.Gaussian_blur:
+            tex = self._blur_latent(self.global_step)
+        else:
+            tex = self.latent_texture
 
-        # Step 2: Texture sampling
-        arm, color, normal_local = sample_texture(params, uv)
-        # brdf = brdf * color
+        latent = self.sample_latent_from_texture(pos, tex)
+        # Split latent into three parts for RGB channels
+        if self.colorful_texture:
+            if self.larger_latent_dim:
+                latent_dim = latent.shape[-1] // 3
+                latent_r = latent[..., :latent_dim]
+                latent_g = latent[..., latent_dim:2*latent_dim]
+                latent_b = latent[..., 2*latent_dim:]
+            
+                # Get BRDF value for each channel
+                brdf_r = self.forward(pos, wi_local, wo_local, local_normal, latent_r, batch_mask, 'r')
+                brdf_g = self.forward(pos, wi_local, wo_local, local_normal, latent_g, batch_mask, 'g')
+                brdf_b = self.forward(pos, wi_local, wo_local, local_normal, latent_b, batch_mask, 'b')
+                # Combine channels
+                brdf = torch.cat([brdf_r, brdf_g, brdf_b], dim=-1)
+            else:
+                brdf = self.forward(pos, wi_local, wo_local, local_normal, latent, batch_mask)
+        else:
+            brdf = self.forward(pos, wi_local, wo_local, local_normal, latent, batch_mask)
+            brdf = brdf.repeat(1,3)
+        # """ load gt color for reference """
+        # factor = 1.0
+        # params = self.pbr_texture
+        # H, W = params.shape[1], params.shape[2]
+        # crop_h = int((H - H * factor) // 2)
+        # crop_w = int((W - W * factor) // 2)
+        # new_h = int(H * factor)
+        # new_w = int(W * factor)
+        # params = params[:, crop_h:crop_h+new_h, crop_w:crop_w+new_w, :]
+        # uv = compute_uv(pos, 0.8, 0.8)
+
+        # # Step 2: Texture sampling
+        # arm, color, normal_local = sample_texture(params, uv)
+        # # brdf = brdf * color
         pdf = NoL / math.pi
 
         return brdf, pdf
