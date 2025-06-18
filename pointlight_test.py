@@ -49,6 +49,66 @@ def gamma(x):
     ret[~mask] = 1.055 * x[~mask].pow(1/2.4) - 0.055
     return ret
 
+# Compute Delta E (CIE76) color difference
+# Convert RGB to LAB color space for perceptual color difference
+def compute_delta_e(img_pred, img_gt, gamma_fn):
+    """Compute Delta E (CIE76) color difference between two images."""
+    def rgb_to_xyz(rgb):
+        # sRGB to XYZ conversion matrix (D65 illuminant)
+        rgb = rgb.clamp(0, 1)
+        # Apply inverse gamma correction
+        rgb_linear = torch.where(rgb <= 0.04045, rgb / 12.92, torch.pow((rgb + 0.055) / 1.055, 2.4))
+        
+        # sRGB to XYZ matrix
+        M = torch.tensor([
+            [0.4124564, 0.3575761, 0.1804375],
+            [0.2126729, 0.7151522, 0.0721750],
+            [0.0193339, 0.1191920, 0.9503041]
+        ], device=rgb.device, dtype=rgb.dtype)
+        
+        xyz = torch.matmul(rgb_linear, M.T)
+        return xyz
+    
+    def xyz_to_lab(xyz):
+        # D65 white point
+        Xn, Yn, Zn = 0.95047, 1.00000, 1.08883
+        
+        x = xyz[..., 0] / Xn
+        y = xyz[..., 1] / Yn
+        z = xyz[..., 2] / Zn
+        
+        # Apply the cube root function with linear segment for small values
+        def f(t):
+            delta = 6.0 / 29.0
+            return torch.where(t > delta**3, torch.pow(t, 1/3), t / (3 * delta**2) + 4/29)
+        
+        fx = f(x)
+        fy = f(y)
+        fz = f(z)
+        
+        L = 116 * fy - 16
+        a = 500 * (fx - fy)
+        b = 200 * (fy - fz)
+        
+        return torch.stack([L, a, b], dim=-1)
+    
+    def delta_e_cie76(lab1, lab2):
+        diff = lab1 - lab2
+        return torch.sqrt(torch.sum(diff**2, dim=-1))
+    
+    # Convert gamma-corrected images to LAB
+    img_pred_gamma = gamma_fn(img_pred)
+    img_gt_gamma = gamma_fn(img_gt)
+    
+    xyz_pred = rgb_to_xyz(img_pred_gamma)
+    xyz_gt = rgb_to_xyz(img_gt_gamma)
+    
+    lab_pred = xyz_to_lab(xyz_pred)
+    lab_gt = xyz_to_lab(xyz_gt)
+    
+    delta_e = delta_e_cie76(lab_pred, lab_gt)
+    return delta_e
+    
 def latent_train_collate_fn(batch_list, device=None):
     rays = torch.stack([b['rays'] for b in batch_list])        # [B, N, 12]
     rgbs = torch.stack([b['rgbs'] for b in batch_list])        # [B, N, 3]
@@ -119,6 +179,7 @@ def main(cfg):
     gt_renderer = ForwardRenderer(cfg, gt_material)
     renderer = ForwardRenderer(cfg, material)
     psnr_list = []
+    delta_e_list = []
     with torch.no_grad():
         for idx, batch in tqdm(enumerate(dataset), total=len(dataset), desc="Processing materials"):
             # Render step logic
@@ -139,10 +200,15 @@ def main(cfg):
             else:
                 rgbs_gt = batch['rgbs'].to(model.device)
 
+            
+            delta_e = compute_delta_e(img_pred, img_gt, model.gamma)
+            avg_delta_e = delta_e.mean().item()
+            
+            print(f"View {idx}: PSNR = {psnr.item():.2f}, Delta E = {avg_delta_e:.2f}")
             psnr_loss = torch.nn.functional.mse_loss(model.gamma(rgbs_pred), model.gamma(rgbs_gt), reduction='mean')
             psnr = 10.0 * torch.log10((1.0 ** 2) / psnr_loss.clamp_min(1e-5))
             psnr_list.append(psnr.item())
-
+            delta_e_list.append(avg_delta_e)
             # Reshape for visualization
             img_pred = rgbs_pred.reshape(*resolution, -1)
             img_gt = rgbs_gt.reshape(*resolution, -1)
@@ -180,6 +246,8 @@ def main(cfg):
 
     avg_psnr = sum(psnr_list) / len(psnr_list)
     print(f"Final average PSNR across all test materials: {avg_psnr:.2f}")
+    avg_delta_e = sum(delta_e_list) / len(delta_e_list)
+    print(f"Final average Delta E across all test materials: {avg_delta_e:.2f}")
 
 if __name__ == "__main__":
     main()

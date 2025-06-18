@@ -10,17 +10,17 @@
             "name": "Python: Current File",
             "type": "python",
             "request": "launch",
-            "program": "pointlight_test.py",
+            "program": "main.py",
             "console": "integratedTerminal",
             "justMyCode": true,
             "env": {
-                "CUDA_VISIBLE_DEVICES": "1"
+                "CUDA_VISIBLE_DEVICES": "3"
             },
             "args": [
                 "renderer=dynamicpoint_emitter",
                 "material=latent_texture_model",
-                "experiment_name=Latent-Texture-2048*2048*8_test_1",
-                "model.ckpt_path=/mnt/data/colin/colin/output/BRDF-Fipt/Over-fit_experiments_2/sphere/Theia2_Scale-1.0_Correct-cameras_Pixel-center-rays_Latent-grid-2048-2048-8_run_1/training/model_0.20_0.20/last.ckpt",
+                "experiment_name=Debug_1",
+                // "model.ckpt_path=/mnt/data/colin/colin/output/BRDF-Fipt/Over-fit_experiments_2/sphere/Theia2_Scale-1.0_Correct-cameras_Pixel-center-rays_Latent-grid-2048-2048-8_run_1/training/model_0.20_0.20/last.ckpt",
                 // "test_on_train=False"
             ]
         }

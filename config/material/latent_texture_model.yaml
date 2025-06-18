@@ -1,10 +1,24 @@
 type: "LatentTexturedModel"
 latent_dim: 8
+colorful_texture: True
 texture_resolution: 2048
 hidden_layers: [128, 128, 64, 32, 16]
 # hidden_layers: [256, 256, 128, 64, 32, 16]
 Gaussian_blur: True
 activation: "relu"
 input_channels: 9
+
+# config 1:
+larger_latent_dim: True
+different_decoder: True
 output_channels: 1
 
+# # config 2:
+# larger_latent_dim: True
+# different_decoder: False
+# output_channels: 1
+
+# # config 3:
+# larger_latent_dim: False
+# different_decoder: False
+# output_channels: 3
