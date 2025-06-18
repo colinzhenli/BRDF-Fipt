@@ -167,7 +167,6 @@ class BRDFTrainer(pl.LightningModule):
         emitter = DynamicPointEmitter(
             dist=self.cfg.renderer.emitter.dist,
             num_lights=self.cfg.renderer.emitter.num_lights,
-            rotate_with_camera=self.cfg.renderer.emitter.rotate_with_camera,
             camera_phi = None,
             theta_angle = self.cfg.renderer.emitter.theta_angle,
             random_positions = True,
@@ -289,7 +288,6 @@ class BRDFTrainer(pl.LightningModule):
         emitter = DynamicPointEmitter(
             dist=self.cfg.renderer.emitter.dist,
             num_lights=self.cfg.renderer.emitter.num_lights,
-            rotate_with_camera=self.cfg.renderer.emitter.rotate_with_camera,
             camera_phi = None,
             theta_angle = None,
             random_positions = False,

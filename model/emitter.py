@@ -96,8 +96,14 @@ class DynamicPointEmitter(nn.Module):
 
         self.dist = dist
         self.num_lights = num_lights
+        self.camera_phi = camera_phi
+        self.theta_angle = theta_angle
         self.random_positions = random_positions
         self.random_intensities = random_intensities
+        if self.camera_phi is None:
+            self.fixed_theta = False
+        else:
+            self.fixed_theta = True
         if self.random_positions:
             # randomly sample during training
             theta = torch.pi/2 * torch.rand(num_lights, device="cuda")
