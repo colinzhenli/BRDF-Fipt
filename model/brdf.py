@@ -1129,10 +1129,14 @@ class LatentTexturedModel(LightningModule):
         self.colorful_texture = cfg.colorful_texture
         self.larger_latent_dim = cfg.larger_latent_dim
         self.different_decoder = cfg.different_decoder
+        self.use_gt_normal = cfg.use_gt_normal
         if self.colorful_texture and self.larger_latent_dim:
             total_latent_dim = self.latent_dim * 3
         else:
             total_latent_dim = self.latent_dim
+        self.predict_normal = cfg.predict_normal
+        if self.predict_normal:
+            total_latent_dim = total_latent_dim + 3
         self.pbr_texture = load_pbr_texture('/mnt/data/colin/colin/BRDF-Fipt/fabric_pattern_07_4k/textures').unsqueeze(0).cuda()
         
         
@@ -1356,23 +1360,47 @@ class LatentTexturedModel(LightningModule):
         # Ensure normal is normalized
         NoL = (wi*normal).sum(-1,keepdim=True)
         NoV = (wo*normal).sum(-1,keepdim=True)
+        """ load gt color for reference """
+        factor = 1.0
+        params = self.pbr_texture
+        H, W = params.shape[1], params.shape[2]
+        crop_h = int((H - H * factor) // 2)
+        crop_w = int((W - W * factor) // 2)
+        new_h = int(H * factor)
+        new_w = int(W * factor)
+        params = params[:, crop_h:crop_h+new_h, crop_w:crop_w+new_w, :]
+        uv = compute_uv(pos, 0.8, 0.8)
+
+        # Step 2: Texture sampling
+        arm, color, normal_local = sample_texture(params, uv)
+        albedo, roughness, metallic = arm[:, 0:1], arm[:, 1:2], arm[:, 2:3]
+
+        # Step 3: TBN frame
+        T, B, N_geo = compute_tbn(pos, uv, 0.8, 0.8)
+
+        # Step 4: Transform local normal to world
+        n_world = local_to_world_normal(normal_local, T, B, N_geo)
+        
+        if self.training and self.Gaussian_blur:
+            tex = self._blur_latent(self.global_step)
+        else:
+            tex = self.latent_texture       
+        latent = self.sample_latent_from_texture(pos, tex)
+        if self.use_gt_normal:
+            normal = n_world
+        if self.predict_normal:
+            normal = torch.nn.functional.normalize(latent[..., -3:], dim=-1)
         wi_local = self.world_to_local(wi, normal)
         wo_local = self.world_to_local(wo, normal)
         local_normal = torch.zeros_like(wi_local)
         local_normal[..., 2] = 1.0  # Normal is always (0,0,1) in local space
-        if self.training and self.Gaussian_blur:
-            tex = self._blur_latent(self.global_step)
-        else:
-            tex = self.latent_texture
 
-        latent = self.sample_latent_from_texture(pos, tex)
         # Split latent into three parts for RGB channels
         if self.colorful_texture:
             if self.larger_latent_dim:
-                latent_dim = latent.shape[-1] // 3
-                latent_r = latent[..., :latent_dim]
-                latent_g = latent[..., latent_dim:2*latent_dim]
-                latent_b = latent[..., 2*latent_dim:]
+                latent_r = latent[..., :self.latent_dim]
+                latent_g = latent[..., self.latent_dim:2*self.latent_dim]
+                latent_b = latent[..., 2*self.latent_dim:3*self.latent_dim]
             
                 # Get BRDF value for each channel
                 brdf_r = self.forward(pos, wi_local, wo_local, local_normal, latent_r, batch_mask, 'r')
@@ -1385,19 +1413,6 @@ class LatentTexturedModel(LightningModule):
         else:
             brdf = self.forward(pos, wi_local, wo_local, local_normal, latent, batch_mask)
             brdf = brdf.repeat(1,3)
-        # """ load gt color for reference """
-        # factor = 1.0
-        # params = self.pbr_texture
-        # H, W = params.shape[1], params.shape[2]
-        # crop_h = int((H - H * factor) // 2)
-        # crop_w = int((W - W * factor) // 2)
-        # new_h = int(H * factor)
-        # new_w = int(W * factor)
-        # params = params[:, crop_h:crop_h+new_h, crop_w:crop_w+new_w, :]
-        # uv = compute_uv(pos, 0.8, 0.8)
-
-        # # Step 2: Texture sampling
-        # arm, color, normal_local = sample_texture(params, uv)
         # # brdf = brdf * color
         pdf = NoL / math.pi
 

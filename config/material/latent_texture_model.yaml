@@ -1,5 +1,7 @@
 type: "LatentTexturedModel"
 latent_dim: 8
+use_gt_normal: False
+predict_normal: True
 colorful_texture: True
 texture_resolution: 2048
 hidden_layers: [128, 128, 64, 32, 16]

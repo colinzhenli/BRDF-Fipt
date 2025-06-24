@@ -285,11 +285,19 @@ class BRDFTrainer(pl.LightningModule):
         gt_params = batch['gt_params']
         # Get latents for the batch using the indices
 
+        # emitter = DynamicPointEmitter(
+        #     dist=self.cfg.renderer.emitter.dist,
+        #     num_lights=self.cfg.renderer.emitter.num_lights,
+        #     camera_phi = None,
+        #     theta_angle = None,
+        #     random_positions = False,
+        #     random_intensities = False
+        # )
         emitter = DynamicPointEmitter(
             dist=self.cfg.renderer.emitter.dist,
             num_lights=self.cfg.renderer.emitter.num_lights,
-            camera_phi = None,
-            theta_angle = None,
+            camera_phi = batch['phi'],
+            theta_angle = self.cfg.renderer.emitter.theta_angle,
             random_positions = False,
             random_intensities = False
         )

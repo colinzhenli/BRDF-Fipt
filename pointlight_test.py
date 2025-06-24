@@ -199,19 +199,16 @@ def main(cfg):
                     rgbs_gt, *_ = gt_renderer.render(emitter, rays, cfg.renderer.spp.test, gt_params, None)
             else:
                 rgbs_gt = batch['rgbs'].to(model.device)
-
             
-            delta_e = compute_delta_e(img_pred, img_gt, model.gamma)
-            avg_delta_e = delta_e.mean().item()
-            
-            print(f"View {idx}: PSNR = {psnr.item():.2f}, Delta E = {avg_delta_e:.2f}")
             psnr_loss = torch.nn.functional.mse_loss(model.gamma(rgbs_pred), model.gamma(rgbs_gt), reduction='mean')
             psnr = 10.0 * torch.log10((1.0 ** 2) / psnr_loss.clamp_min(1e-5))
             psnr_list.append(psnr.item())
-            delta_e_list.append(avg_delta_e)
             # Reshape for visualization
             img_pred = rgbs_pred.reshape(*resolution, -1)
             img_gt = rgbs_gt.reshape(*resolution, -1)
+            delta_e = compute_delta_e(img_pred, img_gt, model.gamma)
+            avg_delta_e = delta_e.mean().item()    
+            delta_e_list.append(avg_delta_e)
             
             # Compute error map between prediction and ground truth with sign
             error_map = img_pred - img_gt  # shape: [H, W, 3]
