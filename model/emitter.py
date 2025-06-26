@@ -85,7 +85,7 @@ class EnvMapEmitter(nn.Module):
 
     
 class DynamicPointEmitter(nn.Module):
-    def __init__(self, dist=4.0, num_lights=8, camera_phi=None, theta_angle=60.0, random_positions=True, random_intensities=False):
+    def __init__(self, ray_num, dist=4.0, num_lights=8, camera_phi=None, theta_angle=60.0, random_positions=True, random_intensities=False, different_per_point=False):
         """
         Args:
             dist: Radius of the sphere
@@ -99,7 +99,24 @@ class DynamicPointEmitter(nn.Module):
         self.camera_phi = camera_phi
         self.theta_angle = theta_angle
         self.random_positions = random_positions
+        self.ray_num = ray_num
         self.random_intensities = random_intensities
+        self.different_per_point = different_per_point
+        if self.different_per_point:
+            theta = torch.pi/2 * torch.rand(ray_num, num_lights, device="cuda")
+            phi = 2 * torch.pi * torch.rand(ray_num, num_lights, device="cuda")
+            x = dist * torch.sin(theta) * torch.cos(phi)
+            z = dist * torch.sin(theta) * torch.sin(phi)
+            y = dist * torch.cos(theta)
+            light_positions = torch.stack([x, y, z], dim=-1)
+            if self.random_intensities:
+                light_intensities = torch.rand(num_lights, 1, device="cuda") * 49.0 + 1.0  # Uniform [1.0, 50.0]
+            else:
+                light_intensities = torch.full((num_lights, 1), 50.0/num_lights, device="cuda")  # Fixed maximum intensity
+            self.register_buffer('light_positions', light_positions)  # [B, N, 3]
+            self.register_buffer('light_intensities', light_intensities)  # [B, N, 1]
+            return
+
         if self.camera_phi is None:
             self.fixed_theta = False
         else:
@@ -156,10 +173,17 @@ class DynamicPointEmitter(nn.Module):
             idx: (B, N) selected light indices
         """
         B = position.shape[0]
-        N = self.light_positions.shape[0]
+        if self.different_per_point:
+            N = self.light_positions.shape[1]
+        else:
+            N = self.light_positions.shape[0]
 
         position_expand = position.unsqueeze(1).expand(B, N, 3)  # [B, N, 3]
-        light_pos_expand = self.light_positions.unsqueeze(0).expand(B, N, 3)  # [B, N, 3]
+        if self.different_per_point:
+            # Select the first B positions from self.light_positions for per-point emitters
+            light_pos_expand = self.light_positions[:B]  # [B, N, 3]
+        else:
+            light_pos_expand = self.light_positions.unsqueeze(0).expand(B, N, 3)  # [B, N, 3]
 
         vec = light_pos_expand - position_expand  # [B, N, 3]
         wi = NF.normalize(vec, dim=-1).reshape(-1, 3)  # [B*N, 3]
@@ -186,8 +210,7 @@ class DynamicPointEmitter(nn.Module):
             valid: (B,) valid mask
         """
         B = position.shape[0]
-
-        intensities = self.light_intensities[idx].expand(-1, 3)  # [B, 3]
+        intensities = self.light_intensities.expand(-1, 3)  # [B, 3]
         pdf = torch.full((B, 1), 1.0 / self.light_positions.shape[0], device=position.device)
         valid = torch.ones(B, dtype=torch.bool, device=position.device)
 

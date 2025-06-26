@@ -139,7 +139,7 @@ class SphereIterableDataset(IterableDataset):
         self.cfg = cfg
         self.pixel = True
         self.rays_num = cfg.data.rays_num
-        self.num_view_batch = 4
+        self.num_view_batch = cfg.renderer.camera.views_per_batch
 
         # Load metadata
         self.gt_folder = gt_folder

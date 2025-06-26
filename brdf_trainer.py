@@ -165,12 +165,14 @@ class BRDFTrainer(pl.LightningModule):
         # rays: [B, N, 3]
         # gt_params: [B, N, 16]
         emitter = DynamicPointEmitter(
+            ray_num = rays.shape[1],
             dist=self.cfg.renderer.emitter.dist,
             num_lights=self.cfg.renderer.emitter.num_lights,
             camera_phi = None,
             theta_angle = self.cfg.renderer.emitter.theta_angle,
             random_positions = True,
-            random_intensities = True
+            random_intensities = False,
+            different_per_point = self.cfg.renderer.emitter.different_per_point
         )
 
         # forward renders
@@ -230,52 +232,105 @@ class BRDFTrainer(pl.LightningModule):
 
             recon_loss = (w_px * per_pix_l1[vis]).mean()
 
-        elif self.cfg.data.importance_sampling:
+        if self.cfg.data.importance_sampling:
+            # --------------------------------------------------------------
+            # 5-A  Build luminance-pdf and draw importance samples
+            # --------------------------------------------------------------
             luminance = (0.2126 * rgbs_gt[..., 0] +
                         0.7152 * rgbs_gt[..., 1] +
-                        0.0722 * rgbs_gt[..., 2]).clamp(min=1e-6)    # (N,)
-
-            pdf = luminance.detach() / luminance.sum()               # f̂(r),  stops grad
-
-            # When every pixel is black the above becomes NaN; fall back to uniform.
-            if not torch.isfinite(pdf).all():
+                        0.0722 * rgbs_gt[..., 2])         # (N_tot,)
+            luminance = torch.abs(luminance)
+            pdf = luminance.detach() / luminance.sum()                      # p_i  (no grad)
+            if not torch.isfinite(pdf).all():                               # all-black fallback
                 pdf = torch.full_like(pdf, 1.0 / pdf.numel())
-            N_tot        = rays.shape[1]
-            n_samples    = getattr(self.cfg.data, "importance_sampling_num", N_tot)   # use all by default
-            sample_idx   = torch.multinomial(pdf, n_samples, replacement=True)   # (S,)
 
-            # gather the sampled quantities
-            rgbs_s       = rgbs[sample_idx]
-            rgbs_gt_s    = rgbs_gt[sample_idx]
-            pdf_s        = pdf[sample_idx]                                # f̂(r_i)
+            N_tot     = rays.shape[1]
+            S         = getattr(self.cfg.data, "importance_sampling_num", N_tot)
+            sample_idx = torch.multinomial(pdf, S, replacement=True)        # (S,)
+
+            rgbs_s    = rgbs[sample_idx]
+            rgbs_gt_s = rgbs_gt[sample_idx]
+            pdf_s     = pdf[sample_idx]
+
             if self.hparams.model.loss.recon_loss.name == "l1":
-                per_pix_l1 = torch.abs(rgbs_s - rgbs_gt_s).mean(dim=-1) 
-                weighted   = per_pix_l1 / pdf_s                               # multiply by Q=1
-            elif self.hparams.model.loss.recon_loss.name == "l2":
-                per_pix_l2 = torch.pow(rgbs_s - rgbs_gt_s, 2).mean(dim=-1)       # (S,)
-                weighted   = per_pix_l2 / pdf_s                               # multiply by Q=1
-            recon_loss = weighted.mean()
+                per_pix = torch.abs(rgbs_s - rgbs_gt_s).mean(dim=-1)        # (S,)
+            else:  # "l2"
+                per_pix = torch.pow(rgbs_s - rgbs_gt_s, 2).mean(dim=-1)     # (S,)
+
+            weights    = 1.0 / (pdf_s.clamp(min=1e-5) * N_tot)                              # importance weights
+            recon_loss = (per_pix * weights).mean()                         # unbiased pixel-mean
+
+            # --------------------------------------------------------------
+            # 5-C  Diagnostics  (corr, variance proxy, max weight)
+            # --------------------------------------------------------------
+            with torch.no_grad():
+                # Pearson correlation ρ(|f|, L)
+                err_full = torch.abs(rgbs.detach() - rgbs_gt.detach()).mean(dim=-1)  # (N_tot,)
+                lum_full = luminance.detach()
+                xy       = torch.stack([err_full.flatten(), lum_full.flatten()])
+                corr     = torch.corrcoef(xy)[0, 1].float()                # ρ ∈ [-1,1]
+
+                # Single-batch variance proxy  Var[(f/p)/S]
+                est_vals      = err_full / (pdf.clamp(min=1e-5) * N_tot)                   # (N_tot,)
+                var_estimator = est_vals.var(unbiased=False) / S
+
+                # Largest importance weight
+                max_weight = (1.0 / (pdf.clamp(min=1e-5) * N_tot)).max()
 
         else:
+            # --------------------------------------------------------------
+            # 5-D  Plain uniform loss (all rays, no diagnostics)
+            # --------------------------------------------------------------
+            luminance = (0.2126 * rgbs_gt[..., 0] +
+                        0.7152 * rgbs_gt[..., 1] +
+                        0.0722 * rgbs_gt[..., 2])         # (N_tot,)
+
+            pdf = luminance.detach() / luminance.sum() 
+            if not torch.isfinite(pdf).all():                               # all-black fallback
+                pdf = torch.full_like(pdf, 1.0 / pdf.numel())
+
+            N_tot     = rays.shape[1]  
+            S         = getattr(self.cfg.data, "importance_sampling_num", N_tot)
+            with torch.no_grad():
+                # Pearson correlation ρ(|f|, L)
+                err_full = torch.abs(rgbs.detach() - rgbs_gt.detach()).mean(dim=-1)  # (N_tot,)
+                lum_full = luminance.detach()
+                xy       = torch.stack([err_full.flatten(), lum_full.flatten()])
+                corr     = torch.corrcoef(xy)[0, 1].float()                # ρ ∈ [-1,1]
+
+                # Single-batch variance proxy  Var[(f/p)/S]
+                est_vals      = err_full / (pdf.clamp(min=1e-5) * N_tot)                   # (N_tot,)
+                var_estimator = est_vals.var(unbiased=False) / S
+
+                # Largest importance weight
+                max_weight = (1.0 / (pdf.clamp(min=1e-5) * N_tot)).max()
             if self.hparams.model.loss.recon_loss.name == "l1":
                 recon_loss = NF.l1_loss(rgbs, rgbs_gt)
-            elif self.hparams.model.loss.recon_loss.name == "l2":
+            else:  # "l2"
                 recon_loss = NF.mse_loss(rgbs, rgbs_gt)
 
+        # ------------------------------------------------------------------
+        # 6.  Add regulariser + compute PSNR
+        # ------------------------------------------------------------------
         latent_reg = 0.0
         loss       = recon_loss + self.hparams.model.loss.latent_reg_loss.weight * latent_reg
 
-        psnr_loss = torch.nn.functional.mse_loss(self.gamma(rgbs), self.gamma(rgbs_gt), reduction='mean')
-        psnr = 10.0 * torch.log10((1.0 ** 2) / psnr_loss.clamp_min(1e-5))
+        psnr_loss  = torch.nn.functional.mse_loss(self.gamma(rgbs),
+                                                self.gamma(rgbs_gt),
+                                                reduction='mean')
+        psnr       = 10.0 * torch.log10(1.0 / psnr_loss.clamp_min(1e-5))
 
         # ------------------------------------------------------------------
-        # 6. Logging
+        # 7.  Logging  (now includes diagnostics)
         # ------------------------------------------------------------------
         self.log_dict({
-            'train/recon_loss': recon_loss,
-            'train/latent_reg': latent_reg,
-            'train/total_loss': loss,
-            'train/psnr':       psnr
+            'train/recon_loss':   recon_loss,
+            'train/latent_reg':   latent_reg,
+            'train/total_loss':   loss,
+            'train/psnr':         psnr,
+            'diag/corr_err_lum':  corr,
+            'diag/var_estimator': var_estimator,
+            'diag/max_weight':    max_weight,
         }, prog_bar=True, batch_size=rays.shape[0])
 
         return loss
@@ -294,24 +349,68 @@ class BRDFTrainer(pl.LightningModule):
         #     random_intensities = False
         # )
         emitter = DynamicPointEmitter(
+            ray_num = batch['rays'].shape[1],
             dist=self.cfg.renderer.emitter.dist,
             num_lights=self.cfg.renderer.emitter.num_lights,
             camera_phi = batch['phi'],
             theta_angle = self.cfg.renderer.emitter.theta_angle,
             random_positions = False,
-            random_intensities = False
+            random_intensities = False,
+            different_per_point = False
         )
         
         # Render step logic
         rays, gt_params = batch['rays'], batch['gt_params']
         rgbs, *_ = self.renderer.render(emitter, rays, self.cfg.renderer.spp.train, None, None)
-
+        
         if self.gt_folder is None:
             with torch.no_grad():
                 rgbs_gt, *_ = self.gt_renderer.render(emitter, rays, self.cfg.renderer.spp.train, gt_params, None)
         else:
             rgbs_gt = batch['rgbs']
 
+        # luminance = (0.2126 * rgbs_gt[..., 0] +
+        #             0.7152 * rgbs_gt[..., 1] +
+        #             0.0722 * rgbs_gt[..., 2]).clamp(min=1e-6)    # (N,)
+
+        # pdf = luminance.detach() / luminance.sum()               # f̂(r),  stops grad
+
+        # # When every pixel is black the above becomes NaN; fall back to uniform.
+        # if not torch.isfinite(pdf).all():
+        #     pdf = torch.full_like(pdf, 1.0 / pdf.numel())
+        # N_tot        = rays.shape[1]
+        # n_samples = N_tot
+        # # n_samples    = getattr(self.cfg.data, "importance_sampling_num", N_tot)   # use all by default
+        # sample_idx   = torch.multinomial(pdf, n_samples, replacement=True)   # (S,)
+        # # Visualize the PDF
+        # pdf_vis = pdf.reshape(*self.img_hw)  # Reshape to image dimensions
+        
+        # # Create output directory for PDF visualization
+        # output_dir = os.path.join(
+        #     self.cfg.exp_output_root_path,
+        #     f'fabric_pattern_07_4k'
+        # )
+        # os.makedirs(output_dir, exist_ok=True)
+        # # Visualize the sampled pixels
+        # sample_mask = torch.zeros_like(pdf, dtype=torch.bool)
+        # sample_mask[sample_idx] = True
+        # sample_vis = sample_mask.reshape(*self.img_hw).float()  # Reshape to image dimensions
+        
+        # # Save sampled pixels visualization
+        # torchvision.utils.save_image(
+        #     sample_vis.unsqueeze(0),  # Add channel dimension
+        #     os.path.join(output_dir, f'sampled_pixels_view_{batch_idx}.png')
+        # )
+        
+        # # Normalize PDF for visualization (0-1 range)
+        # pdf_normalized = (pdf_vis - pdf_vis.min()) / (pdf_vis.max() - pdf_vis.min() + 1e-8)
+        
+        # # Save PDF visualization as grayscale image
+        # torchvision.utils.save_image(
+        #     pdf_normalized.unsqueeze(0),  # Add channel dimension
+        #     os.path.join(output_dir, f'pdf_view_{batch_idx}.png')
+        # )
+        
         psnr_loss = torch.nn.functional.mse_loss(self.gamma(rgbs), self.gamma(rgbs_gt), reduction='mean')
         psnr = 10.0 * torch.log10((1.0 ** 2) / psnr_loss.clamp_min(1e-5))
         

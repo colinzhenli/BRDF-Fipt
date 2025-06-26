@@ -67,7 +67,7 @@ def batched_path_tracing_dynamic_emitter(scene,emitter_net,material_net,rays_o,r
     dy_dv = dy_dv.reshape(-1,3)
     batch_mask = batch_mask.reshape(-1)
     N = len(rays_o)
-    N_lights = emitter_net.light_positions.shape[0]
+    N_lights = emitter_net.num_lights
     device = rays_o.device
     
     # sample camera ray
@@ -91,10 +91,10 @@ def batched_path_tracing_dynamic_emitter(scene,emitter_net,material_net,rays_o,r
     
     # deterministic sampling
     wi,emit_pdf, emit_position, idx = emitter_net.sample_emitter(position)
-    normal = normal.repeat_interleave(emitter_net.light_positions.shape[0],0)
-    position = position.repeat_interleave(emitter_net.light_positions.shape[0],0)
-    wo = wo.repeat_interleave(emitter_net.light_positions.shape[0],0)
-    batch_mask = batch_mask.repeat_interleave(emitter_net.light_positions.shape[0],0)
+    normal = normal.repeat_interleave(emitter_net.num_lights,0)
+    position = position.repeat_interleave(emitter_net.num_lights,0)
+    wo = wo.repeat_interleave(emitter_net.num_lights,0)
+    batch_mask = batch_mask.repeat_interleave(emitter_net.num_lights,0)
     # visibility test
     emit_weight,_,_ = emitter_net.eval_emitter(emit_position, idx)
     emit_vis = (wi*normal).sum(-1,keepdim=True) > 0 # B, 1
