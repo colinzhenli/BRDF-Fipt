@@ -75,6 +75,24 @@ def D_GGX(cos_h,eta):
     denom = math.pi * denom*denom
     return alpha2/denom
 
+def D_GGX_aniso(h, N, T, B, ax, ay):
+    Ht = (h * T).sum(-1, keepdim=True)
+    Hb = (h * B).sum(-1, keepdim=True)
+    Hn = (h * N).sum(-1, keepdim=True)
+    denom = (Ht**2)/(ax**2) + (Hb**2)/(ay**2) + Hn**2      # ( .. )² in paper
+    return 1.0 / (math.pi * ax * ay * denom**2 + 1e-6)
+
+# ----------  Geometry terms --------------------------------------------------
+def G1_aniso(v, N, T, B, ax, ay):
+    Vn = (v * N).sum(-1, keepdim=True).clamp(1e-6)
+    Vt = (v * T).sum(-1, keepdim=True)
+    Vb = (v * B).sum(-1, keepdim=True)
+    lam = torch.sqrt(ax**2 * Vt**2 + ay**2 * Vb**2 + Vn**2) / Vn - 1.0
+    return 1.0 / (1.0 + lam)                                # Smith masking
+
+def G_Smith_aniso(wi, wo, N, T, B, ax, ay):
+    return G1_aniso(wi, N, T, B, ax, ay) * G1_aniso(wo, N, T, B, ax, ay)
+
 
 def double_sided(V,N):
     """ double sided normal 

@@ -185,12 +185,14 @@ def main(cfg):
             # Render step logic
             rays, gt_params = batch['rays'].to(model.device).unsqueeze(0), batch['gt_params'].to(model.device).unsqueeze(0)
             emitter = DynamicPointEmitter(
+                ray_num = rays.shape[1],
                 dist=cfg.renderer.emitter.dist,
                 num_lights=cfg.renderer.emitter.num_lights,
                 camera_phi = batch['phi'],
                 theta_angle = cfg.renderer.emitter.theta_angle,
                 random_positions = False,
-                random_intensities = False
+                random_intensities = False,
+                different_per_point = False
             )
             
             rgbs_pred, *_ = renderer.render(emitter, rays, cfg.renderer.spp.test, gt_params, None)

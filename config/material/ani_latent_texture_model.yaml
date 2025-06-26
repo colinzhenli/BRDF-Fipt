@@ -1,7 +1,7 @@
-type: "LatentTexturedModel"
+type: "AnisotropicLatentTexturedModel"
 latent_dim: 8
-use_gt_normal: False
-predict_normal: True
+predict_frame: True
+gt_frame: False
 colorful_texture: True
 leaky_relu: True
 texture_resolution: 2048
