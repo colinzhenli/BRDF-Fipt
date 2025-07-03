@@ -215,3 +215,61 @@ class DynamicPointEmitter(nn.Module):
         valid = torch.ones(B, dtype=torch.bool, device=position.device)
 
         return intensities, pdf, valid
+    
+class PresetPointEmitter(nn.Module):
+    def __init__(self, positions, intensities):
+        """
+        Args:
+            positions: (N, 3) tensor of light positions
+            intensities: (N, 1) tensor of light intensities
+        """
+        super(PresetPointEmitter, self).__init__()
+
+        self.register_buffer('light_positions', positions)  # [N, 3]
+        self.register_buffer('light_intensities', intensities)  # [N, 3]
+
+    def sample_emitter(self, position, idx):
+        """
+        Deterministic sampling: For each position, sample toward one specific light using idx.
+
+        Args:
+            position: (B, 3) surface positions
+            idx: (B,) selected light indices
+        Returns:
+            wi: (B, 3) directions toward selected lights
+            pdf: (B, 1) uniform pdf
+            light_pos: (B, 3) selected light positions
+            idx: (B,) selected light indices
+        """
+        B = position.shape[0]
+        
+        # Select specific light positions based on idx
+        light_pos = self.light_positions[idx]  # [B, 3]
+        
+        vec = light_pos - position  # [B, 3]
+        wi = NF.normalize(vec, dim=-1)  # [B, 3]
+        
+        pdf = torch.full((B, 1), 1.0, device=position.device)
+        
+        return wi, pdf, light_pos, idx
+
+    def eval_emitter(self, position, idx):
+        """
+        Evaluate radiance from selected lights.
+
+        Args:
+            position: (B, 3) surface points
+            idx: (B,) selected light indices
+
+        Returns:
+            Le: (B, 3) radiance
+            pdf: (B, 1) pdf
+            valid: (B,) valid mask
+        """
+        B = position.shape[0]
+        # Select intensities based on idx for each position
+        intensities = self.light_intensities[idx]  #  [B, 3]
+        pdf = torch.full((B, 1), 1.0 / self.light_positions.shape[0], device=position.device)
+        valid = torch.ones(B, dtype=torch.bool, device=position.device)
+
+        return intensities, pdf, valid

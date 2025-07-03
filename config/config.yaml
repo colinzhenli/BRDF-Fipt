@@ -5,6 +5,7 @@ defaults:
   - material: svlatent_model
 
 experiment_name: test
+dataset_folder: /mnt/data/colin/colin/BRDF-Fipt/reference_images_2
 output_folder: /mnt/data/colin/colin/output/BRDF-Fipt/Over-fit_experiments_2
 exp_output_root_path: ${output_folder}/${data.dataset_name}/${experiment_name}
 gt_folder: 

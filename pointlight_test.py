@@ -8,7 +8,7 @@ import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
 from renderer import ForwardRenderer
 from brdf_trainer import BRDFTrainer
-from model.brdf import SvPBRBRDF, SvLatentModel
+from model.brdf import SvPBRBRDF, SvLatentModel, AnisotropicLatentTexturedModel
 from model.emitter import DynamicPointEmitter
 from torch.utils.data import DataLoader
 from itertools import islice
@@ -143,6 +143,8 @@ def main(cfg):
         material = LatentTexturedModel(cfg.material)  # MLP model uses mlp_pbr config
     elif cfg.material.type == "SvLatentModel":
         material = SvLatentModel(cfg.material)  # MLP model uses mlp_pbr config
+    elif cfg.material.type == "AnisotropicLatentTexturedModel":
+        material = AnisotropicLatentTexturedModel(cfg.material)  # MLP model uses mlp_pbr config
     else:
         raise ValueError(f"Invalid material type: {cfg.material.type}")
     

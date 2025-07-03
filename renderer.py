@@ -1,5 +1,5 @@
 import torch
-from utils.path_tracing import path_tracing_envmap_emitter, batched_path_tracing_dynamic_emitter
+from utils.path_tracing import path_tracing_envmap_emitter, batched_path_tracing_dynamic_emitter, batched_path_tracing_preset_emitter
 from mitsuba import load_dict
 import mitsuba as mi
 from model.emitter import EnvMapEmitter, DynamicPointEmitter
@@ -22,15 +22,15 @@ class ForwardRenderer:
 
         if cfg.renderer.emitter.type == 'envmap':
             self.ray_tracer = path_tracing_envmap_emitter
-        else:
-            self.ray_tracer = batched_path_tracing_dynamic_emitter
+        elif cfg.renderer.emitter.type == 'presetpoint':
+            self.ray_tracer = batched_path_tracing_preset_emitter
         emitter_cfg = cfg.renderer.emitter
         if cfg.renderer.emitter.type == 'envmap':
             self.emitter = EnvMapEmitter(emitter_cfg.envmap_path).to(self.device)
 
         self.SPP_chunk = cfg.renderer.SPP_chunk
     
-    def render(self, emitter, rays, spp, gt_params=None, latent=None):
+    def render(self, emitter, rays, light_idx, spp, gt_params=None, latent=None):
         rays_x, rays_d, dxdu, dydv = rays[..., :3], rays[..., 3:6], rays[..., 6:9], rays[..., 9:12]
         L = torch.zeros_like(rays_x)
         ray_params = torch.zeros_like(rays)
@@ -41,14 +41,14 @@ class ForwardRenderer:
                 L0, vis, ray_params = self.ray_tracer(
                     self.scene, self.emitter, self.material,
                     rays_x, rays_d, dxdu, dydv, 
-                    self.SPP_chunk, brdf_sampling=self.cfg.renderer.brdf_sampling, emitter_sampling=self.cfg.renderer.emitter_sampling, gt_params=gt_params, latent=latent
+                    light_idx, self.SPP_chunk, brdf_sampling=self.cfg.renderer.brdf_sampling, emitter_sampling=self.cfg.renderer.emitter_sampling, gt_params=gt_params, latent=latent
                 )
                 L += L0
         else:
             L0, vis, ray_params = self.ray_tracer(
                 self.scene, emitter, self.material,
                 rays_x, rays_d, dxdu, dydv, 
-                self.SPP_chunk, brdf_sampling=self.cfg.renderer.brdf_sampling, emitter_sampling=self.cfg.renderer.emitter_sampling, gt_params=gt_params, latent=latent
+                light_idx, self.SPP_chunk, brdf_sampling=self.cfg.renderer.brdf_sampling, emitter_sampling=self.cfg.renderer.emitter_sampling, gt_params=gt_params, latent=latent
             )
             L += L0
         rgbs = L / (spp // self.SPP_chunk)
