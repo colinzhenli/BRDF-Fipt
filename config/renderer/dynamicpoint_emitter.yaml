@@ -6,9 +6,9 @@ indir_depth: 0
 camera:
   distance: 2.0
   number_of_views: 512 # used during training
-  number_of_view_test: 32
+  number_of_view_test: 128
   views_per_batch: 8
-  theta_angle: 60.0 # used during validation and testing
+  theta_angle: 80.0 # used during validation and testing
   look_at: [0.0, 0.0, 0.0]
   up: [0.0, 1.0, 0.0]
   position: [0.0, 0.0, -2.0]
@@ -19,7 +19,7 @@ emitter:
   type: "dynamicpoint"
   dist: 4.0
   num_lights: 1
-  theta_angle: 60.0 # used during validation and testing
+  theta_angle: 80.0 # used during validation and testing
   different_per_point: True # if True, use one random emitter for each ray
   rotate_with_camera: True # if True, it's like rotating the object during validation
 

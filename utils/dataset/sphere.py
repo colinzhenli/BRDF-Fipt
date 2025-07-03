@@ -208,7 +208,6 @@ class SphereIterableDataset(IterableDataset):
         # Store how many views we actually generated
         self.total = len(self.camera_dict)
 
-
     def preload_rays_and_rgbs(self):
         all_rays = []
         all_rgbs = []
@@ -264,63 +263,6 @@ class SphereValDataset(Dataset):
         self.distance = cfg.renderer.camera.distance
         self.get_camera_rotation_dicts(cfg.renderer.camera.theta_angle)
         # self.pbr_texture = load_pbr_texture_stack(self.cfg.data.pbr_path)
-
-    # def get_camera_dicts(self):
-    #     # Initialize camera dicts list
-    #     self.camera_dict = []
-        
-    #     # Keep look_at and up vectors fixed from initial camera settings
-    #     look_at = self.cfg.renderer.camera.look_at
-    #     up = self.cfg.renderer.camera.up
-    #     dist = self.distance
-        
-    #     # Parameters to control sampling density
-    #     # Choose n_phi and calculate n_theta accordingly
-    #     n_phi = max(4, int(np.sqrt(self.number_of_views - 2)))  # At least 4 phi samples
-    #     n_theta = max(3, int((self.number_of_views - 2) / n_phi) + 2)  # At least 3 theta samples (excluding poles)
-        
-    #     self.total = (n_theta-2) * n_phi + 2  # Add 2 for poles
-        
-    #     # Generate uniform samples for spherical coordinates, excluding poles
-    #     thetas = np.linspace(0, np.pi, n_theta)  # Exclude 0 and pi
-    #     thetas = thetas[1:-1]  # Remove the first and last elements
-    #     phis = np.linspace(0, 2*np.pi, n_phi)
-        
-    #     # Add poles separately - they only need one phi value since they're at top/bottom
-        
-    #     # Create grid of angles
-    #     theta_grid, phi_grid = np.meshgrid(thetas, phis)
-    #     thetas_flat = theta_grid.flatten()
-    #     phis_flat = phi_grid.flatten()
-        
-    #     # Convert spherical to cartesian coordinates
-    #     for theta, phi in zip(thetas_flat, phis_flat):
-    #         # Calculate camera position
-    #         x = dist * np.sin(theta) * np.cos(phi)
-    #         y = dist * np.sin(theta) * np.sin(phi) 
-    #         z = dist * np.cos(theta)
-            
-    #         # Create camera dict for this position
-    #         camera_dict = {
-    #             "position": [x, y, z],
-    #             "look_at": look_at,
-    #             "up": up
-    #         }
-            
-    #         self.camera_dict.append(camera_dict)
-    #     north_pole = {
-    #         "position": [0, 0, dist],  # x=0, y=0, z=dist
-    #         "look_at": look_at,
-    #         "up": up
-    #     }
-    #     self.camera_dict.append(north_pole)
-
-    #     south_pole = {
-    #         "position": [0, 0, -dist],  # x=0, y=0, z=-dist
-    #         "look_at": look_at,
-    #         "up": up
-    #     }
-    #     self.camera_dict.append(south_pole)
 
     def get_camera_rotation_dicts(self, elevation_deg: float = 60):
         """

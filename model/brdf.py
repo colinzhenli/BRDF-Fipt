@@ -1581,6 +1581,7 @@ class AnisotropicLatentTexturedModel(LightningModule):
         self.different_decoder = cfg.different_decoder
         self.predict_frame = cfg.predict_frame
         self.gt_frame = cfg.gt_frame
+        self.anisotropic = True
         if self.colorful_texture and self.larger_latent_dim:
             total_latent_dim = self.latent_dim * 3
         else:
@@ -1592,9 +1593,15 @@ class AnisotropicLatentTexturedModel(LightningModule):
         
         # Create 2D texture latent grids
         self.texture_resolution = getattr(cfg, 'texture_resolution', 256)
-        self.latent_texture = nn.Parameter(
-            torch.randn(1, total_latent_dim, self.texture_resolution, self.texture_resolution) * 0.1
-        )
+        # Initialize latent texture with special initialization for directional components
+        latent_init = torch.randn(1, total_latent_dim, self.texture_resolution, self.texture_resolution) * 0.1
+        
+        if self.predict_frame:
+            # Last 6 dimensions: normal (1,0,0) and tangent (0,1,0)
+            latent_init[:, -6:-3, :, :] = torch.tensor([1.0, 0.0, 0.0]).view(1, 3, 1, 1)  # normal
+            latent_init[:, -3:, :, :] = torch.tensor([0.0, 1.0, 0.0]).view(1, 3, 1, 1)    # tangent
+        
+        self.latent_texture = nn.Parameter(latent_init)
         # gaussian blur parameters
         self.Gaussian_blur = cfg.Gaussian_blur
         self.blur_sigma0 = 8.0
@@ -1854,8 +1861,8 @@ class AnisotropicLatentTexturedModel(LightningModule):
                 # Step 4: Transform local normal to world
                 n_world = local_to_world_normal(normal_local, T, B, N_geo)
                 
-            normal = n_world
-            tangent = T_ortho
+            predicted_normal = n_world
+            predicted_tangent = T_ortho
             
         if self.predict_frame:
             # Extract predicted normal and tangent from latent
