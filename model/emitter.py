@@ -217,13 +217,30 @@ class DynamicPointEmitter(nn.Module):
         return intensities, pdf, valid
     
 class PresetPointEmitter(nn.Module):
-    def __init__(self, positions, intensities):
+    def __init__(self, read_from_metadata=False, metadata_path=None, positions=None, intensities=None):
         """
         Args:
             positions: (N, 3) tensor of light positions
             intensities: (N, 1) tensor of light intensities
         """
         super(PresetPointEmitter, self).__init__()
+        if read_from_metadata:
+            # Read positions and intensities from metadata
+            import json
+            import os
+            if os.path.exists(metadata_path):
+                with open(metadata_path, 'r') as f:
+                    metadata = json.load(f)
+                # Extract emitter metadata
+                positions = torch.tensor([em['position'] for em in metadata], device='cuda')
+                intensities = torch.tensor([em['intensity'] for em in metadata], device='cuda')
+                self.positions = positions
+                self.intensities = intensities
+            else:
+                raise FileNotFoundError(f"Metadata file not found at {metadata_path}")  
+        else:
+            self.positions = positions
+            self.intensities = intensities
 
         self.register_buffer('light_positions', positions)  # [N, 3]
         self.register_buffer('light_intensities', intensities)  # [N, 3]

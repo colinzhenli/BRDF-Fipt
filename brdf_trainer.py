@@ -8,7 +8,7 @@ from torchviz import make_dot
 from viztracer import VizTracer
 from tqdm import tqdm
 import math
-from model.emitter import DynamicPointEmitter
+from model.emitter import DynamicPointEmitter, PresetPointEmitter
 import os
 
 class BRDFTrainer(pl.LightningModule):
@@ -31,6 +31,12 @@ class BRDFTrainer(pl.LightningModule):
         
         self.renderer = ForwardRenderer(cfg, self.material)
         self.gt_renderer = ForwardRenderer(cfg, self.gt_material)
+        self.emitter = PresetPointEmitter(
+            read_from_metadata=True,
+            metadata_path=os.path.join(self.cfg.metadata_path, 'emitter_metadata.json'),
+            positions=None, 
+            intensities=None
+        )
         self.img_hw = cfg.renderer.resolution
 
     # def gamma(self, x):
@@ -160,154 +166,20 @@ class BRDFTrainer(pl.LightningModule):
         # ------------------------------------------------------------------
         # 1. Un-pack inputs
         # ------------------------------------------------------------------
-        rays, gt_params = batch['rays'], batch['gt_params']
-        # gt_params = self.load_pbr_texture(gt_params).unsqueeze(0)
-        # rays: [B, N, 3]
-        # gt_params: [B, N, 16]
-        emitter = DynamicPointEmitter(
-            ray_num = rays.shape[1],
-            dist=self.cfg.renderer.emitter.dist,
-            num_lights=self.cfg.renderer.emitter.num_lights,
-            camera_phi = None,
-            theta_angle = self.cfg.renderer.emitter.theta_angle,
-            random_positions = True,
-            random_intensities = False,
-            different_per_point = self.cfg.renderer.emitter.different_per_point
-        )
-
+        rays, rgbs_gt, emitter_ids, weighted_pdf = batch['rays'], batch['rgbs'], batch['emitter_ids'], batch['pdf']
         # forward renders
-        rgbs, vis, ray_params = self.renderer.render(emitter, rays, self.cfg.renderer.spp.train,
+        rgbs, vis, ray_params = self.renderer.render(self.emitter, rays, emitter_ids, self.cfg.renderer.spp.train,
                                         None, None)                       # f(r)
-        if self.gt_folder is None:                                        # f̂ target
-            with torch.no_grad():
-                rgbs_gt, *_ = self.gt_renderer.render(
-                    emitter, rays, self.cfg.renderer.spp.train, gt_params, None)
+        if self.hparams.model.loss.recon_loss.name == "l1":
+            per_pix = torch.abs(rgbs - rgbs_gt).mean(dim=-1)        # (S,)
+        else:  # "l2"
+            per_pix = torch.pow(rgbs - rgbs_gt, 2).mean(dim=-1)     # (S,)
+
+        if self.hparams.data.importance_sampling:
+            weights    = 1.0 / weighted_pdf.clamp(min=1e-5)                              # importance weights
         else:
-            rgbs_gt = batch['rgbs']
-        if self.cfg.data.uniform_sampling:
-            x, wi, wo = ray_params.split([3, 3, 3], dim=-1)
-            assert x.shape == wi.shape == wo.shape
-            L = self.cfg.renderer.emitter.num_lights
-            x, wo = x.view(-1, L, 3)[:, 0], wo.view(-1, L, 3)[:, 0]  # → (N, 3)
-            wi = wi.view(-1, L, 3)                          # (N,M,3)
-
-            # ------------ scene constants ----------------------------
-            r        = 0.20
-            R_cam    = 2.00
-            R_lgt    = 4.00
-            theta_fov= 0.5 * 0.5                              # radians
-            Omega    = 2.0 * math.pi * (1.0-math.cos(theta_fov))
-            eps      = 1e-6
-
-            # ------------ unit normal --------------------------------
-            nx = x / r                                         # (N,3)
-
-            # ------------ cosines wrt camera (shared for all m) -------
-            cos_o_pos = torch.clamp((nx * wo).sum(-1), min=eps)        # (N,)
-
-            # ------------ helper: endpoint on given radius ------------
-            def endpoint_along(dir_vec, R_target):
-                # dir_vec: (N,M,3) or (N,1,3) broadcasting ok
-                dot = (x.unsqueeze(1) * dir_vec).sum(-1, keepdim=True)  # (N,M,1)
-                s   = -dot + torch.sqrt(dot**2 + R_target*R_target - r*r)
-                return x.unsqueeze(1) + s * dir_vec                     # (N,M,3)
-
-            # ------------ camera & light centres ----------------------
-            c = endpoint_along(-wo.unsqueeze(1), R_cam)[:,0]  # (N,3) (same for all m)
-            l = endpoint_along( wi, R_lgt)                    # (N,M,3)
-
-            # ------------ geometric terms -----------------------------
-            dist2_cam = ((x - c) ** 2).sum(-1, keepdim=True)           # (N,1)
-            dist2_lgt = ((x.unsqueeze(1) - l) ** 2).sum(-1)            # (N,M)
-
-            cos_i_pos = torch.clamp((nx.unsqueeze(1) * wi).sum(-1), min=eps)  # (N,M)
-
-            # ------------ per-sample weights, then average ------------
-            w_each = (dist2_cam / cos_o_pos.unsqueeze(1)) * (cos_i_pos / dist2_lgt) * Omega  # (N,M)
-            w_px   = w_each.mean(dim=1)                               # (N,)   equation (★)
-            w_px   = w_px / w_px.mean()                               # optional normalise
-
-            # ------------ pixel-wise L1 loss --------------------------
-            per_pix_l1 = torch.abs(rgbs - rgbs_gt).mean(-1)             # (N,)
-
-            recon_loss = (w_px * per_pix_l1[vis]).mean()
-
-        if self.cfg.data.importance_sampling:
-            # --------------------------------------------------------------
-            # 5-A  Build luminance-pdf and draw importance samples
-            # --------------------------------------------------------------
-            luminance = (0.2126 * rgbs_gt[..., 0] +
-                        0.7152 * rgbs_gt[..., 1] +
-                        0.0722 * rgbs_gt[..., 2])         # (N_tot,)
-            luminance = torch.abs(luminance)
-            pdf = luminance.detach() / luminance.sum()                      # p_i  (no grad)
-            if not torch.isfinite(pdf).all():                               # all-black fallback
-                pdf = torch.full_like(pdf, 1.0 / pdf.numel())
-
-            N_tot     = rays.shape[1]
-            S         = getattr(self.cfg.data, "importance_sampling_num", N_tot)
-            sample_idx = torch.multinomial(pdf, S, replacement=True)        # (S,)
-
-            rgbs_s    = rgbs[sample_idx]
-            rgbs_gt_s = rgbs_gt[sample_idx]
-            pdf_s     = pdf[sample_idx]
-
-            if self.hparams.model.loss.recon_loss.name == "l1":
-                per_pix = torch.abs(rgbs_s - rgbs_gt_s).mean(dim=-1)        # (S,)
-            else:  # "l2"
-                per_pix = torch.pow(rgbs_s - rgbs_gt_s, 2).mean(dim=-1)     # (S,)
-
-            weights    = 1.0 / (pdf_s.clamp(min=1e-5) * N_tot)                              # importance weights
-            recon_loss = (per_pix * weights).mean()                         # unbiased pixel-mean
-
-            # --------------------------------------------------------------
-            # 5-C  Diagnostics  (corr, variance proxy, max weight)
-            # --------------------------------------------------------------
-            with torch.no_grad():
-                # Pearson correlation ρ(|f|, L)
-                err_full = torch.abs(rgbs.detach() - rgbs_gt.detach()).mean(dim=-1)  # (N_tot,)
-                lum_full = luminance.detach()
-                xy       = torch.stack([err_full.flatten(), lum_full.flatten()])
-                corr     = torch.corrcoef(xy)[0, 1].float()                # ρ ∈ [-1,1]
-
-                # Single-batch variance proxy  Var[(f/p)/S]
-                est_vals      = err_full / (pdf.clamp(min=1e-5) * N_tot)                   # (N_tot,)
-                var_estimator = est_vals.var(unbiased=False) / S
-
-                # Largest importance weight
-                max_weight = (1.0 / (pdf.clamp(min=1e-5) * N_tot)).max()
-
-        else:
-            # --------------------------------------------------------------
-            # 5-D  Plain uniform loss (all rays, no diagnostics)
-            # --------------------------------------------------------------
-            luminance = (0.2126 * rgbs_gt[..., 0] +
-                        0.7152 * rgbs_gt[..., 1] +
-                        0.0722 * rgbs_gt[..., 2])         # (N_tot,)
-
-            pdf = luminance.detach() / luminance.sum() 
-            if not torch.isfinite(pdf).all():                               # all-black fallback
-                pdf = torch.full_like(pdf, 1.0 / pdf.numel())
-
-            N_tot     = rays.shape[1]  
-            S         = getattr(self.cfg.data, "importance_sampling_num", N_tot)
-            with torch.no_grad():
-                # Pearson correlation ρ(|f|, L)
-                err_full = torch.abs(rgbs.detach() - rgbs_gt.detach()).mean(dim=-1)  # (N_tot,)
-                lum_full = luminance.detach()
-                xy       = torch.stack([err_full.flatten(), lum_full.flatten()])
-                corr     = torch.corrcoef(xy)[0, 1].float()                # ρ ∈ [-1,1]
-
-                # Single-batch variance proxy  Var[(f/p)/S]
-                est_vals      = err_full / (pdf.clamp(min=1e-5) * N_tot)                   # (N_tot,)
-                var_estimator = est_vals.var(unbiased=False) / S
-
-                # Largest importance weight
-                max_weight = (1.0 / (pdf.clamp(min=1e-5) * N_tot)).max()
-            if self.hparams.model.loss.recon_loss.name == "l1":
-                recon_loss = NF.l1_loss(rgbs, rgbs_gt)
-            else:  # "l2"
-                recon_loss = NF.mse_loss(rgbs, rgbs_gt)
+            weights    = 1.0               # importance weights
+        recon_loss = (per_pix * weights).mean()  
 
         # ------------------------------------------------------------------
         # 6.  Add regulariser + compute PSNR
@@ -328,89 +200,17 @@ class BRDFTrainer(pl.LightningModule):
             'train/latent_reg':   latent_reg,
             'train/total_loss':   loss,
             'train/psnr':         psnr,
-            'diag/corr_err_lum':  corr,
-            'diag/var_estimator': var_estimator,
-            'diag/max_weight':    max_weight,
         }, prog_bar=True, batch_size=rays.shape[0])
 
         return loss
 
     def validation_step(self, batch, batch_idx):
         """ batch pbr texture: [B, H, W, 16] """
-        gt_params = batch['gt_params']
-        # Get latents for the batch using the indices
+        rays, rgbs_gt, emitter_ids = batch['rays'], batch['rgbs'], batch['emitter_ids']
 
-        # emitter = DynamicPointEmitter(
-        #     dist=self.cfg.renderer.emitter.dist,
-        #     num_lights=self.cfg.renderer.emitter.num_lights,
-        #     camera_phi = None,
-        #     theta_angle = None,
-        #     random_positions = False,
-        #     random_intensities = False
-        # )
-        emitter = DynamicPointEmitter(
-            ray_num = batch['rays'].shape[1],
-            dist=self.cfg.renderer.emitter.dist,
-            num_lights=self.cfg.renderer.emitter.num_lights,
-            camera_phi = batch['phi'],
-            theta_angle = self.cfg.renderer.emitter.theta_angle,
-            random_positions = False,
-            random_intensities = False,
-            different_per_point = False
-        )
-        
-        # Render step logic
-        rays, gt_params = batch['rays'], batch['gt_params']
-        rgbs, *_ = self.renderer.render(emitter, rays, self.cfg.renderer.spp.train, None, None)
-        
-        if self.gt_folder is None:
-            with torch.no_grad():
-                rgbs_gt, *_ = self.gt_renderer.render(emitter, rays, self.cfg.renderer.spp.train, gt_params, None)
-        else:
-            rgbs_gt = batch['rgbs']
+        # forward renders
+        rgbs, vis, ray_params = self.renderer.render(self.emitter, rays, emitter_ids, self.cfg.renderer.spp.train, None, None)    
 
-        # luminance = (0.2126 * rgbs_gt[..., 0] +
-        #             0.7152 * rgbs_gt[..., 1] +
-        #             0.0722 * rgbs_gt[..., 2]).clamp(min=1e-6)    # (N,)
-
-        # pdf = luminance.detach() / luminance.sum()               # f̂(r),  stops grad
-
-        # # When every pixel is black the above becomes NaN; fall back to uniform.
-        # if not torch.isfinite(pdf).all():
-        #     pdf = torch.full_like(pdf, 1.0 / pdf.numel())
-        # N_tot        = rays.shape[1]
-        # n_samples = N_tot
-        # # n_samples    = getattr(self.cfg.data, "importance_sampling_num", N_tot)   # use all by default
-        # sample_idx   = torch.multinomial(pdf, n_samples, replacement=True)   # (S,)
-        # # Visualize the PDF
-        # pdf_vis = pdf.reshape(*self.img_hw)  # Reshape to image dimensions
-        
-        # # Create output directory for PDF visualization
-        # output_dir = os.path.join(
-        #     self.cfg.exp_output_root_path,
-        #     f'fabric_pattern_07_4k'
-        # )
-        # os.makedirs(output_dir, exist_ok=True)
-        # # Visualize the sampled pixels
-        # sample_mask = torch.zeros_like(pdf, dtype=torch.bool)
-        # sample_mask[sample_idx] = True
-        # sample_vis = sample_mask.reshape(*self.img_hw).float()  # Reshape to image dimensions
-        
-        # # Save sampled pixels visualization
-        # torchvision.utils.save_image(
-        #     sample_vis.unsqueeze(0),  # Add channel dimension
-        #     os.path.join(output_dir, f'sampled_pixels_view_{batch_idx}.png')
-        # )
-        
-        # # Normalize PDF for visualization (0-1 range)
-        # pdf_normalized = (pdf_vis - pdf_vis.min()) / (pdf_vis.max() - pdf_vis.min() + 1e-8)
-        
-        # # Save PDF visualization as grayscale image
-        # torchvision.utils.save_image(
-        #     pdf_normalized.unsqueeze(0),  # Add channel dimension
-        #     os.path.join(output_dir, f'pdf_view_{batch_idx}.png')
-        # )
-        
         psnr_loss = torch.nn.functional.mse_loss(self.gamma(rgbs), self.gamma(rgbs_gt), reduction='mean')
         psnr = 10.0 * torch.log10((1.0 ** 2) / psnr_loss.clamp_min(1e-5))
         
@@ -433,7 +233,7 @@ class BRDFTrainer(pl.LightningModule):
             # Create output directory for each sample
             output_dir = os.path.join(
                 self.cfg.exp_output_root_path,
-                f'fabric_pattern_07_4k'
+                f'demin_fabric_03_4k'
             )
             os.makedirs(output_dir, exist_ok=True)
             
