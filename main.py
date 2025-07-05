@@ -10,7 +10,7 @@ from renderer import ForwardRenderer
 from brdf_trainer import BRDFTrainer
 from model.brdf import SvLatentModel, SvPBRBRDF, LatentTexturedModel, AnisotropicLatentTexturedModel
 from torch.utils.data import DataLoader
-from utils.dataset import SphereIterableDataset, SphereValDataset
+from utils.dataset import SphereIterableDataset, SphereValDataset, SphereImageDataset
 import hydra
 from omegaconf import DictConfig
 from pytorch_lightning.strategies import DDPStrategy
@@ -65,14 +65,14 @@ def main(cfg):
     model = BRDFTrainer(cfg, material, gt_material, roughness, metallic)
 
     print("==> initializing data ...")          
-    train_dataset = SphereIterableDataset(cfg, gt_folder=None, split="train")
+    train_dataset = SphereImageDataset(cfg, gt_folder=cfg.gt_folder, split="train")
     train_loader = DataLoader(
         train_dataset,
         batch_size=cfg.data.batch_size,
         num_workers=cfg.data.num_workers,
     )
 
-    val_dataset = SphereValDataset(cfg, gt_folder=None)
+    val_dataset = SphereValDataset(cfg, gt_folder=cfg.gt_folder)
     val_loader = DataLoader(
         val_dataset,
         batch_size=1,

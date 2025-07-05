@@ -235,7 +235,31 @@ def main(cfg):
     # Metadata for all images
     metadata = []
     image_idx = 0
+
+    # Store camera metadata
+    camera_metadata = []
+    for cam_idx, camera_dict in enumerate(camera_dicts):
+        c2w = get_c2w(camera_dict)
+        camera_metadata.append({
+            "camera_id": cam_idx,
+            "position": camera_dict["position"],
+            "look_at": look_at,
+            "up": up,
+            "distance": camera_distance,
+            "camera_angle_x": camera_angle_x,
+            "focal": focal,
+            "c2w_matrix": c2w.tolist()
+        })
     
+    # Store emitter metadata
+    emitter_metadata = []
+    for light_idx, light_pos in enumerate(light_positions):
+        emitter_metadata.append({
+            "emitter_id": light_idx,
+            "position": light_pos["position"],
+            "intensity": [50.0, 50.0, 50.0],
+            "distance": light_distance
+        })
     with torch.no_grad():
         for cam_idx, camera_dict in tqdm(enumerate(camera_dicts), total=len(camera_dicts), desc="Processing cameras"):
             # Generate camera-to-world matrix
@@ -252,36 +276,31 @@ def main(cfg):
                 gt_params = torch.zeros(1).cuda()
                 rgbs_gt, *_ = gt_renderer.render(emitter, rays, light_idx_tensor, cfg.renderer.spp.test, gt_params, None)
                 
-                # Reshape and apply gamma correction
+                # Reshape and save before gamma correction
                 img_gt = rgbs_gt.reshape(*resolution, -1)
+                
+                # Save linear image (before gamma)
+                linear_filename = f"image_{image_idx:06d}_original.png"
+                torchvision.utils.save_image(
+                    img_gt.permute(2, 0, 1), 
+                    os.path.join(output_dir, linear_filename)
+                )
+                
+                # Apply gamma correction
                 img_gt_gamma = gamma(img_gt)
                 
-                # Save image
+                # Save gamma-corrected image
                 image_filename = f"image_{image_idx:06d}.png"
                 torchvision.utils.save_image(
                     img_gt_gamma.permute(2, 0, 1), 
                     os.path.join(output_dir, image_filename)
                 )
-                
                 # Store metadata
                 metadata.append({
                     "image_id": image_idx,
                     "filename": image_filename,
-                    "camera": {
-                        "position": camera_dict["position"],
-                        "look_at": camera_dict["look_at"],
-                        "up": camera_dict["up"],
-                        "theta": camera_dict["theta"],
-                        "phi": camera_dict["phi"],
-                        "focal": focal,
-                        "resolution": resolution
-                    },
-                    "emitter": {
-                        "position": light_pos["position"],
-                        "intensity": light_pos["intensity"],
-                        "theta": light_pos["theta"],
-                        "phi": light_pos["phi"]
-                    }
+                    "camera_id": cam_idx,
+                    "emitter_id": light_idx
                 })
                 
                 image_idx += 1
@@ -290,6 +309,16 @@ def main(cfg):
     metadata_filename = os.path.join(output_dir, "metadata.json")
     with open(metadata_filename, 'w') as f:
         json.dump(metadata, f, indent=2, default=lambda x: list(x) if hasattr(x, '__iter__') and not isinstance(x, (str, bytes)) else str(x))
+        
+    # Save camera metadata to separate JSON file
+    camera_metadata_filename = os.path.join(output_dir, "camera_metadata.json")
+    with open(camera_metadata_filename, 'w') as f:
+        json.dump(camera_metadata, f, indent=2, default=lambda x: list(x) if hasattr(x, '__iter__') and not isinstance(x, (str, bytes)) else str(x))
+    
+    # Save emitter metadata to separate JSON file
+    emitter_metadata_filename = os.path.join(output_dir, "emitter_metadata.json")
+    with open(emitter_metadata_filename, 'w') as f:
+        json.dump(emitter_metadata, f, indent=2, default=lambda x: list(x) if hasattr(x, '__iter__') and not isinstance(x, (str, bytes)) else str(x))
     
     print(f"==> Generated {len(metadata)} reference images")
     print(f"==> Images saved to: {output_dir}")
