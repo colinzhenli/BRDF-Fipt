@@ -71,7 +71,6 @@ def to_world(rays_d,c2w,ray_diff,k):
         return rays_x,NF.normalize(rays_d,dim=-1)
 
 
-
 class RealDataset(Dataset):
     """ Real world capture dataset in structure:
     Scene/
