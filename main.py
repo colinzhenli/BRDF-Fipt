@@ -99,11 +99,11 @@ def main(cfg):
     trainer = pl.Trainer(
         callbacks=[checkpoint_callback, lr_monitor], logger=logger, **cfg.model.trainer
     )
-    # tracer = VizTracer()
-    # tracer.start()
+    tracer = VizTracer()
+    tracer.start()
     trainer.fit(model, train_loader, val_loader)
-    # tracer.stop()
-    # tracer.save(f"svlatent_brdf-class_readin_pbr-texture_model_tracer.json")
+    tracer.stop()
+    tracer.save(f"is_all-pixels_tracer.json")
     """  Skipping testing for now """
     # test_results = trainer.test(model, dataloaders=test_loader)
 
