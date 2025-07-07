@@ -92,6 +92,3 @@ chunk_indices = torch.multinomial(chunk_pdf, N_sample, replacement=True)
 
 This operation happens inside the class `SphereImageDataset(IterableDataset)` and can be a performance bottleneck if the number of chunks (`chunk_pdf`) is large.
 
----
-
-Let me know if you want this converted into a `.sh` script or a `.md` file ready for GitHub.
