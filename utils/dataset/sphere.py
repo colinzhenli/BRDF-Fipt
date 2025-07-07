@@ -256,6 +256,7 @@ class SphereImageDataset(IterableDataset):
         self.rays_num = cfg.data.rays_num
         self.num_view_batch = cfg.renderer.camera.views_per_batch
         self.importance_sampling = cfg.data.importance_sampling
+        self.use_single_chunk_sampling = cfg.data.use_single_chunk_sampling
         # Load metadata
         self.gt_folder = gt_folder
         self.img_hw = cfg.renderer.resolution
@@ -292,7 +293,7 @@ class SphereImageDataset(IterableDataset):
         # Filter metadata based on split
         self.metadata = [self.metadata[i] for i in selected_indices] # used 10 images for training debug
         
-        self.all_rays, self.all_rgbs, self.all_emitter_ids = self.preload_rays_and_rgbs()
+        self.all_rays, self.all_rgbs, self.all_emitter_ids, self.all_pdf = self.preload_rays_and_rgbs()
         
         
 
@@ -353,9 +354,25 @@ class SphereImageDataset(IterableDataset):
             
             
         
-        return (torch.cat(all_rays), 
-                torch.cat(all_rgbs), 
-                torch.cat(all_emitter_ids))
+        # Concatenate all data
+        rays = torch.cat(all_rays)
+        rgbs = torch.cat(all_rgbs)
+        emitter_ids = torch.cat(all_emitter_ids)
+        # Calculate luminance for importance sampling
+        luminance = (0.2126 * rgbs[..., 0] +
+                    0.7152 * rgbs[..., 1] +
+                    0.0722 * rgbs[..., 2])         # (N_tot,)
+        luminance = torch.abs(luminance)
+        pdf = luminance.detach() / luminance.sum()               # p_i  (no grad)
+
+        
+        # Randomly permute the data
+        perm_indices = torch.randperm(rays.shape[0])
+        rays = rays[perm_indices]
+        rgbs = rgbs[perm_indices]
+        emitter_ids = emitter_ids[perm_indices]
+        
+        return (rays, rgbs, emitter_ids, pdf)
 
     def sampler(self, rgbs_gt):
         """Set the importance sampler to use for ray sampling"""
@@ -363,12 +380,8 @@ class SphereImageDataset(IterableDataset):
             # --------------------------------------------------------------
             # 5-A  Build luminance-pdf and draw importance samples
             # --------------------------------------------------------------
-            luminance = (0.2126 * rgbs_gt[..., 0] +
-                        0.7152 * rgbs_gt[..., 1] +
-                        0.0722 * rgbs_gt[..., 2])         # (N_tot,)
-            luminance = torch.abs(luminance)
-            pdf = luminance.detach() / luminance.sum()               # p_i  (no grad)
             # pdf = luminance.detach()
+            pdf = self.all_pdf
             if not torch.isfinite(pdf).all():                               # all-black fallback
                 pdf = torch.full_like(pdf, 1.0 / pdf.numel())
 
@@ -381,41 +394,64 @@ class SphereImageDataset(IterableDataset):
                 # Small enough to sample directly
                 sample_idx = torch.multinomial(pdf, N_sample, replacement=True)
             else:
-                # Calculate number of chunks and samples per chunk
-                num_chunks = (len(pdf) + chunk_size - 1) // chunk_size  # Ceiling division
-                samples_per_chunk = N_sample // num_chunks
-                remaining_samples = N_sample % num_chunks  # Extra samples for last chunk
+                # Option 1: Sample from all chunks (original behavior)
+                # Option 2: Sample from one random chunk only (to reduce cost)
+                use_single_chunk = getattr(self, 'use_single_chunk_sampling', False)
                 
-                # Loop over each chunk
-                for chunk_idx in range(num_chunks):
-                    start_idx = chunk_idx * chunk_size
+                if use_single_chunk:
+                    # Randomly select one chunk and sample all rays from it
+                    num_chunks = (len(pdf) + chunk_size - 1) // chunk_size  # Ceiling division
+                    selected_chunk_idx = torch.randint(0, num_chunks, (1,)).item()
+                    
+                    start_idx = selected_chunk_idx * chunk_size
                     end_idx = min(start_idx + chunk_size, len(pdf))
                     chunk_pdf = pdf[start_idx:end_idx]
                     
-                    # Skip chunks where all pdf values are 0
+                    # Skip if chunk has all zero pdf values
                     if chunk_pdf.sum() == 0:
-                        continue
-                    
-                    # Determine number of samples for this chunk
-                    if chunk_idx == num_chunks - 1:
-                        # Last chunk gets remaining samples
-                        chunk_samples = samples_per_chunk + remaining_samples
+                        # Fallback to uniform sampling from this chunk
+                        chunk_indices = torch.randint(0, len(chunk_pdf), (N_sample,))
                     else:
-                        chunk_samples = samples_per_chunk
+                        chunk_indices = torch.multinomial(chunk_pdf, N_sample, replacement=True)
                     
-                    if chunk_samples > 0:
-                        chunk_indices = torch.multinomial(chunk_pdf, chunk_samples, replacement=True)
-                        # Adjust indices to global indexing
-                        global_indices = chunk_indices + start_idx
-                        sample_idx.append(global_indices)
-                
-                sample_idx = torch.cat(sample_idx) if sample_idx else torch.empty(0, dtype=torch.long)
-                
-                # If we still need more samples, fill remaining with uniform sampling
-                if len(sample_idx) < N_sample:
-                    remaining = N_sample - len(sample_idx)
-                    uniform_indices = torch.randint(0, len(pdf), (remaining,))
-                    sample_idx = torch.cat([sample_idx, uniform_indices])
+                    # Adjust indices to global indexing
+                    sample_idx = chunk_indices + start_idx
+                else:
+                    # Original behavior: sample from all chunks
+                    num_chunks = (len(pdf) + chunk_size - 1) // chunk_size  # Ceiling division
+                    samples_per_chunk = N_sample // num_chunks
+                    remaining_samples = N_sample % num_chunks  # Extra samples for last chunk
+                    
+                    # Loop over each chunk
+                    for chunk_idx in range(num_chunks):
+                        start_idx = chunk_idx * chunk_size
+                        end_idx = min(start_idx + chunk_size, len(pdf))
+                        chunk_pdf = pdf[start_idx:end_idx]
+                        
+                        # Skip chunks where all pdf values are 0
+                        if chunk_pdf.sum() == 0:
+                            continue
+                        
+                        # Determine number of samples for this chunk
+                        if chunk_idx == num_chunks - 1:
+                            # Last chunk gets remaining samples
+                            chunk_samples = samples_per_chunk + remaining_samples
+                        else:
+                            chunk_samples = samples_per_chunk
+                        
+                        if chunk_samples > 0:
+                            chunk_indices = torch.multinomial(chunk_pdf, chunk_samples, replacement=True)
+                            # Adjust indices to global indexing
+                            global_indices = chunk_indices + start_idx
+                            sample_idx.append(global_indices)
+                    
+                    sample_idx = torch.cat(sample_idx) if sample_idx else torch.empty(0, dtype=torch.long)
+                    
+                    # If we still need more samples, fill remaining with uniform sampling
+                    if len(sample_idx) < N_sample:
+                        remaining = N_sample - len(sample_idx)
+                        uniform_indices = torch.randint(0, len(pdf), (remaining,))
+                        sample_idx = torch.cat([sample_idx, uniform_indices])
             
             return sample_idx, pdf[sample_idx] * len(pdf)
         else:

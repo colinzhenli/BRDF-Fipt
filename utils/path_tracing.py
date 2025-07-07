@@ -142,9 +142,9 @@ def batched_path_tracing_preset_emitter(scene,emitter_net,material_net,rays_o,ra
     device = rays_o.device
     
     # sample camera ray
-    # du,dv = torch.rand(2,len(rays_o),spp,1,device=device)-0.5
-    # wi = NF.normalize(rays_d[:,None]+dx_du[:,None]*du+dy_dv[:,None]*dv,dim=-1).reshape(-1,3)
-    wi = rays_d
+    du,dv = torch.rand(2,len(rays_o),spp,1,device=device)-0.5
+    wi = NF.normalize(rays_d[:,None]+dx_du[:,None]*du+dy_dv[:,None]*dv,dim=-1).reshape(-1,3)
+    # wi = rays_d
     # Add mask for wi z component
     position = rays_o.repeat_interleave(spp,0)
     

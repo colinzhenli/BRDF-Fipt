@@ -1,10 +1,11 @@
 train_num: 44
 val_num: 9
 test_num: 1
-num_workers: 2
+num_workers: 8
 # batch_num: 2048 #4096 # steps per epoch
 rays_num: 32768  # pixels per batch
 importance_sampling: True
+use_single_chunk_sampling: False
 uniform_sampling: False
 importance_sampling_num: 32768 # number of pixels to sample with importance sampling
 batch_size: 1 # equal to train_num

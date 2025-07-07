@@ -14,7 +14,7 @@
             "console": "integratedTerminal",
             "justMyCode": true,
             "env": {
-                "CUDA_VISIBLE_DEVICES": "2"
+                "CUDA_VISIBLE_DEVICES": "1"
             },
             "args": [
                 "renderer=realcapture_emitter",
