@@ -103,7 +103,7 @@ def main(cfg):
     tracer.start()
     trainer.fit(model, train_loader, val_loader)
     tracer.stop()
-    tracer.save(f"is_all-pixels_tracer.json")
+    tracer.save(f"is_all-pixels_tracer_sampler.json")
     """  Skipping testing for now """
     # test_results = trainer.test(model, dataloaders=test_loader)
 

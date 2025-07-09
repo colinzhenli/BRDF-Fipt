@@ -16,7 +16,7 @@ camera:
   spiral_path: False
 
 emitter:
-  type: "dynamicpoint"
+  type: "presetpoint"
   dist: 4.0
   num_lights: 1
   theta_angle: 80.0 # used during validation and testing

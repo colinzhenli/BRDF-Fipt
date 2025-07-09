@@ -167,6 +167,7 @@ class BRDFTrainer(pl.LightningModule):
         # 1. Un-pack inputs
         # ------------------------------------------------------------------
         rays, rgbs_gt, emitter_ids, weighted_pdf = batch['rays'], batch['rgbs'], batch['emitter_ids'], batch['pdf']
+        print("rays",rays.shape)
         # forward renders
         rgbs, vis, ray_params = self.renderer.render(self.emitter, rays, emitter_ids, self.cfg.renderer.spp.train,
                                         None, None)                       # f(r)

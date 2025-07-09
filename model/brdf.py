@@ -1175,15 +1175,17 @@ class SvLatentModel(LightningModule):
         local_normal = torch.zeros_like(wi_local)
         local_normal[..., 2] = 1.0  # Normal is always (0,0,1) in local space
         # Split latent into three parts for RGB channels
+        '''
         latent_dim = latent.shape[-1] // 3
         latent_r = latent[..., :latent_dim]
         latent_g = latent[..., latent_dim:2*latent_dim]
         latent_b = latent[..., 2*latent_dim:]
+        '''
         
         # Get BRDF value for each channel
-        brdf_r = self.forward(pos, wi_local, wo_local, local_normal, latent_r, batch_mask)
-        brdf_g = self.forward(pos, wi_local, wo_local, local_normal, latent_g, batch_mask)
-        brdf_b = self.forward(pos, wi_local, wo_local, local_normal, latent_b, batch_mask)
+        brdf_r = self.forward(pos, wi_local, wo_local, local_normal, None, batch_mask)
+        brdf_g = self.forward(pos, wi_local, wo_local, local_normal, None, batch_mask)
+        brdf_b = self.forward(pos, wi_local, wo_local, local_normal, None, batch_mask)
         
         # Combine channels
         brdf = torch.cat([brdf_r, brdf_g, brdf_b], dim=-1)

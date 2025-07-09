@@ -4,8 +4,11 @@ from torchvision import transforms as TF
 from torch.utils.data import Dataset, IterableDataset
 import json
 import numpy as np
+from torch.utils.data import get_worker_info
+import threading
 import os
 os.environ["OPENCV_IO_ENABLE_OPENEXR"]="1"
+from viztracer import VizTracer
 from PIL import Image
 from torchvision import transforms as T
 from tqdm import tqdm
@@ -294,6 +297,11 @@ class SphereImageDataset(IterableDataset):
         self.metadata = [self.metadata[i] for i in selected_indices] # used 10 images for training debug
         
         self.all_rays, self.all_rgbs, self.all_emitter_ids, self.all_pdf = self.preload_rays_and_rgbs()
+
+        self.all_rays=self.all_rays[:len(self.all_rays)//4].cuda()
+        self.all_rgbs=self.all_rgbs[:len(self.all_rays)//4].cuda()
+        self.all_emitter_ids=self.all_emitter_ids[:len(self.all_rays)//4].cuda()
+        self.all_pdf=self.all_pdf[:len(self.all_rays)//4].cuda()
         
         
 
@@ -374,6 +382,16 @@ class SphereImageDataset(IterableDataset):
         
         return (rays, rgbs, emitter_ids, pdf)
 
+    def which_thread(self):
+        worker_info = get_worker_info()
+        pid = os.getpid()
+        thread_id = threading.get_ident()
+
+        if worker_info is None:
+            print(f"[主线程] pid={pid}, thread_id={thread_id}")
+        else:
+            print(f"[DataLoader worker线程] worker_id={worker_info.id}, pid={pid}, thread_id={thread_id}")
+
     def sampler(self, rgbs_gt):
         """Set the importance sampler to use for ray sampling"""
         if self.importance_sampling:
@@ -382,12 +400,20 @@ class SphereImageDataset(IterableDataset):
             # --------------------------------------------------------------
             # pdf = luminance.detach()
             pdf = self.all_pdf
-            if not torch.isfinite(pdf).all():                               # all-black fallback
-                pdf = torch.full_like(pdf, 1.0 / pdf.numel())
+            #print("pdf",self.all_pdf.shape)
+            print("rgb_device",self.all_rgbs.device)
+            print("pdf_device",self.all_pdf.device)
+            #if not torch.isfinite(pdf).all():                               # all-black fallback
+            #    pdf = torch.full_like(pdf, 1.0 / pdf.numel())
+            total = pdf.sum()
+            print("total",total)
+            if not torch.isfinite(total):
+                pdf.fill_(1.0 / pdf.numel())
 
             N_sample = self.rays_num
             # Use chunked sampling to avoid memory issues with large datasets
             chunk_size = min(15000000, len(pdf))  # Process in chunks of 10M or less
+            #chunk_size = min(30000000, len(pdf))
             sample_idx = []
             
             if len(pdf) <= chunk_size:
@@ -440,7 +466,14 @@ class SphereImageDataset(IterableDataset):
                             chunk_samples = samples_per_chunk
                         
                         if chunk_samples > 0:
+                            #self.which_thread()
+
+                            #tracer = VizTracer()
+                            #tracer.start()
                             chunk_indices = torch.multinomial(chunk_pdf, chunk_samples, replacement=True)
+                            #tracer.stop()
+                            #tracer.save(f"is_all-pixels_tracer_sampler.json")
+                            
                             # Adjust indices to global indexing
                             global_indices = chunk_indices + start_idx
                             sample_idx.append(global_indices)
@@ -465,13 +498,18 @@ class SphereImageDataset(IterableDataset):
     def __iter__(self):
         while True:
             if self.sampler is not None:
+            #if False:
                 # Use importance sampler
+                #tracer = VizTracer()
+                #tracer.start()
                 ray_indices, pdf = self.sampler(self.all_rgbs)
+                #tracer.stop()
+                #tracer.save(f"is_all-pixels_tracer_sampler.json")   
             else:
                 # Fallback to uniform sampling
                 ray_indices = torch.randint(0, len(self.all_rays), (self.rays_num,))
                 pdf = torch.ones(self.rays_num) / len(self.all_rays)
-
+            
             rays = self.all_rays[ray_indices]
             rgbs = self.all_rgbs[ray_indices]
             emitter_ids = self.all_emitter_ids[ray_indices]
@@ -485,7 +523,7 @@ class SphereImageDataset(IterableDataset):
             }
 
 
-class SphereValDataset(Dataset):
+class SphereValDataset(Dataset):  
     """ validation dataset that loads images from metadata, returns complete images """
     def __init__(self, cfg, gt_folder):
         self.cfg = cfg
