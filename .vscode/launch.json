@@ -6,22 +6,39 @@
     // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
     "version": "0.2.0",
     "configurations": [
+        // {
+        //     "name": "Python: Current File",
+        //     "type": "python",
+        //     "request": "launch",
+        //     "program": "main.py",
+        //     "console": "integratedTerminal",
+        //     "justMyCode": true,
+        //     "env": {
+        //         "CUDA_VISIBLE_DEVICES": "1"
+        //     },
+        //     "args": [
+        //         "renderer=realcapture_emitter",
+        //         "material=ani_latent_texture_model",
+        //         "experiment_name=Sample-all-images_debug_1",
+        //         // "model.ckpt_path=/mnt/data/colin/colin/output/BRDF-Fipt/Over-fit_experiments_2/sphere/Theia2_Scale-1.0_Correct-cameras_Pixel-center-rays_Latent-grid-2048-2048-8_run_1/training/model_0.20_0.20/last.ckpt",
+        //         // "test_on_train=False"
+        //     ]
+        // },
         {
-            "name": "Python: Current File",
+            "name": "COLMAP Quick",
             "type": "python",
             "request": "launch",
-            "program": "main.py",
+            "program": "colmap_quick.py",
             "console": "integratedTerminal",
             "justMyCode": true,
             "env": {
-                "CUDA_VISIBLE_DEVICES": "1"
+                "CUDA_VISIBLE_DEVICES": "2"
             },
             "args": [
-                "renderer=realcapture_emitter",
-                "material=ani_latent_texture_model",
-                "experiment_name=Sample-all-images_debug_1",
-                // "model.ckpt_path=/mnt/data/colin/colin/output/BRDF-Fipt/Over-fit_experiments_2/sphere/Theia2_Scale-1.0_Correct-cameras_Pixel-center-rays_Latent-grid-2048-2048-8_run_1/training/model_0.20_0.20/last.ckpt",
-                // "test_on_train=False"
+                "--images", "/mnt/data/colin/colin/BRDF-Fipt/south-building/images",
+                "--workdir", "/mnt/data/colin/colin/BRDF-Fipt/south-building/colmap_output",
+                "--camera_file", "/mnt/data/colin/colin/BRDF-Fipt/south-building/sparse/cameras.txt",
+                "--output_mesh", "/mnt/data/colin/colin/BRDF-Fipt/south-building/mesh.ply"
             ]
         }
     ]

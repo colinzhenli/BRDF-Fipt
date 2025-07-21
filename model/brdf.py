@@ -412,7 +412,7 @@ class SvPBRBRDF(nn.Module):
         return brdf, pdf
 
 
-    def eval_brdf(self, params, pos, wi, wo, normal, latent=None, batch_mask=None):
+    def eval_brdf(self, params, pos, wi, wo, normal,uv, latent=None, batch_mask=None):
         NoL = (wi*normal).sum(-1, keepdim=True)
         NoV = (wo*normal).sum(-1, keepdim=True)
         valid_geometry = (NoL > 0) & (NoV > 0)
@@ -428,7 +428,9 @@ class SvPBRBRDF(nn.Module):
         new_h = int(H * factor)
         new_w = int(W * factor)
         params = params[:, crop_h:crop_h+new_h, crop_w:crop_w+new_w, :]
-        uv = compute_uv(pos, 0.8, 0.8)
+        uv_fake = compute_uv(pos, 0.8, 0.8)
+        print("uv_fake",uv_fake.shape)
+        print("uv",uv.shape)
         # Step 1: TBN frame
         T, B, N_geo = compute_tbn(pos, uv, 0.8, 0.8)
         # Step 2: Texture sampling
@@ -444,6 +446,7 @@ class SvPBRBRDF(nn.Module):
             aniso_rot = sampled_texture[:, 12:15]              # Anisotropy rotation
             aniso_str = sampled_texture[:, 15:18]              # Anisotropy strength
             normal_local = sampled_texture[:, 18:21]           # Normal channels (DX)
+            
             
             # Extract material properties
             roughness = roughness_map                          # Use dedicated roughness map
@@ -1097,7 +1100,7 @@ class SvLatentModel(LightningModule):
         layers.append(nn.LeakyReLU(0.2))
         
         self.mlp = nn.Sequential(*layers)
-        self.pbr_texture = load_pbr_texture('/mnt/data/colin/colin/BRDF-Fipt/fabric_pattern_07_4k/textures').unsqueeze(0).cuda()
+        self.pbr_texture = load_pbr_texture('/mnt/data/haoran/BRDF-Flit/pbr_texture_denim/textures_denim').unsqueeze(0).cuda()
 
         # Initialize proxy BRDF for importance sampling
         self.proxy_brdf = ProxyPBRBRDF()  # Default roughness
@@ -1175,15 +1178,17 @@ class SvLatentModel(LightningModule):
         local_normal = torch.zeros_like(wi_local)
         local_normal[..., 2] = 1.0  # Normal is always (0,0,1) in local space
         # Split latent into three parts for RGB channels
+        '''
         latent_dim = latent.shape[-1] // 3
         latent_r = latent[..., :latent_dim]
         latent_g = latent[..., latent_dim:2*latent_dim]
         latent_b = latent[..., 2*latent_dim:]
+        '''
         
         # Get BRDF value for each channel
-        brdf_r = self.forward(pos, wi_local, wo_local, local_normal, latent_r, batch_mask)
-        brdf_g = self.forward(pos, wi_local, wo_local, local_normal, latent_g, batch_mask)
-        brdf_b = self.forward(pos, wi_local, wo_local, local_normal, latent_b, batch_mask)
+        brdf_r = self.forward(pos, wi_local, wo_local, local_normal, None, batch_mask)
+        brdf_g = self.forward(pos, wi_local, wo_local, local_normal, None, batch_mask)
+        brdf_b = self.forward(pos, wi_local, wo_local, local_normal, None, batch_mask)
         
         # Combine channels
         brdf = torch.cat([brdf_r, brdf_g, brdf_b], dim=-1)
@@ -1771,7 +1776,7 @@ class AnisotropicLatentTexturedModel(LightningModule):
 
         return v_local
     
-    def eval_brdf(self, gt_params, pos, wi, wo, normal, latent=None, batch_mask=None):
+    def eval_brdf(self, gt_params, pos, wi, wo, normal,uv, latent=None, batch_mask=None):
         """
         Evaluate BRDF and pdf after transforming world-space vectors to local space.
         Args:
@@ -1807,7 +1812,7 @@ class AnisotropicLatentTexturedModel(LightningModule):
             new_h = int(H * factor)
             new_w = int(W * factor)
             params = params[:, crop_h:crop_h+new_h, crop_w:crop_w+new_w, :]
-            uv = compute_uv(pos, 0.8, 0.8)
+            #uv = compute_uv(pos, 0.8, 0.8)
             # Step 1: TBN frame
             T, B, N_geo = compute_tbn(pos, uv, 0.8, 0.8)
             # Step 2: Texture sampling
