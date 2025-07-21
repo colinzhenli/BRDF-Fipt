@@ -1,5 +1,6 @@
 import torch
 from utils.path_tracing import path_tracing_envmap_emitter, batched_path_tracing_dynamic_emitter, batched_path_tracing_preset_emitter
+from utils.scene_loader import load_uv_obj_to_mitsuba_scene
 from mitsuba import load_dict
 import mitsuba as mi
 from model.emitter import EnvMapEmitter, DynamicPointEmitter
@@ -7,6 +8,7 @@ class ForwardRenderer:
     def __init__(self, cfg, material):
         self.cfg = cfg
         self.device = 'cuda'
+        '''
         self.scene = load_dict({
             "type": "scene",
             "shape_id": {
@@ -18,8 +20,11 @@ class ForwardRenderer:
                 "flip_normals": False
             }
         })
+        '''
+        self.scene=load_uv_obj_to_mitsuba_scene()
         self.material = material.to(self.device)
 
+        print("type",cfg.renderer.emitter.type)
         if cfg.renderer.emitter.type == 'envmap':
             self.ray_tracer = path_tracing_envmap_emitter
         elif cfg.renderer.emitter.type == 'presetpoint':

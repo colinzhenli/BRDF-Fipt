@@ -465,6 +465,7 @@ class SphereImageDataset(IterableDataset):
     def __iter__(self):
         while True:
             if self.sampler is not None:
+            #if False:
                 # Use importance sampler
                 ray_indices, pdf = self.sampler(self.all_rgbs)
             else:

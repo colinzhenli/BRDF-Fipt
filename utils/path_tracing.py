@@ -18,6 +18,7 @@ def ray_intersect(scene,xs,ds):
         idx: B triangle indices, -1 indicates no intersection
         valid: B whether a valid intersection
     """
+
     # convert pytorch tensor to mitsuba
     xs_mi = mitsuba.Point3f(xs[...,0],xs[...,1],xs[...,2])
     ds_mi = mitsuba.Vector3f(ds[...,0],ds[...,1],ds[...,2])
@@ -28,7 +29,7 @@ def ray_intersect(scene,xs,ds):
     ret = ret.compute_surface_interaction(rays_mi)
     
     positions = ret.p.torch()
-    normals = ret.n.torch()
+    normals = ret.sh_frame.n.torch()
     normals = NF.normalize(normals,dim=-1)
     
     # check if invalid intersection
@@ -36,6 +37,9 @@ def ray_intersect(scene,xs,ds):
     valid = (~ts.isinf())
     
     idx[~valid] = -1
+    #normals[:,0]=0
+    #normals[:,1]=1
+    #normals[:,2]=0
     normals = double_sided(-ds,normals)
     return positions,normals,ret.uv.torch(),idx,valid
 
@@ -149,14 +153,16 @@ def batched_path_tracing_preset_emitter(scene,emitter_net,material_net,rays_o,ra
     position = rays_o.repeat_interleave(spp,0)
     
     # compute first intersection
-    position,normal,_, _,vis = ray_intersect(scene,position,wi)
+    position,normal,uv, _,vis = ray_intersect(scene,position,wi)
     # position, normal, vis = ray_sphere_intersect(scene,position,wi)
     L = torch.zeros(vis.shape[0],3,device=device)
     if not vis.any():
         print("No valid intersection")
         return L.reshape(N,spp,3).mean(1), None, None
     position = position[vis]
+    normal_raw=normal
     normal = normal[vis]
+    uv=uv[vis]
     batch_mask = batch_mask[vis]
     wo = -wi[vis]
     light_id = light_id[vis]
@@ -172,9 +178,14 @@ def batched_path_tracing_preset_emitter(scene,emitter_net,material_net,rays_o,ra
     emit_weight = emit_weight*emit_vis*G[...,None]/emit_pdf.clamp_min(1e-6)
     
     # Now, reshape and average over light dimension
-    emit_brdf,_ = material_net.eval_brdf(None, position, wi,wo,normal, latent, batch_mask)
+    emit_brdf,_ = material_net.eval_brdf(None, position, wi,wo,normal,uv, latent, batch_mask)
     L[vis] += (emit_brdf*emit_weight)
     ray_params = torch.cat([position, wi, wo], dim=-1)
+
+    emit_vis_raw = torch.zeros((normal_raw.shape[0],1),dtype=emit_vis.dtype, device=emit_vis.device) 
+    emit_vis_raw[vis] = emit_vis
+    #return emit_vis_raw, vis, ray_params
+    #return (normal_raw+1)/2, vis, ray_params
     return L, vis, ray_params
 
 def path_tracing_envmap_emitter(scene,emitter_net,material_net,rays_o,rays_d,dx_du,dy_dv,spp, brdf_sampling, emitter_sampling, gt_params=None, latent=None):
