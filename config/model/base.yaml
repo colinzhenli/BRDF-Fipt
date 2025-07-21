@@ -8,9 +8,9 @@ logger:
 
 trainer:
   accelerator: gpu
-  devices: auto
+  devices: 1
   num_nodes: 1
-  max_epochs: 200           # ← will be respected
+  max_epochs: 50           # ← will be respected
   check_val_every_n_epoch: 20
   limit_train_batches: 512   # ← e.g., 200 iterations per epoch
 
