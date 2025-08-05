@@ -10,9 +10,8 @@ import sys
 from pathlib import Path
 import argparse
 # At the top of main()
-os.environ['CUDA_VISIBLE_DEVICES'] = '1'  # or whatever GPU you want
 
-def run_command(cmd, check=True, capture_output=True):
+def run_command(cmd, check=True, capture_output=False):
     """Run a command and handle errors."""
     print(f"Running: {' '.join(cmd)}")
     if capture_output:
@@ -74,7 +73,7 @@ def main():
             "--database_path", str(database_path),
             "--image_path", str(images_path),
             "--SiftExtraction.use_gpu", "1"
-        ], capture_output=True)  # Don't capture output for this long process
+        ], capture_output=False)  # Don't capture output for this long process
     else:
         # Known camera intrinsics
         print("Using known camera intrinsics")
@@ -143,9 +142,9 @@ def main():
         "colmap", "patch_match_stereo",
         "--workspace_path", str(dense_dir),
         "--workspace_format", "COLMAP",
-        "--PatchMatchStereo.geom_consistency", "1",
-        "--PatchMatchStereo.gpu_index", "0"
-    ])
+        "--PatchMatchStereo.geom_consistency", "true",
+        "--PatchMatchStereo.filter", "true",
+    ], capture_output=False)
     
     # 6. Stereo fusion to create dense point cloud
     print("=== Stereo Fusion ===")
@@ -156,7 +155,7 @@ def main():
         "--workspace_format", "COLMAP",
         "--input_type", "geometric",
         "--output_path", str(dense_ply)
-    ])
+    ], capture_output=False)
     
     # 7. Poisson surface reconstruction
     print("=== Poisson Meshing ===")
