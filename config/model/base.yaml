@@ -8,9 +8,9 @@ logger:
 
 trainer:
   accelerator: gpu
-  devices: auto
+  devices: 1
   num_nodes: 1
-  max_epochs: 200           # ← will be respected
+  max_epochs: 20           # ← will be respected
   check_val_every_n_epoch: 20
   limit_train_batches: 512   # ← e.g., 200 iterations per epoch
 
@@ -26,7 +26,8 @@ checkpoint_monitor:
 optimizer:
   name: Adam # SGD or Adam
   weight_decay: 0.0 # 0.001
-  lr: 0.001
+  # lr: 0.001 
+  lr: 0.001 # used for initial mesh optimization
   inference_lr: 0.001
   inference_steps: 3400
   warmup_steps_ratio: 0.5

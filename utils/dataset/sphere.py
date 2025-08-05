@@ -292,6 +292,7 @@ class SphereImageDataset(IterableDataset):
         
         # Filter metadata based on split
         self.metadata = [self.metadata[i] for i in selected_indices] # used 10 images for training debug
+        #self.metadata = [item for idx, item in enumerate(self.metadata) if idx % 10 == 0]#temporal modification
         
         self.all_rays, self.all_rgbs, self.all_emitter_ids, self.all_pdf = self.preload_rays_and_rgbs()
         
@@ -465,6 +466,7 @@ class SphereImageDataset(IterableDataset):
     def __iter__(self):
         while True:
             if self.sampler is not None:
+            #if False:
                 # Use importance sampler
                 ray_indices, pdf = self.sampler(self.all_rgbs)
             else:

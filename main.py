@@ -8,7 +8,8 @@ import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
 from renderer import ForwardRenderer
 from brdf_trainer import BRDFTrainer
-from model.brdf import SvLatentModel, SvPBRBRDF, LatentTexturedModel, AnisotropicLatentTexturedModel
+from model.brdf import SvPBRBRDF
+from model.neural_brdf import SvLatentModel, LatentTexturedModel, AnisotropicLatentTexturedModel, LearnableSvPBRBRDF
 from torch.utils.data import DataLoader
 from utils.dataset import SphereIterableDataset, SphereValDataset, SphereImageDataset
 import hydra
@@ -49,21 +50,25 @@ def main(cfg):
     # Initialize materials using different configs
     # material_module = importlib.import_module('model.brdf')
     # material = getattr(material_module, cfg.material.type)(cfg)
+    print("before material init")
     if cfg.material.type == "LatentTexturedModel":
         material = LatentTexturedModel(cfg.material)  # MLP model uses mlp_pbr config
     elif cfg.material.type == "SvLatentModel":
         material = SvLatentModel(cfg.material)  # MLP model uses mlp_pbr config
     elif cfg.material.type == "AnisotropicLatentTexturedModel":
         material = AnisotropicLatentTexturedModel(cfg.material)  # MLP model uses mlp_pbr config
+    elif cfg.material.type == "LearnableSvPBRBRDF":
+        material = LearnableSvPBRBRDF(cfg.material)  # MLP model uses mlp_pbr config
     else:
         raise ValueError(f"Invalid material type: {cfg.material.type}")
+    print("after material init")
     gt_material = SvPBRBRDF(
         cfg=gt_material_cfg,
         albedo=torch.tensor(albedo)
     )  # Ground truth uses pbr config
-
+    print("before trainer init")
     model = BRDFTrainer(cfg, material, gt_material, roughness, metallic)
-
+    print("after trainer init")
     print("==> initializing data ...")          
     train_dataset = SphereImageDataset(cfg, gt_folder=cfg.gt_folder, split="train")
     train_loader = DataLoader(
