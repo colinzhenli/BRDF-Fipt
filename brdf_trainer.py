@@ -21,14 +21,13 @@ class BRDFTrainer(pl.LightningModule):
         self.gt_material = gt_material
         self.gt_folder = cfg.gt_folder
         
-        self.latent_dim = cfg.material.latent_dim
+        #self.latent_dim = cfg.material.latent_dim
         # Create a mapping from roughness-metallic pairs to train latent indices
 
-        
         self.latent_reg_weight = cfg.model.latent_reg_weight if hasattr(cfg.model, 'latent_reg_weight') else 1e-4
         self.inference_lr = cfg.model.optimizer.inference_lr
         self.inference_steps = cfg.model.optimizer.inference_steps
-        
+        print("after latent reg weight")
         self.renderer = ForwardRenderer(cfg, self.material)
         self.gt_renderer = ForwardRenderer(cfg, self.gt_material)
         self.emitter = PresetPointEmitter(

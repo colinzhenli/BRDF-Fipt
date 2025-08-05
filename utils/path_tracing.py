@@ -18,6 +18,7 @@ def ray_intersect(scene,xs,ds):
         idx: B triangle indices, -1 indicates no intersection
         valid: B whether a valid intersection
     """
+
     # convert pytorch tensor to mitsuba
     xs_mi = mitsuba.Point3f(xs[...,0],xs[...,1],xs[...,2])
     ds_mi = mitsuba.Vector3f(ds[...,0],ds[...,1],ds[...,2])
@@ -28,7 +29,7 @@ def ray_intersect(scene,xs,ds):
     ret = ret.compute_surface_interaction(rays_mi)
     
     positions = ret.p.torch()
-    normals = ret.n.torch()
+    normals = ret.sh_frame.n.torch()
     normals = NF.normalize(normals,dim=-1)
     
     # check if invalid intersection
@@ -36,8 +37,34 @@ def ray_intersect(scene,xs,ds):
     valid = (~ts.isinf())
     
     idx[~valid] = -1
+    #normals[:,0]=0
+    #normals[:,1]=1
+    #normals[:,2]=0
     normals = double_sided(-ds,normals)
     return positions,normals,ret.uv.torch(),idx,valid
+
+def ray_intersect_with_tbn(scene, xs, ds):
+    xs_mi = mitsuba.Point3f(xs[...,0], xs[...,1], xs[...,2])
+    ds_mi = mitsuba.Vector3f(ds[...,0], ds[...,1], ds[...,2])
+    rays_mi = mitsuba.Ray3f(xs_mi, ds_mi)
+
+    ret = scene.ray_intersect_preliminary(rays_mi)
+    idx = mitsuba.Int(ret.prim_index).torch().long()
+    ret = ret.compute_surface_interaction(rays_mi)
+
+    positions = ret.p.torch()
+    normals   = NF.normalize(ret.sh_frame.n.torch(), dim=-1)
+
+    tangent   = NF.normalize(ret.dp_du.torch(), dim=-1)
+    bitangent = NF.normalize(torch.cross(normals, tangent), dim=-1)
+    TBN = torch.stack([tangent, bitangent, normals], dim=-1)  # [B, 3, 3]
+
+    ts  = ret.t.torch()
+    valid = (~ts.isinf())
+    idx[~valid] = -1
+    normals = double_sided(-ds, normals)
+
+    return positions, normals, ret.uv.torch(), idx, valid, TBN
 
 def batched_path_tracing_dynamic_emitter(scene,emitter_net,material_net,rays_o,rays_d,dx_du,dy_dv,spp, brdf_sampling, emitter_sampling, gt_params=None, latent=None):
     """ Path trace current scene
@@ -149,14 +176,16 @@ def batched_path_tracing_preset_emitter(scene,emitter_net,material_net,rays_o,ra
     position = rays_o.repeat_interleave(spp,0)
     
     # compute first intersection
-    position,normal,_, _,vis = ray_intersect(scene,position,wi)
+    position,normal,uv, _,vis = ray_intersect(scene,position,wi)
     # position, normal, vis = ray_sphere_intersect(scene,position,wi)
     L = torch.zeros(vis.shape[0],3,device=device)
     if not vis.any():
         print("No valid intersection")
         return L.reshape(N,spp,3).mean(1), None, None
     position = position[vis]
+    normal_raw=normal
     normal = normal[vis]
+    uv=uv[vis]
     batch_mask = batch_mask[vis]
     wo = -wi[vis]
     light_id = light_id[vis]
@@ -172,9 +201,168 @@ def batched_path_tracing_preset_emitter(scene,emitter_net,material_net,rays_o,ra
     emit_weight = emit_weight*emit_vis*G[...,None]/emit_pdf.clamp_min(1e-6)
     
     # Now, reshape and average over light dimension
-    emit_brdf,_ = material_net.eval_brdf(None, position, wi,wo,normal, latent, batch_mask)
-    L[vis] += (emit_brdf*emit_weight)
+    emit_brdf,_ = material_net.eval_brdf(None, position, wi,wo,normal,uv, latent, batch_mask)
+    debug_mode = False
+    if not debug_mode:
+        L[vis] += (emit_brdf*emit_weight)
+    else:
+        L[vis] += torch.tensor([1.0, 0.0, 0.0], device=L.device).expand_as(L[vis])
     ray_params = torch.cat([position, wi, wo], dim=-1)
+
+    emit_vis_raw = torch.zeros((normal_raw.shape[0],1),dtype=emit_vis.dtype, device=emit_vis.device) 
+    emit_vis_raw[vis] = emit_vis
+    #return emit_vis_raw, vis, ray_params
+    #return (normal_raw+1)/2, vis, ray_params
+    return L, vis, ray_params
+
+def batched_path_tracing_dynamic_emitter(scene,emitter_net,material_net,rays_o,rays_d,dx_du,dy_dv,spp, brdf_sampling, emitter_sampling, gt_params=None, latent=None):
+    """ Path trace current scene
+    Args:
+        scene: mitsuba scene
+        emitter_net: emitter object
+        material_net: material object
+        rays_o: BxNx3 ray origin
+        rays_d: BxNx3 ray direction
+        dx_du,dy_dv: BxNx3 ray differential
+        spp: samples per pixel
+        brdf_sampling: boolean flag for BRDF importance sampling
+        emitter_sampling: boolean flag for emitter importance sampling
+        gt_params: optional ground truth material parameters
+        latent: optional batched latent code for material network
+    Return:
+        L: (B*N)x3 traced results unbatched
+    """
+    # flatten the rays
+    # Create batch mask where each row contains the same batch index
+    # For rays with shape B, N, 3, create mask with shape B, N
+    batch_mask = torch.arange(len(rays_o), device=rays_o.device).view(rays_o.shape[0], 1).expand(rays_o.shape[0], rays_o.shape[1])
+    # batch_mask = torch.zeros(len(rays_o), device=rays_o.device)
+    rays_o = rays_o.reshape(-1,3)
+    rays_d = rays_d.reshape(-1,3)
+    dx_du = dx_du.reshape(-1,3)
+    dy_dv = dy_dv.reshape(-1,3)
+    batch_mask = batch_mask.reshape(-1)
+    N = len(rays_o)
+    N_lights = emitter_net.num_lights
+    device = rays_o.device
+    
+    # sample camera ray
+    # du,dv = torch.rand(2,len(rays_o),spp,1,device=device)-0.5
+    # wi = NF.normalize(rays_d[:,None]+dx_du[:,None]*du+dy_dv[:,None]*dv,dim=-1).reshape(-1,3)
+    wi = rays_d
+    # Add mask for wi z component
+    position = rays_o.repeat_interleave(spp,0)
+    
+    # compute first intersection
+    position,normal,_, _,vis = ray_intersect(scene,position,wi)
+    # position, normal, vis = ray_sphere_intersect(scene,position,wi)
+    L = torch.zeros(vis.shape[0],3,device=device)
+    if not vis.any():
+        print("No valid intersection")
+        return L.reshape(N,spp,3).mean(1), None, None
+    position = position[vis]
+    normal = normal[vis]
+    batch_mask = batch_mask[vis]
+    wo = -wi[vis]
+    
+    # deterministic sampling
+    wi,emit_pdf, emit_position, idx = emitter_net.sample_emitter(position)
+    normal = normal.repeat_interleave(emitter_net.num_lights,0)
+    position = position.repeat_interleave(emitter_net.num_lights,0)
+    wo = wo.repeat_interleave(emitter_net.num_lights,0)
+    batch_mask = batch_mask.repeat_interleave(emitter_net.num_lights,0)
+    # visibility test
+    emit_weight,_,_ = emitter_net.eval_emitter(emit_position, idx)
+    emit_vis = (wi*normal).sum(-1,keepdim=True) > 0 # B, 1
+    
+    # goemetry term (assume double sided area light)
+    G = 1 / (emit_position-position).pow(2).sum(-1).clamp_min(1e-6) # B, 1
+    emit_weight = emit_weight*emit_vis*G[...,None]/emit_pdf.clamp_min(1e-6)
+    
+    # Now, reshape and average over light dimension
+    emit_brdf,_ = material_net.eval_brdf(gt_params,position, wi,wo,normal, latent, batch_mask)
+    L[vis] += (emit_brdf*emit_weight).reshape(-1, N_lights,3).mean(1)
+    L = L.reshape(N,spp,3).mean(1)
+    ray_params = torch.cat([position, wi, wo], dim=-1)
+    return L, vis, ray_params
+
+def batched_path_tracing_tbn_preset_emitter(scene,emitter_net,material_net,rays_o,rays_d,dx_du,dy_dv, light_id, spp,  brdf_sampling, emitter_sampling, gt_params=None, latent=None):
+    """ Path trace aligned with real capture
+    Args:
+        scene: mitsuba scene
+        emitter_net: emitter object
+        material_net: material object
+        rays_o: BxNx3 ray origin
+        rays_d: BxNx3 ray direction
+        dx_du,dy_dv: BxNx3 ray differential
+        spp: samples per pixel
+        brdf_sampling: boolean flag for BRDF importance sampling
+        emitter_sampling: boolean flag for emitter importance sampling
+        gt_params: optional ground truth material parameters
+        latent: optional batched latent code for material network
+    Return:
+        L: (B*N)x3 traced results unbatched
+    """
+    # flatten the rays
+    # Create batch mask where each row contains the same batch index
+    # For rays with shape B, N, 3, create mask with shape B, N
+    batch_mask = torch.arange(len(rays_o), device=rays_o.device).view(rays_o.shape[0], 1).expand(rays_o.shape[0], rays_o.shape[1])
+    # batch_mask = torch.zeros(len(rays_o), device=rays_o.device)
+    rays_o = rays_o.reshape(-1,3)
+    rays_d = rays_d.reshape(-1,3)
+    light_id = light_id.reshape(-1)
+    dx_du = dx_du.reshape(-1,3)
+    dy_dv = dy_dv.reshape(-1,3)
+    batch_mask = batch_mask.reshape(-1)
+    N = len(rays_o)
+    device = rays_o.device
+    
+    # sample camera ray
+    du,dv = torch.rand(2,len(rays_o),spp,1,device=device)-0.5
+    wi = NF.normalize(rays_d[:,None]+dx_du[:,None]*du+dy_dv[:,None]*dv,dim=-1).reshape(-1,3)
+    # wi = rays_d
+    # Add mask for wi z component
+    position = rays_o.repeat_interleave(spp,0)
+    
+    # compute first intersection
+    position,normal,uv, _,vis, TBN = ray_intersect_with_tbn(scene,position,wi)
+    # position, normal, vis = ray_sphere_intersect(scene,position,wi)
+    L = torch.zeros(vis.shape[0],3,device=device)
+    if not vis.any():
+        print("No valid intersection")
+        return L.reshape(N,spp,3).mean(1), None, None
+    position = position[vis]
+    normal_raw=normal
+    normal = normal[vis]
+    uv=uv[vis]
+    batch_mask = batch_mask[vis]
+    wo = -wi[vis]
+    light_id = light_id[vis]
+    TBN = TBN[vis]
+    
+    # deterministic sampling
+    wi,emit_pdf, emit_position, idx = emitter_net.sample_emitter(position, light_id)
+    # visibility test
+    emit_weight,_,_ = emitter_net.eval_emitter(emit_position, idx)
+    emit_vis = (wi*normal).sum(-1,keepdim=True) > 0 # B, 1
+    
+    # goemetry term (assume double sided area light)
+    G = 1 / (emit_position-position).pow(2).sum(-1).clamp_min(1e-6) # B, 1
+    emit_weight = emit_weight*emit_vis*G[...,None]/emit_pdf.clamp_min(1e-6)
+    
+    # Now, reshape and average over light dimension
+    emit_brdf,_ = material_net.eval_brdf(None, position, wi,wo,normal,uv, TBN, latent, batch_mask)
+    debug_mode = False
+    if not debug_mode:
+        L[vis] += (emit_brdf*emit_weight)
+    else:
+        L[vis] += torch.tensor([1.0, 0.0, 0.0], device=L.device).expand_as(L[vis])
+    ray_params = torch.cat([position, wi, wo], dim=-1)
+
+    emit_vis_raw = torch.zeros((normal_raw.shape[0],1),dtype=emit_vis.dtype, device=emit_vis.device) 
+    emit_vis_raw[vis] = emit_vis
+    #return emit_vis_raw, vis, ray_params
+    #return (normal_raw+1)/2, vis, ray_params
     return L, vis, ray_params
 
 def path_tracing_envmap_emitter(scene,emitter_net,material_net,rays_o,rays_d,dx_du,dy_dv,spp, brdf_sampling, emitter_sampling, gt_params=None, latent=None):

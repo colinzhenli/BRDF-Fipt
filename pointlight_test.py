@@ -134,7 +134,7 @@ def main(cfg):
     os.makedirs(checkpoint_output_path, exist_ok=True)
 
     gt_material_cfg = hydra.compose(config_name="config", overrides=["material=svpbr"]).material  
-    point_emitter_cfg = hydra.compose(config_name="config", overrides=["renderer=dynamicpoint_emitter"])
+    point_emitter_cfg = hydra.compose(config_name="config", overrides=["renderer=realcapture_emitter"])
     albedo = gt_material_cfg.albedo
     roughness = gt_material_cfg.roughness
     metallic = gt_material_cfg.metallic

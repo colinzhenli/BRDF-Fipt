@@ -17,6 +17,8 @@ conda install pytorch==2.0.0 torchvision==0.15.0 torchaudio==2.0.0 pytorch-cuda=
 pip install torch-scatter -f https://data.pyg.org/whl/torch-2.0.0+cu118.html 
 pip install git+https://github.com/NVlabs/tiny-cuda-nn/#subdirectory=bindings/torch
 pip install -r requirements.txt
+pip install bpy==3.6.0 --extra-index-url https://download.blender.org/pypi/
+pip instlal trimesh
 conda install conda-forge::hydra-core
 ```
 
@@ -31,7 +33,6 @@ Run:
 ```bash
 python main.py renderer=dynamicpoint_emitter outfolder=YOUR_OUTPUT_PATH
 ```
-
 This will start a simple training process using direct lighting:
 
 - The object is a unit sphere.
