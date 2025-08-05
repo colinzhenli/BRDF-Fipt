@@ -8,7 +8,8 @@ import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
 from renderer import ForwardRenderer
 from brdf_trainer import BRDFTrainer
-from model.brdf import SvLatentModel, SvPBRBRDF, LatentTexturedModel, AnisotropicLatentTexturedModel
+from model.brdf import SvPBRBRDF
+from model.neural_brdf import SvLatentModel, LatentTexturedModel, AnisotropicLatentTexturedModel, LearnableSvPBRBRDF
 from torch.utils.data import DataLoader
 from utils.dataset import SphereIterableDataset, SphereValDataset, SphereImageDataset
 import hydra
@@ -55,6 +56,8 @@ def main(cfg):
         material = SvLatentModel(cfg.material)  # MLP model uses mlp_pbr config
     elif cfg.material.type == "AnisotropicLatentTexturedModel":
         material = AnisotropicLatentTexturedModel(cfg.material)  # MLP model uses mlp_pbr config
+    elif cfg.material.type == "LearnableSvPBRBRDF":
+        material = LearnableSvPBRBRDF(cfg.material)  # MLP model uses mlp_pbr config
     else:
         raise ValueError(f"Invalid material type: {cfg.material.type}")
     gt_material = SvPBRBRDF(

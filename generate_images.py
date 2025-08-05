@@ -8,14 +8,14 @@ import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
 from renderer import ForwardRenderer
 from brdf_trainer import BRDFTrainer
-from model.brdf import SvPBRBRDF, SvLatentModel, AnisotropicLatentTexturedModel
+from model.brdf import SvPBRBRDF
+from model.neural_brdf import LearnableSvPBRBRDF, SvLatentModel, AnisotropicLatentTexturedModel, LatentTexturedModel
 from model.emitter import DynamicPointEmitter, PresetPointEmitter
 from torch.utils.data import DataLoader
 from itertools import islice
 from utils.dataset import SphereTestDataset, SphereValDataset
 import hydra
 import numpy as np
-from model.brdf import LatentTexturedModel
 from pytorch_lightning.strategies import DDPStrategy
 import importlib
 import warnings
@@ -23,6 +23,7 @@ import logging
 import cv2
 warnings.filterwarnings("ignore")
 logging.getLogger("pytorch_lightning").setLevel(logging.ERROR)
+
 
 def gamma(x: torch.Tensor) -> torch.Tensor:
     """
@@ -51,10 +52,40 @@ def gamma(x: torch.Tensor) -> torch.Tensor:
     return torch.where(x_lin <= _K0, low, high).clamp(0.0, 1.0)
 
 # Generate camera positions uniformly distributed on hemisphere
-def get_camera_dicts(number_of_views, distance, look_at, up):
+def get_camera_dicts(number_of_views, distance, look_at, up, debug_mode=False):
     """Generate camera positions on the +Y hemisphere (y > 0)."""
     camera_dict = []
+    if debug_mode:
+        # Debug mode: 5 specific camera views
+        # 1. Top down view (theta = 0, phi = 0)
+        camera_dict.append({
+            "position": [0.0, distance, 0.0],
+            "look_at":  look_at,
+            "up":       up,
+            "theta":    0.0,
+            "phi":      0.0
+        })
+        
+        # 2-5. Four views at theta = 45 degrees with phi = 0, 90, 180, 270 degrees
+        theta_45 = np.pi / 4.0  # 45 degrees in radians
+        phi_angles = [0.0, np.pi/2.0, np.pi, 3.0*np.pi/2.0]  # 0, 90, 180, 270 degrees
+        
+        for phi in phi_angles:
+            x = distance * np.sin(theta_45) * np.cos(phi)
+            z = distance * np.sin(theta_45) * np.sin(phi)
+            y = distance * np.cos(theta_45)
+            
+            camera_dict.append({
+                "position": [x, y, z],
+                "look_at":  look_at,
+                "up":       up,
+                "theta":    theta_45,
+                "phi":      phi
+            })
+        
+        return camera_dict
     
+    # Original hemisphere distribution
     n_phi   = max(4, int(np.sqrt(max(number_of_views - 1, 1))))
     n_theta = max(2, int(np.ceil((number_of_views - 1) / n_phi)) + 1)
     
@@ -88,9 +119,19 @@ def get_camera_dicts(number_of_views, distance, look_at, up):
     return camera_dict
 
 # Generate light positions uniformly distributed on hemisphere
-def get_light_positions(num_lights, distance):
+def get_light_positions(num_lights, distance, debug_mode=False):
     """Generate light positions uniformly distributed on hemisphere."""
     light_positions = []
+    
+    # Debug mode: only one top-down light
+    if debug_mode:
+        light_positions.append({
+            "position": [0.0, distance, 0.0],
+            "intensity": 50.0,
+            "theta": 0.0,
+            "phi": 0.0
+        })
+        return light_positions
     
     n_phi   = max(4, int(np.sqrt(max(num_lights - 1, 1))))
     n_theta = max(2, int(np.ceil((num_lights - 1) / n_phi)) + 1)
@@ -188,7 +229,8 @@ def init_callbacks(cfg):
 @hydra.main(version_base=None, config_path="config", config_name="config")
 def main(cfg):
     pl.seed_everything(cfg.global_train_seed, workers=True)
-    os.makedirs(cfg.exp_output_root_path, exist_ok=True)
+    if not os.path.exists(cfg.exp_output_root_path):
+        os.makedirs(cfg.exp_output_root_path)
     
     # Setup ground truth material
     gt_material_cfg = hydra.compose(config_name="config", overrides=["material=svpbr"]).material  
@@ -212,8 +254,9 @@ def main(cfg):
     resolution = cfg.renderer.resolution
     
     # Generate camera and light positions
-    camera_dicts = get_camera_dicts(number_of_views, camera_distance, look_at, up)
-    light_positions = get_light_positions(number_of_lights, light_distance)
+    debug_mode = False
+    camera_dicts = get_camera_dicts(number_of_views, camera_distance, look_at, up, debug_mode)
+    light_positions = get_light_positions(number_of_lights, light_distance, debug_mode)
     
     # Setup ray generation
     h, w = resolution
