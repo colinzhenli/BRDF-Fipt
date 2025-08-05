@@ -6,34 +6,24 @@ mi.set_variant("cuda_ad_rgb")  # 或 "scalar_rgb" / "llvm_ad_rgb"
 
 def load_uv_obj_to_mitsuba_scene(obj_path="mesh_test/cube_with_uv.obj"):
     """
-    读取带 UV 的 OBJ 文件，并构造一个 Mitsuba Scene。
+    Load an OBJ file with UV coordinates and construct a Mitsuba Scene.
 
-    参数:
-        obj_path (str): .obj 文件路径，需包含 UV 信息。
-        texture_path (str or None): 可选，贴图图片路径（如 .jpg/.png）。
-        scale (float): 对几何体的缩放比例。
-        rotate_x90 (bool): 是否将几何绕 X 轴旋转 -90°，将其从 Blender 导出的坐标转换到 Mitsuba 的默认方向。
+    Args:
+        obj_path (str): Path to the .obj file, defaults to "mesh_test/cube_with_uv.obj".
 
-    返回:
-        scene (mi.Scene): Mitsuba 场景对象。
+    Returns:
+        scene (mi.Scene): Mitsuba scene object containing the loaded geometry with default diffuse material.
+        
     """
     if not os.path.isfile(obj_path):
         raise FileNotFoundError(f"OBJ 文件不存在: {obj_path}")
+    obj_path = load_and_transform_mesh_trimesh(obj_path)
 
-    swap_yz = mi.ScalarTransform4f.rotate([1, 0, 0], -90)
-
-    # 然后缩放 x 和 y 轴到 0.2 (注意缩放顺序和应用顺序)
-    scale_xy = mi.ScalarTransform4f.scale([0.2, 0.2, -0.2])
-
-    # 先旋转再缩放（矩阵乘法是右乘先执行）
-    #transform = scale_xy @ swap_yz
-    transform = scale_xy
-    
     # 构建形状加载字典
     shape_dict = {
         "type": "obj",
         "filename": obj_path,
-        "to_world": transform
+        # "to_world": transform
     }
 
 
@@ -48,8 +38,77 @@ def load_uv_obj_to_mitsuba_scene(obj_path="mesh_test/cube_with_uv.obj"):
     # 构造场景
     scene_dict = {
         "type": "scene",
-        "shape": shape_dict
+        "shape": shape_dict,
     }
 
     scene = mi.load_dict(scene_dict)
     return scene
+
+# def load_and_transform_mesh(obj_path):
+#     """
+#     Load mesh from obj_path, scale it to 0.2, and move it to origin by computing
+#     the average y axis and moving it toward -y direction, then save the transformed mesh.
+    
+#     Args:
+#         obj_path (str): Path to the input OBJ file
+        
+#     Returns:
+#         str: Path to the transformed mesh file
+#     """
+#     import trimesh
+    
+#     # Load the mesh
+#     mesh = trimesh.load(obj_path)
+    
+#     # Scale the mesh to 0.2
+#     mesh.apply_scale(0.2)
+    
+#     # Compute the average y coordinate
+#     vertices = mesh.vertices
+#     avg_y = np.mean(vertices[:, 1])
+    
+#     # Move the mesh toward -y direction to center it at origin
+#     translation = np.array([0, -avg_y, 0])
+#     mesh.apply_translation(translation)
+    
+#     # Generate output path
+#     output_path = obj_path.replace('.obj', '_transformed.obj')
+    
+#     # Save the transformed mesh
+#     mesh.export(output_path)
+    
+#     return output_path
+
+def load_and_transform_mesh_trimesh(obj_path):
+    """
+    Load mesh from obj_path, scale and transform it to the origin,( scale it to 0.2, and computing the average y axis and moving it toward -y direction), then save the transformed mesh.
+    
+    Args:
+        obj_path (str): Path to the input OBJ file
+        
+    Returns:
+        str: Path to the transformed mesh file
+    """
+    import trimesh
+    
+    # Load the mesh
+    mesh = trimesh.load(obj_path)
+    
+    # Scale the mesh to 0.2
+    mesh.apply_scale(0.2)
+    
+    # Compute the average y coordinate
+    vertices = mesh.vertices
+    avg_y = np.mean(vertices[:, 1])
+    
+    # Move the mesh toward -y direction to center it at origin
+    translation = np.array([0, -avg_y, 0])
+    mesh.apply_translation(translation)
+    
+    # Generate output path
+    output_path = obj_path.replace('.obj', '_transformed.obj')
+    
+    # Save the transformed mesh
+    mesh.export(output_path)
+    
+    return output_path
