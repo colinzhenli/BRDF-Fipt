@@ -45,7 +45,7 @@ def G1_GGX_Schlick(NoV, eta):
     k = (r+1)
     k = k*k/8
     denom = NoV*(1-k)+k
-    return 1 /denom
+    return 1 /(denom + 1e-6)
 
 def G_Smith(NoV,NoL,eta):
     """ Smith shadow masking divided by (NoV*NoL)
@@ -73,7 +73,7 @@ def D_GGX(cos_h,eta):
     alpha2 = alpha*alpha
     denom = (cos_h*cos_h*(alpha2-1.0)+1.0)
     denom = math.pi * denom*denom
-    return alpha2/denom
+    return alpha2/(denom + 1e-6)
 
 def D_GGX_aniso(h, N, T, B, ax, ay):
     Ht = (h * T).sum(-1, keepdim=True)

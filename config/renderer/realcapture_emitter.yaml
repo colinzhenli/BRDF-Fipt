@@ -13,6 +13,8 @@ camera:
   position: [0.0, 0.0, -2.0]
   camera_angle_x: 0.5
 
+mesh:
+  path: "/mnt/data/haoran/BRDF-Flit/mesh/cube_with_uv.obj"
 emitter:
   type: "presetpoint"
   dist: 4.0
