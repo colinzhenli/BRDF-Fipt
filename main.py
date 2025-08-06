@@ -64,9 +64,9 @@ def main(cfg):
         cfg=gt_material_cfg,
         albedo=torch.tensor(albedo)
     )  # Ground truth uses pbr config
-
+    print("before trainer init")
     model = BRDFTrainer(cfg, material, gt_material, roughness, metallic)
-
+    print("after trainer init")
     print("==> initializing data ...")          
     train_dataset = SphereImageDataset(cfg, gt_folder=cfg.gt_folder, split="train")
     train_loader = DataLoader(
@@ -102,11 +102,11 @@ def main(cfg):
     trainer = pl.Trainer(
         callbacks=[checkpoint_callback, lr_monitor], logger=logger, **cfg.model.trainer
     )
-    tracer = VizTracer()
-    tracer.start()
+    # tracer = VizTracer()
+    # tracer.start()
     trainer.fit(model, train_loader, val_loader)
-    tracer.stop()
-    tracer.save(f"is_all-pixels_tracer.json")
+    # tracer.stop()
+    # tracer.save(f"is_all-pixels_tracer.json")
     """  Skipping testing for now """
     # test_results = trainer.test(model, dataloaders=test_loader)
 

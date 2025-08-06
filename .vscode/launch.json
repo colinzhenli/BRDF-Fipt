@@ -10,7 +10,7 @@
             "name": "Python: Current File",
             "type": "python",
             "request": "launch",
-            "program": "initial_mesh.py",
+            "program": "generate_images.py",
             "console": "integratedTerminal",
             "justMyCode": true,
             "env": {
@@ -19,7 +19,7 @@
             "args": [
                 "renderer=realcapture_emitter",
                 "material=learnablesvpbr",
-                "experiment_name=debug",
+                "experiment_name=Downsample_debug",
                 // "model.ckpt_path=/mnt/data/colin/colin/output/BRDF-Fipt/Over-fit_experiments_2/sphere/Theia2_Record-var-No-IS_Leaky-ReLU_4-times-rays_Random-emitter-1-light_512-8-views_Pred-normal_Colorful-texture_3-Latents-same-decoder_Latent-grid-2048-2048-8_run_1/training/model_0.20_0.20/isotropic_last.ckpt",
                 // "test_on_train=False"
             ]
