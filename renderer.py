@@ -8,17 +8,19 @@ class ForwardRenderer:
     def __init__(self, cfg, material):
         self.cfg = cfg
         self.device = 'cuda'
-        # self.scene = load_dict({
-        #     "type": "scene",
-        #     "shape_id": {
-        #         "type": "rectangle",
-        #         "to_world": (
-        #             mi.ScalarTransform4f.rotate([1, 0, 0], -90) @   # xy → xz
-        #             mi.ScalarTransform4f.scale(0.4)                 # 1 m → 0.4 m
-        #         ),
-        #         "flip_normals": False
-        #     }
-        # })
+        '''
+        self.scene = load_dict({
+            "type": "scene",
+            "shape_id": {
+                "type": "rectangle",
+                "to_world": (
+                    mi.ScalarTransform4f.rotate([1, 0, 0], -90) @   # xy → xz
+                    mi.ScalarTransform4f.scale(0.4)                 # 1 m → 0.4 m
+                ),
+                "flip_normals": False
+            }
+        })
+        '''
         self.scene=load_uv_obj_to_mitsuba_scene(cfg.renderer.mesh.path)
         self.material = material.to(self.device)
 
