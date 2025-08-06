@@ -21,14 +21,13 @@ class BRDFTrainer(pl.LightningModule):
         self.gt_material = gt_material
         self.gt_folder = cfg.gt_folder
         
-        self.latent_dim = cfg.material.latent_dim
+        #self.latent_dim = cfg.material.latent_dim
         # Create a mapping from roughness-metallic pairs to train latent indices
 
-        
         self.latent_reg_weight = cfg.model.latent_reg_weight if hasattr(cfg.model, 'latent_reg_weight') else 1e-4
         self.inference_lr = cfg.model.optimizer.inference_lr
         self.inference_steps = cfg.model.optimizer.inference_steps
-        
+        print("after latent reg weight")
         self.renderer = ForwardRenderer(cfg, self.material)
         self.gt_renderer = ForwardRenderer(cfg, self.gt_material)
         self.emitter = PresetPointEmitter(
@@ -251,7 +250,18 @@ class BRDFTrainer(pl.LightningModule):
                 self.gamma(sample_rgbs.permute(2, 0, 1)),
                 os.path.join(output_dir, f'result_view_{batch_idx}_{b}.png')
             )
+            
+        # save the learned pbr normal map
+        pbr_normal_map = self.material.pbr_texture.data[0, :, :, 10:13]
+        torchvision.utils.save_image(
+            pbr_normal_map.permute(2, 0, 1),
+            os.path.join(output_dir, f'pbr_normal_map_{batch_idx}_{b}.png')
+        )
         
         self.log('val/loss', loss)
         self.log('val/psnr', psnr)        
         return
+
+    def on_train_batch_start(self, batch, batch_idx):
+        step = self.global_step
+        self.trainer.train_dataloader.dataset.datasets.set_step(step)

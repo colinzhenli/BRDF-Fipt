@@ -119,25 +119,23 @@ class LearnableSvPBRBRDF(nn.Module):
         self.perlin_randomness = cfg.perlin_randomness
         self.scale_factor = cfg.scale_factor
         self.normal_map = cfg.normal_map
-        self.pbr_constraint = cfg.pbr_constraint
+        #self.pbr_constraint = cfg.pbr_constraint
         self.init_std = cfg.init_std
         self.soft_constraint = cfg.soft_constraint
 
         # Randomly initialize learnable PBR texture
         # Channels: [albedo(3), roughness(1), metallic(1), normal(3)] = 8 total
-        self.texture_res = texture_res
-        self.pbr_texture = nn.Parameter(
-            torch.randn(1, texture_res, texture_res, 21)*self.init_std  # 8 = 3+1+1+3
-        )
-        self.initialize_normal_channel()
+        self.texture_res = cfg.texture_res
         
-    def initialize_normal_channel(self):
-        """Initialize normal map channels to (0, 0, 1) which represents no perturbation"""
-        with torch.no_grad():
-            # Normal map channels are at indices 18, 19, 20 (last 3 channels)
-            self.pbr_texture.data[0, :, :, 18] = 0.0  # x component
-            self.pbr_texture.data[0, :, :, 19] = 0.0  # y component  
-            self.pbr_texture.data[0, :, :, 20] = 1.0  # z component
+        # Initialize texture with proper values
+        texture_init = torch.randn(1, self.texture_res, self.texture_res, 21) * self.init_std
+        
+        # Initialize normal map channels to (0, 0, 1) which represents no perturbation
+        texture_init[0, :, :, 10] = 0.0  # x component
+        texture_init[0, :, :, 11] = 0.0  # y component  
+        texture_init[0, :, :, 12] = 1.0  # z component
+        
+        self.pbr_texture = nn.Parameter(texture_init)
 
     
     def diffuse_sampler(self, sample2, normal):
@@ -264,6 +262,8 @@ class LearnableSvPBRBRDF(nn.Module):
 
 
     def eval_brdf(self, params, pos, wi, wo, normal,uv, TBN, latent=None, batch_mask=None):
+        TBN=TBN.permute(2,0,1)
+        #print("TBN",TBN.shape)
         NoL = (wi*normal).sum(-1, keepdim=True)
         NoV = (wo*normal).sum(-1, keepdim=True)
         valid_geometry = (NoL > 0) & (NoV > 0)

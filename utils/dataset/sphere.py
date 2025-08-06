@@ -257,13 +257,15 @@ class SphereImageDataset(IterableDataset):
         self.num_view_batch = cfg.renderer.camera.views_per_batch
         self.importance_sampling = cfg.data.importance_sampling
         self.use_single_chunk_sampling = cfg.data.use_single_chunk_sampling
+        self.multi_resolution = cfg.data.multi_resolution
+        self.downsample_iter = cfg.data.downsample_iter
         # Load metadata
         self.gt_folder = gt_folder
         self.img_hw = cfg.renderer.resolution
+        self.debug = cfg.data.debug
         h, w = self.img_hw
         self.camera_angle_x = cfg.renderer.camera.camera_angle_x
         self.focal = (0.5 * w / np.tan(0.5 * self.camera_angle_x)).item()
-        self.directions = get_ray_directions(h, w, self.focal)
         
         # Load metadata from JSON file
         metadata_path = os.path.join(gt_folder, "metadata.json")
@@ -292,12 +294,14 @@ class SphereImageDataset(IterableDataset):
         
         # Filter metadata based on split
         self.metadata = [self.metadata[i] for i in selected_indices] # used 10 images for training debug
-        
-        self.all_rays, self.all_rgbs, self.all_emitter_ids, self.all_pdf = self.preload_rays_and_rgbs()
-        
-        
+        if self.debug:
+            self.metadata = self.metadata[:10]
+        #self.metadata = [item for idx, item in enumerate(self.metadata) if idx % 10 == 0]#temporal modification
+        self.set_step(0)
+        self.directions = get_ray_directions(h, w, self.focal)
+        self.all_rays, self.all_rgbs, self.all_emitter_ids, self.all_pdf = self.preload_rays_and_rgbs(downsample_scale=1)   
 
-    def preload_rays_and_rgbs(self):
+    def preload_rays_and_rgbs(self, downsample_scale=1):
         all_rays = []
         all_rgbs = []
         all_emitter_ids = []
@@ -316,7 +320,6 @@ class SphereImageDataset(IterableDataset):
             c2w = get_c2w(camera_dict)
             rays_o, rays_d, dxdu, dydv = get_rays(self.directions, c2w, focal=self.focal)
             rays = torch.cat([rays_o, rays_d, dxdu, dydv], dim=-1)
-            
             # Load original RGB image (without gamma correction)
             original_filename = img_data["filename"].replace(".png", "_original.png")
             img_path = os.path.join(self.gt_folder, original_filename)
@@ -333,6 +336,17 @@ class SphereImageDataset(IterableDataset):
                 raise ValueError(f"Unsupported image format: {img_path}")
             
             img_flat = img.reshape(-1, 3)
+            # Downsample the image if needed
+            if downsample_scale > 1:
+                # Reshape to image format for downsampling
+                img_reshaped = img_flat.reshape(self.img_hw[0], self.img_hw[1], 3)
+                # Downsample using average pooling
+                img_downsampled = torch.nn.functional.avg_pool2d(
+                    img_reshaped.permute(2, 0, 1).unsqueeze(0),  # [1, 3, H, W]
+                    kernel_size=downsample_scale,
+                    stride=downsample_scale
+                ).squeeze(0).permute(1, 2, 0)  # [H', W', 3]
+                img_flat = img_downsampled.reshape(-1, 3)
             
             # Get emitter ID directly from metadata
             emitter_id = img_data["emitter_id"]
@@ -350,9 +364,7 @@ class SphereImageDataset(IterableDataset):
             emitter_ids = emitter_ids[valid_mask]
             all_rays.append(rays)
             all_rgbs.append(img_flat)
-            all_emitter_ids.append(emitter_ids)
-            
-            
+            all_emitter_ids.append(emitter_ids)    
         
         # Concatenate all data
         rays = torch.cat(all_rays)
@@ -461,6 +473,37 @@ class SphereImageDataset(IterableDataset):
             pdf = torch.full((N_sample,), 1.0)
             return sample_idx, pdf
 
+    def set_step(self, step):
+        a, b = self.downsample_iter[0], self.downsample_iter[1]
+        
+        # Determine downsample scale based on thresholds
+        if a >= 0 and step < a:
+            downsample_scale = 4  # Use scale 4 before threshold a
+        elif b >= 0 and step < b:
+            downsample_scale = 2  # Use scale 2 before threshold b
+        else:
+            downsample_scale = 1  # Use scale 1 after both thresholds
+        
+        # Reload data if downsample scale changed
+        if not hasattr(self, '_current_downsample_scale') or self._current_downsample_scale != downsample_scale:
+            self._current_downsample_scale = downsample_scale
+            # Clear GPU memory if attributes exist
+            if hasattr(self, 'directions'):
+                del self.directions
+            if hasattr(self, 'all_rays'):
+                del self.all_rays
+            if hasattr(self, 'all_rgbs'):
+                del self.all_rgbs
+            if hasattr(self, 'all_emitter_ids'):
+                del self.all_emitter_ids
+            if hasattr(self, 'all_pdf'):
+                del self.all_pdf
+            # Update directions with proper downsampling
+            print(f"Loading rays with downsample scale {downsample_scale}...")
+            h, w = self.img_hw
+            h_down, w_down = h // downsample_scale, w // downsample_scale
+            self.directions = get_ray_directions(h_down, w_down, self.focal) 
+            self.all_rays, self.all_rgbs, self.all_emitter_ids, self.all_pdf = self.preload_rays_and_rgbs(downsample_scale=downsample_scale)
 
     def __iter__(self):
         while True:
@@ -493,6 +536,7 @@ class SphereValDataset(Dataset):
         self.pixel = False
         self.gt_folder = gt_folder
         self.img_hw = cfg.renderer.resolution
+        self.debug = cfg.data.debug
         h, w = self.img_hw
         self.camera_angle_x = cfg.renderer.camera.camera_angle_x
         self.focal = (0.5 * w / np.tan(0.5 * self.camera_angle_x)).item()
@@ -525,6 +569,9 @@ class SphereValDataset(Dataset):
         
         # Filter metadata based on split
         self.metadata = [self.metadata[i] for i in selected_indices]
+        if self.debug:
+            self.metadata = self.metadata[:2]
+        #self.metadata = [item for idx, item in enumerate(self.metadata) if idx % 10 == 0]#temporal modification
 
     def __len__(self):
         return len(self.metadata)

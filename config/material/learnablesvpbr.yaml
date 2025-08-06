@@ -5,6 +5,8 @@ colorful_texture: True
 anisotropic: False
 init_std: 1
 soft_constraint: False
+texture_res: 512
+
 roughness: 0.2
 metallic: 0.2
 albedo: [1.0, 1.0, 1.0]
