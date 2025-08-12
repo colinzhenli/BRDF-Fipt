@@ -24,24 +24,30 @@ from typing import List, Tuple
 
 import cv2
 import numpy as np
+import json
 
 # ──────────────────────── CONFIG ────────────────────────
-BOARD_TYPE = "checkerboard"   #  "checkerboard"  or  "charuco"
-# Checkerboard parameters (ignored when BOARD_TYPE == 'charuco')
-CB_COLS, CB_ROWS = 10, 7       # internal corners across, down
-CB_SQUARE = 0.025              # 25 mm
-# Charuco parameters (ignored for checkerboard)
-DICT_NAME = cv2.aruco.DICT_4X4_50
-CU_COLS, CU_ROWS = 7, 5        # squares across, down (must include markers)
-CU_SQUARE = 0.020              # 20 mm square length
-CU_MARKER = 0.016              # 16 mm marker length
+DICT_NAME  = cv2.aruco.DICT_4X4_50
+CU_COLS    = 7           # squares across (chessboard squares, not markers)
+CU_ROWS    = 5           # squares down
+CU_SQUARE  = 0.025       # square side length in meters
+CU_MARKER  = 0.018       # marker side length in meters
+USE_LEGACY = True       # True if your PDF was generated with legacy pattern
 
 # Paths
-CALIB_GLOB = "calib/*.png"     # images for intrinsic calibration
-TURN_GLOB  = "turn/*.png"      # images with board on the turn‑table
 
-# Hand–eye result (camera → robot‑base)
-T_BASE_CAM = np.eye(4)         # ← replace with your calibrated 4×4
+CALIB_GLOB = "/media/raid/cloth/rot_axis/scans_0809/*.png"     # images for intrinsic calibration
+# TURN_GLOB  = "turn/*.png"    # legacy: images with board on the turn‑table
+SCANS1_GLOB = "/media/raid/cloth/rot_axis/scans_top_pattern/*.png"   # top‑pose scan images
+SCANS2_GLOB = "/media/raid/cloth/rot_axis/scans_tilt_pattern/*.png"   # tilt‑pose scan images
+SCAN_LOG_TOP = "/media/raid/cloth/rot_axis/scan_log_top.json"
+SCAN_LOG_TILT = "/media/raid/cloth/rot_axis/scan_log_tilt.json"
+
+# Hand–eye (camera → gripper) result
+R_c2g = np.array([[-0.00369406,  0.99992083,  0.01202885],
+                  [-0.00272167,  0.01201883, -0.99992407],
+                  [-0.99998947, -0.00372652,  0.00267706]])
+t_c2g = np.array([36.68630125, -24.61733549, 27.64501449])
 
 # ────────────────────── Helper functions ──────────────────────
 
@@ -61,8 +67,32 @@ def rodrigues_to_Rt(rvec: np.ndarray, tvec: np.ndarray) -> Tuple[np.ndarray, np.
     return R, t[:, 0], T
 
 
-# ────────────────────── Axis estimation ──────────────────────
+def make_T(R: np.ndarray, t: np.ndarray) -> np.ndarray:
+    """Compose a 4×4 transform from R (3×3) and t (3,)."""
+    T = np.eye(4, dtype=np.float64)
+    T[:3, :3] = R
+    T[:3, 3] = t
+    return T
 
+
+def load_robot_pose_from_scan_log(scan_log_path: str) -> np.ndarray:
+    """Load a single (base→gripper) pose from a scan_log JSON.
+
+    This follows the same field usage as camera_calibration.load_matched_robot_poses:
+    expects keys "rotation_matrix" (3×3) and "position" (3,).
+    Returns a 4×4 transform. Uses the first valid entry.
+    """
+    with open(scan_log_path, "r") as f:
+        scan_log = json.load(f)
+    if not scan_log:
+        raise RuntimeError(f"No entries in {scan_log_path}")
+    entry = scan_log[0]
+    T = np.eye(4, dtype=np.float64)
+    T[:3, :3] = np.array(entry["rotation_matrix"], dtype=np.float64)
+    T[:3, 3] = np.array(entry["position"], dtype=np.float64)
+    return T
+
+# ────────────────────── Axis estimation ──────────────────────
 def estimate_axis_from_poses(R_list: List[np.ndarray], p_list: List[np.ndarray]):
     """Return axis direction d, point c, mean radius and RMS residual."""
     d_vecs = []
@@ -90,145 +120,180 @@ def estimate_axis_from_poses(R_list: List[np.ndarray], p_list: List[np.ndarray])
     residuals = [np.linalg.norm(P @ (p - c)) for p in p_list]
     return d, c, float(np.mean(radii)), float(np.sqrt(np.mean(np.square(residuals))))
 
+# ------------ Build dictionary, board, and detector ------------
+def make_charuco(detector_params: cv2.aruco.DetectorParameters = None):
+    aruco_dict = cv2.aruco.getPredefinedDictionary(DICT_NAME)
+    board = cv2.aruco.CharucoBoard((CU_COLS, CU_ROWS), CU_SQUARE, CU_MARKER, aruco_dict)
+    if USE_LEGACY:
+        board.setLegacyPattern(True)
+    ch_params = cv2.aruco.CharucoParameters()
+    if detector_params is None:
+        detector_params = cv2.aruco.DetectorParameters()
+    detector = cv2.aruco.CharucoDetector(board, charucoParams=ch_params, detectorParams=detector_params)
+    return aruco_dict, board, detector
 
-# ──────────────────── Checkerboard branch ────────────────────
+# ------------ Intrinsic calibration from ChArUco images ------------
+def calibrate_intrinsics_charuco(image_paths: List[str]) -> Tuple[np.ndarray, np.ndarray, float]:
+    _, board, detector = make_charuco()
 
-def reorder_obj_points(corners_img: np.ndarray, objp: np.ndarray, cols: int, rows: int) -> np.ndarray:
-    """Re‑index objp so (0,0) stays the same physical corner across views."""
-    v1 = corners_img[1] - corners_img[0]
-    v2 = corners_img[cols] - corners_img[0]
-    flip_x = v1[0] < 0
-    flip_y = v2[1] < 0
-    idx = np.arange(cols * rows).reshape(rows, cols)
-    if flip_y:
-        idx = idx[::-1, :]
-    if flip_x:
-        idx = idx[:, ::-1]
-    return objp[idx.ravel()].astype(np.float32)
-
-
-def calibrate_intrinsics_checkerboard(image_paths: List[str]) -> Tuple[np.ndarray, np.ndarray, float]:
-    objp = make_obj_points(CB_COLS, CB_ROWS, CB_SQUARE)
-    objPoints, imgPoints = [], []
+    objpoints, imgpoints = [], []
     imsize = None
-    for path in image_paths:
-        img = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
+
+    for p in image_paths:
+        img = cv2.imread(p, cv2.IMREAD_GRAYSCALE)
         if img is None:
             continue
         imsize = img.shape[::-1]
-        ok, corners = cv2.findChessboardCorners(img, (CB_COLS, CB_ROWS),
-                                                flags=cv2.CALIB_CB_ADAPTIVE_THRESH | cv2.CALIB_CB_NORMALIZE_IMAGE)
-        if not ok:
+
+        # Detect markers + interpolate ChArUco corners
+        ch_corners, ch_ids, _, _ = detector.detectBoard(img)
+        # Draw detected ChArUco corners for debugging
+        if ch_corners is not None and ch_ids is not None and len(ch_corners) > 0:
+            debug_img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+            debug_img = cv2.aruco.drawDetectedCornersCharuco(debug_img, ch_corners, ch_ids)
+            debug_path = f"debug_charuco_{Path(p).stem}.png"
+            cv2.imwrite(debug_path, debug_img)
+        if ch_ids is None or len(ch_ids) < 4:
             continue
-        corners = cv2.cornerSubPix(img, corners, (5, 5), (-1, -1),
-                                   criteria=(cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.01))
-        imgPoints.append(corners.reshape(-1, 1, 2))
-        objPoints.append(objp.reshape(-1, 1, 3))
-    if len(objPoints) < 8:
-        raise RuntimeError("Need ≥ 8 views with detected corners for calibration.")
-    ret, K, D, *_ = cv2.calibrateCamera(objPoints, imgPoints, imsize, None, None,
-                                        flags=cv2.CALIB_RATIONAL_MODEL)
-    return K, D, ret
 
+        # Convert to matched 3D/2D points for calibration
+        objPts, imgPts = board.matchImagePoints(ch_corners, ch_ids)
+        if objPts is None or imgPts is None or len(objPts) == 0:
+            continue
 
-def board_pose_pnp_checkerboard(img: np.ndarray, K: np.ndarray, D: np.ndarray):
-    objp = make_obj_points(CB_COLS, CB_ROWS, CB_SQUARE)
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    ok, corners = cv2.findChessboardCorners(gray, (CB_COLS, CB_ROWS),
-                                            flags=cv2.CALIB_CB_ADAPTIVE_THRESH | cv2.CALIB_CB_NORMALIZE_IMAGE)
+        objpoints.append(np.asarray(objPts, np.float32))
+        imgpoints.append(np.asarray(imgPts, np.float32))
+
+    if len(objpoints) < 8:
+        raise RuntimeError("Need ≥ 8 views with valid ChArUco correspondences for calibration.")
+
+    # Standard Zhang calibration
+    ret, K, D, rvecs, tvecs = cv2.calibrateCamera(
+        objectPoints=objpoints,
+        imagePoints=imgpoints,
+        imageSize=imsize,
+        cameraMatrix=None,
+        distCoeffs=None
+    )
+    return K, D, float(ret)
+
+# ------------ Per-image pose from the same board ------------
+# Returns (R, t, T_cam_board) with T 4x4 (camera->board)
+def board_pose_charuco(img_bgr: np.ndarray, K: np.ndarray, D: np.ndarray):
+    """
+    Pose of the ChArUco board via matchImagePoints + solvePnP.
+    Returns (R, t, T_cam_board) or None if detection fails.
+    """
+    # Reuse the same board/detector you used for intrinsics
+    _, board, detector = make_charuco()
+    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+    ch_corners, ch_ids, _, _ = detector.detectBoard(gray)
+    if ch_ids is None or len(ch_ids) < 4:
+        return None
+
+    # Map detected ChArUco corners to object/image points
+    objPts, imgPts = board.matchImagePoints(ch_corners, ch_ids)
+    if objPts is None or imgPts is None or len(objPts) < 4:
+        return None
+
+    # OpenCV solvePnP expects shapes (N,1,3) and (N,1,2), float32/float64
+    obj = np.asarray(objPts, np.float32).reshape(-1, 1, 3)
+    img = np.asarray(imgPts, np.float32).reshape(-1, 1, 2)
+
+    # Robust default for many coplanar points
+    ok, rvec, tvec = cv2.solvePnP(
+        objectPoints=obj,
+        imagePoints=img,
+        cameraMatrix=K,
+        distCoeffs=D,
+        flags=cv2.SOLVEPNP_ITERATIVE
+    )
     if not ok:
         return None
-    corners = cv2.cornerSubPix(gray, corners, (5, 5), (-1, -1),
-                               criteria=(cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.01))
-    objp_use = reorder_obj_points(corners.reshape(-1, 2), objp, CB_COLS, CB_ROWS)
-    ok, rvec, tvec = cv2.solvePnP(objp_use, corners, K, D, flags=cv2.SOLVEPNP_ITERATIVE)
-    if not ok:
-        return None
-    return rodrigues_to_Rt(rvec, tvec)
+
+    R, _ = cv2.Rodrigues(rvec)
+    t = tvec.reshape(3)
+    T = np.eye(4, dtype=np.float64)
+    T[:3, :3] = R
+    T[:3, 3]  = t
+    return R, t, T
 
 
-# ────────────────────── Charuco branch ──────────────────────
+# ------------ (Optional) debug overlay writer ------------
+def save_charuco_debug(img_bgr: np.ndarray, out_path: str):
+    _, _, detector = make_charuco()
+    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+    ch_corners, ch_ids, marker_corners, marker_ids = detector.detectBoard(gray)
 
-DICT = cv2.aruco.getPredefinedDictionary(DICT_NAME)
-CHARUCO_BOARD = cv2.aruco.CharucoBoard_create(squaresX=CU_COLS, squaresY=CU_ROWS,
-                                             squareLength=CU_SQUARE, markerLength=CU_MARKER,
-                                             dictionary=DICT)
+    dbg = img_bgr.copy()
+    if marker_corners is not None and marker_ids is not None and len(marker_corners) > 0:
+        dbg = cv2.aruco.drawDetectedMarkers(dbg, marker_corners, marker_ids)
+    if ch_corners is not None and ch_ids is not None and len(ch_corners) > 0:
+        dbg = cv2.aruco.drawDetectedCornersCharuco(dbg, ch_corners, ch_ids)
+    cv2.imwrite(out_path, dbg)
 
-def calibrate_intrinsics_charuco(image_paths: List[str]) -> Tuple[np.ndarray, np.ndarray, float]:
-    all_corners, all_ids = [], []
-    imsize = None
-    for p in image_paths:
-        img = cv2.imread(p)
-        if img is None:
-            continue
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        imsize = gray.shape[::-1]
-        corners, ids, _ = cv2.aruco.detectMarkers(gray, DICT)
-        if ids is None:
-            continue
-        cv2.aruco.refineDetectedMarkers(gray, CHARUCO_BOARD, corners, ids, rejectedCorners=None)
-        ret, ch_corners, ch_ids = cv2.aruco.interpolateCornersCharuco(corners, ids, gray, CHARUCO_BOARD)
-        if ret < 4:
-            continue
-        all_corners.append(ch_corners)
-        all_ids.append(ch_ids)
-    if len(all_corners) < 8:
-        raise RuntimeError("Need ≥ 8 views with detected markers for Charuco calibration.")
-    ret, K, D, *_ = cv2.aruco.calibrateCameraCharuco(all_corners, all_ids, CHARUCO_BOARD, imsize, None, None)
-    return K, D, ret
-
-
-def board_pose_charuco(img: np.ndarray, K: np.ndarray, D: np.ndarray):
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    corners, ids, _ = cv2.aruco.detectMarkers(gray, DICT)
-    if ids is None:
-        return None
-    cv2.aruco.refineDetectedMarkers(gray, CHARUCO_BOARD, corners, ids, rejectedCorners=None)
-    ret, ch_corners, ch_ids = cv2.aruco.interpolateCornersCharuco(corners, ids, gray, CHARUCO_BOARD)
-    if ret < 4:
-        return None
-    ok, rvec, tvec = cv2.aruco.estimatePoseCharucoBoard(ch_corners, ch_ids, CHARUCO_BOARD, K, D)
-    if not ok:
-        return None
-    return rodrigues_to_Rt(rvec, tvec)
-
-
-# ────────────────────────── MAIN ──────────────────────────
 
 def main() -> None:
     calib_imgs = sorted(glob.glob(CALIB_GLOB))
-    turn_imgs = sorted(glob.glob(TURN_GLOB))
+    turn_imgs1 = sorted(glob.glob(SCANS1_GLOB))
+    turn_imgs2 = sorted(glob.glob(SCANS2_GLOB))
     if not calib_imgs:
         sys.exit("No calibration images found – check CALIB_GLOB pattern.")
-    if not turn_imgs:
-        sys.exit("No turn‑table images found – check TURN_GLOB pattern.")
+    if not turn_imgs1 and not turn_imgs2:
+        sys.exit("No turn‑table images found – check SCANS1_GLOB/SCANS2_GLOB patterns.")
 
-    if BOARD_TYPE == "checkerboard":
-        K, D, rms = calibrate_intrinsics_checkerboard(calib_imgs)
-        pose_fn = board_pose_pnp_checkerboard
-    elif BOARD_TYPE == "charuco":
-        K, D, rms = calibrate_intrinsics_charuco(calib_imgs)
-        pose_fn = board_pose_charuco
-    else:
-        raise ValueError("BOARD_TYPE must be 'checkerboard' or 'charuco'")
+    K, D, rms = calibrate_intrinsics_charuco(calib_imgs)
 
     print("\n=== Intrinsic calibration ===")
     print("K:\n", K)
     print("Distortion D:", D.ravel())
     print(f"Mean reprojection error: {rms:.3f} px\n")
 
+    # Build camera→gripper and per‑scan base→camera transforms
+    T_g_c = make_T(R_c2g, t_c2g)
+    # Convert from OpenGL convention (Z-forward, Y-up) to OpenCV convention (Z-backward, Y-down)
+    # OpenGL to OpenCV: rotate 180° around X-axis
+    R_gl_to_cv = np.array([[1,  0,  0],
+                           [0, -1,  0],
+                           [0,  0, -1]], dtype=np.float64)
+    T_gl_to_cv = np.eye(4, dtype=np.float64)
+    T_gl_to_cv[:3, :3] = R_gl_to_cv
+    
+    # Apply conversion: T_g_c_opencv = T_g_c_opengl @ T_gl_to_cv
+    T_g_c = T_g_c @ T_gl_to_cv
+    T_b_g_top = load_robot_pose_from_scan_log(SCAN_LOG_TOP)
+    T_b_g_tilt = load_robot_pose_from_scan_log(SCAN_LOG_TILT)
+    T_b_c_top = T_b_g_top @ T_g_c
+    T_b_c_tilt = T_b_g_tilt @ T_g_c
+
     Rb_list: List[np.ndarray] = []
     pb_list: List[np.ndarray] = []
-    for pth in turn_imgs:
+
+    # Process scans1 (top pose)
+    for pth in turn_imgs1:
         img = cv2.imread(pth)
         if img is None:
             continue
-        pose = pose_fn(img, K, D)
+        pose = board_pose_charuco(img, K, D)
         if pose is None:
             print(f"[warn] pose failed for {pth}")
             continue
         R_cam, t_cam, T_cam_board = pose
-        T_base_board = T_BASE_CAM @ T_cam_board
+        T_base_board = T_b_c_top @ T_cam_board
+        Rb_list.append(T_base_board[:3, :3])
+        pb_list.append(T_base_board[:3, 3])
+
+    # Process scans2 (tilt pose)
+    for pth in turn_imgs2:
+        img = cv2.imread(pth)
+        if img is None:
+            continue
+        pose = board_pose_charuco(img, K, D)
+        if pose is None:
+            print(f"[warn] pose failed for {pth}")
+            continue
+        R_cam, t_cam, T_cam_board = pose
+        T_base_board = T_b_c_tilt @ T_cam_board
         Rb_list.append(T_base_board[:3, :3])
         pb_list.append(T_base_board[:3, 3])
 
