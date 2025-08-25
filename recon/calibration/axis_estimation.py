@@ -28,15 +28,16 @@ import json
 
 # ──────────────────────── CONFIG ────────────────────────
 DICT_NAME  = cv2.aruco.DICT_4X4_50
-CU_COLS    = 7           # squares across (chessboard squares, not markers)
-CU_ROWS    = 5           # squares down
-CU_SQUARE  = 0.025       # square side length in meters
-CU_MARKER  = 0.018       # marker side length in meters
+CU_COLS    = 11           # squares across (chessboard squares, not markers)
+CU_ROWS    = 8           # squares down
+CU_SQUARE  = 15       # square side length in meters
+CU_MARKER  = 11       # marker side length in meters
+CU_COLS_AXIS
 USE_LEGACY = True       # True if your PDF was generated with legacy pattern
 
 # Paths
 
-CALIB_GLOB = "/media/raid/cloth/rot_axis/scans_0809/*.png"     # images for intrinsic calibration
+CALIB_GLOB = "/media/raid/cloth/rot_axis/scans_0813_1/*.png"     # images for intrinsic calibration
 # TURN_GLOB  = "turn/*.png"    # legacy: images with board on the turn‑table
 SCANS1_GLOB = "/media/raid/cloth/rot_axis/scans_top_pattern/*.png"   # top‑pose scan images
 SCANS2_GLOB = "/media/raid/cloth/rot_axis/scans_tilt_pattern/*.png"   # tilt‑pose scan images
@@ -148,11 +149,11 @@ def calibrate_intrinsics_charuco(image_paths: List[str]) -> Tuple[np.ndarray, np
         # Detect markers + interpolate ChArUco corners
         ch_corners, ch_ids, _, _ = detector.detectBoard(img)
         # Draw detected ChArUco corners for debugging
-        if ch_corners is not None and ch_ids is not None and len(ch_corners) > 0:
-            debug_img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
-            debug_img = cv2.aruco.drawDetectedCornersCharuco(debug_img, ch_corners, ch_ids)
-            debug_path = f"debug_charuco_{Path(p).stem}.png"
-            cv2.imwrite(debug_path, debug_img)
+        # if ch_corners is not None and ch_ids is not None and len(ch_corners) > 0:
+        #     debug_img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+        #     debug_img = cv2.aruco.drawDetectedCornersCharuco(debug_img, ch_corners, ch_ids)
+        #     debug_path = f"debug_charuco_{Path(p).stem}.png"
+        #     cv2.imwrite(debug_path, debug_img)
         if ch_ids is None or len(ch_ids) < 4:
             continue
 
@@ -248,28 +249,26 @@ def main() -> None:
     print("K:\n", K)
     print("Distortion D:", D.ravel())
     print(f"Mean reprojection error: {rms:.3f} px\n")
+    T_c2g = make_T(R_c2g, t_c2g)
 
-    # Build camera→gripper and per‑scan base→camera transforms
-    T_g_c = make_T(R_c2g, t_c2g)
-    # Convert from OpenGL convention (Z-forward, Y-up) to OpenCV convention (Z-backward, Y-down)
-    # OpenGL to OpenCV: rotate 180° around X-axis
-    R_gl_to_cv = np.array([[1,  0,  0],
-                           [0, -1,  0],
-                           [0,  0, -1]], dtype=np.float64)
-    T_gl_to_cv = np.eye(4, dtype=np.float64)
-    T_gl_to_cv[:3, :3] = R_gl_to_cv
-    
-    # Apply conversion: T_g_c_opencv = T_g_c_opengl @ T_gl_to_cv
-    T_g_c = T_g_c @ T_gl_to_cv
-    T_b_g_top = load_robot_pose_from_scan_log(SCAN_LOG_TOP)
-    T_b_g_tilt = load_robot_pose_from_scan_log(SCAN_LOG_TILT)
-    T_b_c_top = T_b_g_top @ T_g_c
-    T_b_c_tilt = T_b_g_tilt @ T_g_c
+    # Axes conversion: OpenCV camera frame -> OpenGL camera frame (rotate 180° about X)
+    R_cv2gl = np.array([[1, 0, 0],
+                        [0,-1, 0],
+                        [0, 0,-1]], dtype=np.float64)
+    T_cv2gl = np.eye(4, dtype=np.float64); T_cv2gl[:3, :3] = R_cv2gl
+    T_c2g = T_c2g @ T_cv2gl
+    T_g2c = np.linalg.inv(T_c2g)
+
+    T_g2b_top  = load_robot_pose_from_scan_log(SCAN_LOG_TOP)
+    T_g2b_tilt = load_robot_pose_from_scan_log(SCAN_LOG_TILT)
+
+    T_c2b_top  = T_g2b_top  @ T_c2g
+    T_c2b_tilt = T_g2b_tilt @ T_c2g
 
     Rb_list: List[np.ndarray] = []
     pb_list: List[np.ndarray] = []
 
-    # Process scans1 (top pose)
+    # --- Process scans1 (top pose) ---
     for pth in turn_imgs1:
         img = cv2.imread(pth)
         if img is None:
@@ -278,12 +277,16 @@ def main() -> None:
         if pose is None:
             print(f"[warn] pose failed for {pth}")
             continue
-        R_cam, t_cam, T_cam_board = pose
-        T_base_board = T_b_c_top @ T_cam_board
-        Rb_list.append(T_base_board[:3, :3])
-        pb_list.append(T_base_board[:3, 3])
 
-    # Process scans2 (tilt pose)
+        # board_pose_charuco returns board -> camera
+        _, _, T_board2camera = pose
+
+        # base <- board = (base <- camera) @ (camera <- board)
+        T_board2b = T_c2b_top @ T_board2camera  
+        Rb_list.append(T_board2b[:3, :3])
+        pb_list.append(T_board2b[:3, 3])
+
+    # --- Process scans2 (tilt pose) ---
     for pth in turn_imgs2:
         img = cv2.imread(pth)
         if img is None:
@@ -292,10 +295,14 @@ def main() -> None:
         if pose is None:
             print(f"[warn] pose failed for {pth}")
             continue
-        R_cam, t_cam, T_cam_board = pose
-        T_base_board = T_b_c_tilt @ T_cam_board
-        Rb_list.append(T_base_board[:3, :3])
-        pb_list.append(T_base_board[:3, 3])
+
+        # board -> camera
+        _, _, T_board2camera = pose
+
+        # base <- board
+        T_board2b = T_c2b_tilt @ T_board2camera
+        Rb_list.append(T_board2b[:3, :3])
+        pb_list.append(T_board2b[:3, 3])
 
     if len(Rb_list) < 6:
         sys.exit("Need at least 6 valid board poses to fit an axis.")
