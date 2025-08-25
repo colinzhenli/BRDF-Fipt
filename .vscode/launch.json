@@ -10,20 +10,32 @@
             "name": "Python: Current File",
             "type": "python",
             "request": "launch",
-            "program": "axis_estimation.py",
+            "program": "./recon/colmap/build_camera.py",
             "console": "integratedTerminal",
             "justMyCode": true,
             "env": {
                 "CUDA_VISIBLE_DEVICES": "3"
             },
             "args": [
-                // "renderer=realcapture_emitter",
-                // "material=learnablesvpbr",
-                // "experiment_name=Downsample_debug",
-                // "model.ckpt_path=/mnt/data/colin/colin/output/BRDF-Fipt/Over-fit_experiments_2/sphere/Theia2_Record-var-No-IS_Leaky-ReLU_4-times-rays_Random-emitter-1-light_512-8-views_Pred-normal_Colorful-texture_3-Latents-same-decoder_Latent-grid-2048-2048-8_run_1/training/model_0.20_0.20/isotropic_last.ckpt",
-                // "test_on_train=False"
+                // "--input", "/media/raid/cloth/Pipeline_test_images_Aug15/fuse_post_lift_up_transformed.ply",
+                // "--output", "/media/raid/cloth/Pipeline_test_images_Aug15/mesh_cropped_lift_up.ply",
+                // "--percent", "0.8"
             ]
         },
+        // {
+        //     "name": "2DGS Train",
+        //     "type": "python",
+        //     "request": "launch",
+        //     "program": "./recon/2dgs/train.py",
+        //     "console": "integratedTerminal",
+        //     "justMyCode": true,
+        //     "env": {
+        //         "CUDA_VISIBLE_DEVICES": "0"
+        //     },
+        //     "args": [
+        //         "-s", "/media/raid/cloth/Pipeline_test_images_Aug15/undistorted"
+        //     ]
+        // },
         // {
         //     "name": "COLMAP Quick",
         //     "type": "python",
