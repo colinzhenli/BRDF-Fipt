@@ -22,6 +22,29 @@ def build_4x4(R, t):
     T[:3, 3]  = t
     return T
 
+def quat_to_rot_matrix(q):
+    """Convert quaternion [w, x, y, z] to 3x3 rotation matrix."""
+    w, x, y, z = q
+    return np.array([
+        [1 - 2 * (y**2 + z**2),     2 * (x * y - z * w),     2 * (x * z + y * w)],
+        [    2 * (x * y + z * w), 1 - 2 * (x**2 + z**2),     2 * (y * z - x * w)],
+        [    2 * (x * z - y * w),     2 * (y * z + x * w), 1 - 2 * (x**2 + y**2)],
+    ])
+    
+def quat_to_rot_matrix_scipy(q):
+    r = R.from_quat(q)
+    return r.as_matrix()
+
+def _cv_to_gl(cv):
+    # convert to GL convention used in iNGP
+    gl = cv * np.array([1, -1, -1, 1])
+    return gl
+
+def _gl_to_cv(gl):
+    # convert from GL convention used in iNGP
+    cv = gl * np.array([1, -1, -1, 1])
+    return cv
+
 def average_rotations(R_list):
     """Average rotations via quaternions (equal weights)."""
     qs = R.from_matrix(R_list).as_quat()          # (N,4)  [x y z w]
@@ -156,7 +179,7 @@ def load_matched_robot_poses(scan_log_path, transforms_json_path, tol=1e-3):
             continue
 
         # camera pose
-        cam_c2w.append(np.array(frame["transform_matrix"]))
+        cam_c2w.append(_cv_to_gl(np.array(frame["transform_matrix"])))
 
         # robot pose (base → holder)
         entry = scan_log[idx]
@@ -175,6 +198,88 @@ def load_matched_robot_poses(scan_log_path, transforms_json_path, tol=1e-3):
     print(f"Matched {len(robot_poses)}/{len(tjson['frames'])} frames.")
     return robot_poses, cam_c2w, info
 
+
+def parse_colmap_images_txt(images_txt_path):
+    """
+    Parse COLMAP images.txt and return a dictionary of image_name → 4x4 cam-to-world transform.
+    """
+    cam_c2w_dict = {}
+    with open(images_txt_path, "r") as f:
+        lines = f.readlines()
+
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        if line.startswith("#") or len(line) == 0:
+            i += 1
+            continue
+
+        # Parse camera line
+        tokens = line.split()
+        if len(tokens) < 10:
+            i += 1
+            continue
+        image_id = int(tokens[0])
+        qw, qx, qy, qz = map(float, tokens[1:5])
+        tx, ty, tz = map(float, tokens[5:8])
+        cam_id = int(tokens[8])
+        image_name = tokens[9]
+
+        # Convert to 4x4 cam-to-world matrix
+        # R = quat_to_rot_matrix([qw, qx, qy, qz])  # rotation matrix
+        R = quat_to_rot_matrix_scipy([qw, qx, qy, qz])
+
+        t = np.array([tx, ty, tz])               # translation
+        T = np.eye(4)
+        T[:3, :3] = R
+        T[:3,  3] = t
+        cam_c2w_dict[image_name] = T
+        i += 2  # skip the 2D point line
+    return cam_c2w_dict
+
+
+def load_matched_robot_poses_colmap_images_txt(scan_log_path, images_txt_path, tol=1e-3):
+    """
+    Load robot poses and match to COLMAP poses from images.txt via φ/θ in the filename.
+    """
+    with open(scan_log_path, "r") as f:
+        scan_log = json.load(f)
+
+    colmap_c2w_dict = parse_colmap_images_txt(images_txt_path)
+
+    robot_poses, cam_c2w, info = [], [], []
+
+    for fname, c2w in colmap_c2w_dict.items():
+        if "theta" not in fname:
+            continue
+
+        phi, theta = extract_phi_theta_from_filename(fname)
+        idx, dist = find_matching_robot_pose(phi, theta, scan_log, tol)
+        if idx is None:
+            continue
+
+        # COLMAP camera pose
+        cam_c2w.append(c2w)
+
+        # Robot gripper → base transform
+        entry = scan_log[idx]
+        T = np.eye(4)
+        T[:3, :3] = np.array(entry["rotation_matrix"])
+        T[:3, 3] = np.array(entry["position"])
+        robot_poses.append(T)
+
+        info.append(dict(
+            robot_idx=idx,
+            filename=fname,
+            target_phi=phi,
+            target_theta=theta,
+            robot_phi=entry["phi"],
+            robot_theta=entry["theta"],
+            distance=dist
+        ))
+
+    print(f"Matched {len(robot_poses)}/{len(colmap_c2w_dict)} frames.")
+    return robot_poses, cam_c2w, info
 
 # -----------------------------------------------------------------------------#
 #  Hand–eye
@@ -381,10 +486,12 @@ def estimate_world2base(scan_log_path, transforms_json_path,
                                     [   0     1 ]
            that maps COLMAP‑world coordinates to robot‑base coordinates.
     """
-    robot_T, cam_c2w, _ = load_matched_robot_poses(
-        scan_log_path, transforms_json_path, phi_theta_tol
+    # robot_T, cam_c2w, _ = load_matched_robot_poses(
+    #     scan_log_path, transforms_json_path, phi_theta_tol
+    # )
+    robot_T, cam_c2w, _ = load_matched_robot_poses_colmap_images_txt(
+        scan_log_path, images_txt_path, phi_theta_tol
     )
-
     # ---------- per‑frame camera→base -----------------------------------------
     T_c2g = build_4x4(R_c2g, t_c2g)
     cam_centres_base, cam_centres_world = [], []
@@ -516,15 +623,16 @@ def main(scan_log_path, transforms_json_path, mesh_path, tol=1e-2):
     #     print("Mesh does not have UV mapping")
     #     output_path = mesh_path.replace(".ply", "_transformed.ply")
     T_BW = estimate_world2base(scan_log_path, transforms_json_path, R_c2g, t_c2g, tol)
-    transform_mesh_to_base(mesh_path, T_BW, output_path=mesh_path.replace(".ply", "_transformed.ply"))
+    transform_mesh_to_base(mesh_path, T_BW, output_path=mesh_path.replace(".ply", "_corrected_convention_transformed.ply"))
 
 
 if __name__ == "__main__":
     scan_log_path = (
-        "/mnt/data/colin/colin/fs01s/scan_log.json"
+        "/media/raid/cloth/rot_axis/scan_log_0813_cloth.json"
     )
     transforms_json_path = (
-        "/mnt/data/colin/colin/fs01s/calibrated_video_Jul16/transforms.json"
+        "/media/raid/cloth/Pipeline_test_images_Aug15/transforms.json"
     )
-    mesh_path = "/mnt/data/colin/colin/fs01s/output/Neuralangelo/calibrated_video_Jul16/epoch_00338_iteration_000060000_mesh.ply"
+    images_txt_path = "/media/raid/cloth/Pipeline_test_images_Aug15/undistorted/sparse/0/images.txt"
+    mesh_path = "./output/d90427d5-b/train/ours_30000/fuse_post.ply"
     main(scan_log_path, transforms_json_path, mesh_path, tol=0.01)
