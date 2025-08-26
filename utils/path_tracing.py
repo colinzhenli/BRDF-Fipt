@@ -447,3 +447,91 @@ def path_tracing_envmap_emitter(scene,emitter_net,material_net,rays_o,rays_d,dx_
     L = L.reshape(B,spp,3).mean(1)
     return L
 
+def batched_path_tracing_tbn_real_area_emitter(scene,emitter_net,material_net,rays_o,rays_d,dx_du,dy_dv, light_id, spp, brdf_sampling, emitter_sampling, gt_params=None, latent=None):
+    """ Path trace with real capture
+    Args:
+        scene: mitsuba scene
+        emitter_net: emitter object
+        material_net: material object
+        rays_o: BxNx3 ray origin
+        rays_d: BxNx3 ray direction
+        dx_du,dy_dv: BxNx3 ray differential
+        spp: samples per pixel
+        brdf_sampling: boolean flag for BRDF importance sampling
+        emitter_sampling: boolean flag for emitter importance sampling
+        gt_params: optional ground truth material parameters
+        latent: optional batched latent code for material network
+    Return:
+        L: (B*N)x3 traced results unbatched
+    """
+    # flatten the rays
+    # Create batch mask where each row contains the same batch index
+    # For rays with shape B, N, 3, create mask with shape B, N
+    batch_mask = torch.arange(len(rays_o), device=rays_o.device).view(rays_o.shape[0], 1).expand(rays_o.shape[0], rays_o.shape[1])
+    # batch_mask = torch.zeros(len(rays_o), device=rays_o.device)
+    rays_o = rays_o.reshape(-1,3)
+    rays_d = rays_d.reshape(-1,3)
+    dx_du = dx_du.reshape(-1,3)
+    dy_dv = dy_dv.reshape(-1,3)
+    batch_mask = batch_mask.reshape(-1)
+    N = len(rays_o)
+    device = rays_o.device
+    
+    # sample camera ray
+    du,dv = torch.rand(2,len(rays_o),spp,1,device=device)-0.5
+    wi = NF.normalize(rays_d[:,None]+dx_du[:,None]*du+dy_dv[:,None]*dv,dim=-1).reshape(-1,3)
+    # wi = rays_d
+    # Add mask for wi z component
+    position = rays_o.repeat_interleave(spp,0)
+    
+    # compute first intersection
+    position,normal,uv, _,vis, TBN = ray_intersect_with_tbn(scene,position,wi)
+    # position, normal, vis = ray_sphere_intersect(scene,position,wi)
+    L = torch.zeros(vis.shape[0],3,device=device)
+    if not vis.any():
+        print("No valid intersection")
+        return L.reshape(N,spp,3).mean(1), None, None
+    position = position[vis]
+    normal = normal[vis]
+    uv=uv[vis]
+    batch_mask = batch_mask[vis]
+    wo = -wi[vis]
+    light_id = light_id[vis]
+    TBN = TBN[vis]
+    
+    # deterministic sampling
+    if emitter_sampling:
+        wi, emit_pdf, emit_position, emitter_normal= emitter_net.sample_emitter(torch.rand_like(position[..., :2]), position)
+        # visibility test
+        emit_weight,emit_pdf, _ = emitter_net.eval_emitter(emit_position, wi)
+        G = (-wi*emitter_normal).sum(-1).abs() / (emit_position-position).pow(2).sum(-1).clamp_min(1e-6) # B, 1
+        emit_weight = emit_weight*G[...,None]/emit_pdf.clamp_min(1e-6)
+        # emit brdf
+        emit_brdf,brdf_pdf = material_net.eval_brdf(None, position, wi,wo,normal,uv, TBN, latent, batch_mask) # gt_params will not be used in neural brdf model
+        w_mis = torch.where((emit_pdf>0)&(~brdf_pdf.isinf()),emit_pdf*emit_pdf/(emit_pdf*emit_pdf+brdf_pdf*brdf_pdf),0)
+        w_mis[emit_pdf.isinf()|(brdf_pdf==0)] = 1
+        L[vis] += emit_brdf*emit_weight * w_mis
+    # sample brdf
+    if brdf_sampling:
+        wi,brdf_pdf,brdf_weight = material_net.sample_brdf(
+            gt_params,
+            position,
+            torch.rand(len(normal),device=device),
+            torch.rand(len(normal),2,device=device),
+            wo,normal,
+            latent,
+            batch_mask
+        ) # ground truth roughness will be used in brdf sampling
+    
+        # Evaluate Le
+        Le, emit_pdf, _ = emitter_net.eval_emitter(position, wi)
+        G = (-wi*normal).sum(-1).abs() / (emit_position-position).pow(2).sum(-1).clamp_min(1e-6) # B, 1
+        Le = Le*G[...,None]/emit_pdf.clamp_min(1e-6)
+        
+        w_mis = torch.where((brdf_pdf>0)&(~emit_pdf.isinf()),brdf_pdf*brdf_pdf/(emit_pdf*emit_pdf+brdf_pdf*brdf_pdf),0)
+        w_mis[brdf_pdf.isinf()|(emit_pdf==0)] = 1
+        w_mis[w_mis.isnan()] = 0
+        L[vis] += brdf_weight*Le * w_mis
+    ray_params = torch.cat([position, wi, wo], dim=-1)
+
+    return L, vis, ray_params

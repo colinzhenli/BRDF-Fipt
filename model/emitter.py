@@ -290,3 +290,202 @@ class PresetPointEmitter(nn.Module):
         valid = torch.ones(B, dtype=torch.bool, device=position.device)
 
         return intensities, pdf, valid
+    
+class RealAreaEmitter(nn.Module):
+    def __init__(self, radius, positions, radiance, fwhm_deg, light_normal=None):
+        """
+        Args:
+            positions: (N, 3) light center
+            radius: (N, 1) light radius
+            radiance: (N, 1) largest radiance
+        """
+        super(RealAreaEmitter, self).__init__()
+        self.register_buffer('light_positions', positions)     # [N, 3]
+        self.register_buffer('light_radius', radius)           # [N, 1]
+        self.register_buffer('light_radiance', radiance)       # [N, 1 or 3]
+
+        # Angular exponent m from FWHM
+        theta_half = math.radians(fwhm_deg * 0.5)
+        m = math.log(0.5) / math.log(max(1e-8, math.cos(theta_half)))
+        self.m = m
+        n = torch.as_tensor(light_normal, dtype=positions.dtype, device=positions.device)
+        n = n / (n.norm() + 1e-12)
+        self.register_buffer('light_normal', n)
+
+    @torch.no_grad()
+    def _directional_distribution(self, light_dir):
+        """
+        Compute directional radiance L(θ) for rays headed from the light to the surface.
+        Args:
+            light_dir: (B, 3) directions from surface -> light (so emission dir is -light_dir)
+
+        Returns:
+            radiance: (B, 3) directional radiance (RGB) following L = L0 * cos^m(theta).
+                      Clamped to zero for back-facing directions.
+        """
+        # Emission direction is from light -> surface
+        v = -light_dir  # (B,3)
+        v = v / (v.norm(dim=-1, keepdim=True) + 1e-12)
+
+        # cos(theta) between light normal and emission direction
+        cos_theta = torch.clamp((v * self.light_normal).sum(dim=-1, keepdim=True), min=0.0)
+
+        # Cosine-power lobe
+        Lshape = cos_theta.pow(self.m)  # (B,1)
+
+        # Use the first light's L0 as the color (assumes one emitter or shared spectrum)
+        L0 = self.light_radiance[0]     # (3,) or (1,)
+        if L0.numel() == 1:
+            L0 = L0.expand(3)
+        L0 = L0.view(1, -1)             # (1,3)
+
+        radiance = Lshape * L0          # (B,3)
+        return radiance
+    
+    def sample_emitter(self, sample, position):
+        """
+        Sample a direction(position) from the area light
+        Args:
+            sample: Bx2 uniform samples for spherical sampling
+            position: Bx3 surface positions (unused)
+        Returns:
+            wi: Bx3 sampled directions
+            pdf: Bx1 sampling pdf (solid angle pdf rather than area pdf)
+            emit_position: Bx3 sampled positions
+            emitter_normal: Bx3 sampled normals
+        """
+        # TODO
+        return wi, pdf, emit_position, emitter_normal
+
+    def eval_emitter(self, position, light_dir):
+        """
+        Evaluate environment map radiance along given directions
+        Args:
+            position: Bx3 intersection points 
+            light_dir: Bx3 light directions(from surface to light)
+        Returns:
+            Le: Bx3 radiance
+            pdf: Bx1 pdf
+            valid: B valid samples (always True for area light)
+        """
+        # TODO
+
+        return Le, pdf, torch.ones_like(pdf, dtype=torch.bool)  # Always valid
+    
+class AreaEmitter(nn.Module):
+    """ reference triangle mesh emitters from FIPT paper"""
+    def __init__(self,emitter_path):
+        """ emitter_path file 
+        is_emitter: B indicator of whether a triangle is emitter
+        emitter_vertices: Kx3x3 triangle vertices of emitters
+        emitter_area: K surface areas of emitters
+        emitter_radiance: Bx3x3 emitter radiance
+        """
+        super(AreaEmitter,self).__init__()
+        
+        weight = torch.load(emitter_path,map_location='cpu')
+        
+        is_emitter = weight['is_emitter']
+        emitter_vertices = weight['emitter_vertices']
+        emitter_area = weight['emitter_area']
+        emitter_radiance = weight['emitter_radiance']
+
+        self.register_buffer('is_emitter',is_emitter)
+        self.register_buffer('emitter_vertices',emitter_vertices)
+        self.register_buffer('emitter_area',emitter_area)
+        self.register_buffer('radiance',emitter_radiance)
+        
+        # emitter idx mapping, -1 indicates not an emitter
+        emitter_idx = torch.full((len(is_emitter),),-1,device=is_emitter.device,dtype=torch.long)
+        emitter_idx[is_emitter] = torch.arange(is_emitter.sum(),device=is_emitter.device)
+        self.register_buffer('emitter_idx',emitter_idx)
+        
+        # emitter idx to triangle idx
+        triangle_idx = torch.arange(len(is_emitter))[is_emitter]
+        self.register_buffer('triangle_idx',triangle_idx)
+        
+        # sample emitters uniformly
+        emitter_pdf = NF.normalize(torch.ones_like(emitter_area),dim=-1,p=1)
+        emitter_cdf = emitter_pdf.cumsum(-1).contiguous()
+        self.register_buffer('emitter_pdf',emitter_pdf)
+        self.register_buffer('emitter_cdf',emitter_cdf)
+    
+    def forward(self,triangle_idx):
+        """ get emitter radiance
+        triangle_idx: B triangle indices
+        """
+        vis = triangle_idx != -1 # whether a valid triangle
+
+        is_area = self.is_emitter[triangle_idx]&vis
+        Le = torch.zeros(position.shape[0],3,device=position.device)
+        if is_area.any():
+            e_idx = self.emitter_idx[triangle_idx[is_area]]
+            Le[is_area] = self.radiance[e_idx]
+        
+        # assume zero background lighting
+        Le = Le*vis[...,None]
+        return Le
+    
+    def eval_emitter(self, position,light_dir,triangle_idx,*args):
+        """ evaluate surface emission and pdf
+        Args:
+            position: Bx3 intersection location
+            light_dir: Bx3 emission direction
+            triangle_idx: B intersected triangle id
+        Return:
+            Le: Bx3 radiance
+            emit_pdf: Bx1 emitter pdf
+            valid_next: B valid surface
+        """
+        # whether valid intersection
+        vis = triangle_idx != -1
+
+        # get area light
+        is_area = self.is_emitter[triangle_idx]&vis
+
+        Le = torch.zeros(position.shape[0],3,device=position.device)
+        emit_pdf = torch.zeros(position.shape[0],device=position.device)
+        if is_area.any():
+            e_idx = self.emitter_idx[triangle_idx[is_area]]
+            emit_pdf[is_area] = self.emitter_pdf[e_idx]/self.emitter_area[e_idx].clamp_min(1e-12)
+            Le[is_area] = self.radiance[e_idx]
+
+        # assume zero background lighting
+        Le = Le*vis[...,None]
+
+        # next: not area light or background
+        valid_next = (~is_area)&vis
+        return Le,emit_pdf.unsqueeze(-1),valid_next
+    
+    def sample_emitter(self,sample1,sample2,position):
+        """ importance sampling emitters
+        Args:
+            sample1: B uniform samples
+            sample2: Bx2 uniform samples
+            position: Bx3 surfae location
+        Return:
+            wi: Bx3 sampled direction
+            pdf: Bx1 the sampling pdf (in area space)
+            triangle_idx: B the sampled triangle id
+        """
+        # pick an emitter
+        emitter_idx = torch.searchsorted(self.emitter_cdf,sample1.clamp_min(1e-12))
+        pdf0 = self.emitter_pdf[emitter_idx]
+
+        # unifromly sample points on triangles
+        xi1 = sample2[...,0].sqrt()
+        u = (1-xi1).unsqueeze(-1)
+        v = (xi1*sample2[...,1]).unsqueeze(-1)
+        w = 1-u-v
+
+        # emitter area
+        A1 = self.emitter_area[emitter_idx]
+        # sampled location on triangle
+        p1 = self.emitter_vertices[emitter_idx]
+        p1 = p1[:,0]*u + p1[:,1]*v + p1[:,2]*w
+        wi = NF.normalize(p1-position,dim=-1)
+        triangle_idx = self.triangle_idx[emitter_idx]
+        
+        # pdf in area space
+        pdf = pdf0/A1.clamp_min(1e-12)
+        return wi,pdf.unsqueeze(-1),triangle_idx
