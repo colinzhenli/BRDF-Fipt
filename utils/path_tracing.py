@@ -473,6 +473,7 @@ def batched_path_tracing_tbn_real_area_emitter(scene,emitter_net,material_net,ra
     rays_d = rays_d.reshape(-1,3)
     dx_du = dx_du.reshape(-1,3)
     dy_dv = dy_dv.reshape(-1,3)
+    light_id = light_id.reshape(-1)
     batch_mask = batch_mask.reshape(-1)
     N = len(rays_o)
     device = rays_o.device
@@ -501,9 +502,9 @@ def batched_path_tracing_tbn_real_area_emitter(scene,emitter_net,material_net,ra
     
     # deterministic sampling
     if emitter_sampling:
-        wi, emit_pdf, emit_position, emitter_normal= emitter_net.sample_emitter(torch.rand_like(position[..., :2]), position)
+        wi, emit_pdf, emit_position, emitter_normal= emitter_net.sample_emitter(torch.rand_like(position[..., :2]), position, light_id)
         # visibility test
-        emit_weight,emit_pdf, _ = emitter_net.eval_emitter(emit_position, wi)
+        emit_weight,emit_pdf, _ = emitter_net.eval_emitter(emit_position, wi, light_id)
         G = (-wi*emitter_normal).sum(-1).abs() / (emit_position-position).pow(2).sum(-1).clamp_min(1e-6) # B, 1
         emit_weight = emit_weight*G[...,None]/emit_pdf.clamp_min(1e-6)
         # emit brdf
@@ -524,7 +525,7 @@ def batched_path_tracing_tbn_real_area_emitter(scene,emitter_net,material_net,ra
         ) # ground truth roughness will be used in brdf sampling
     
         # Evaluate Le
-        Le, emit_pdf, _ = emitter_net.eval_emitter(position, wi)
+        Le, emit_pdf, _ = emitter_net.eval_emitter(position, wi, light_id)
         G = (-wi*normal).sum(-1).abs() / (emit_position-position).pow(2).sum(-1).clamp_min(1e-6) # B, 1
         Le = Le*G[...,None]/emit_pdf.clamp_min(1e-6)
         
