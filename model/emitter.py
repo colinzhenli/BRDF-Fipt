@@ -342,12 +342,13 @@ class RealAreaEmitter(nn.Module):
         radiance = Lshape * L0          # (B,3)
         return radiance
     
-    def sample_emitter(self, sample, position):
+    def sample_emitter(self, sample, position, light_id):
         """
         Sample a direction(position) from the area light
         Args:
             sample: Bx2 uniform samples for spherical sampling
             position: Bx3 surface positions (unused)
+            light_id: B light indices
         Returns:
             wi: Bx3 sampled directions
             pdf: Bx1 sampling pdf (solid angle pdf rather than area pdf)
@@ -357,7 +358,7 @@ class RealAreaEmitter(nn.Module):
         # TODO
         return wi, pdf, emit_position, emitter_normal
 
-    def eval_emitter(self, position, light_dir):
+    def eval_emitter(self, position, light_dir, light_id):
         """
         Evaluate environment map radiance along given directions
         Args:
