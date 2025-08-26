@@ -8,7 +8,7 @@ from torchviz import make_dot
 from viztracer import VizTracer
 from tqdm import tqdm
 import math
-from model.emitter import DynamicPointEmitter, PresetPointEmitter
+from model.emitter import DynamicPointEmitter, PresetPointEmitter, RealAreaEmitter
 import os
 
 class BRDFTrainer(pl.LightningModule):
@@ -30,11 +30,16 @@ class BRDFTrainer(pl.LightningModule):
         print("after latent reg weight")
         self.renderer = ForwardRenderer(cfg, self.material)
         self.gt_renderer = ForwardRenderer(cfg, self.gt_material)
-        self.emitter = PresetPointEmitter(
-            read_from_metadata=True,
-            metadata_path=os.path.join(self.cfg.metadata_path, 'emitter_metadata.json'),
-            positions=None, 
-            intensities=None
+        # self.emitter = PresetPointEmitter(
+        #     read_from_metadata=True,
+        #     metadata_path=os.path.join(self.cfg.metadata_path, 'emitter_metadata.json'),
+        #     positions=None, 
+        #     intensities=None
+        # )
+        self.emitter = RealAreaEmitter(
+            radius=cfg.renderer.emitter.radius,
+            positions=cfg.renderer.emitter.positions,
+            intensities=cfg.renderer.emitter.intensities
         )
         self.img_hw = cfg.renderer.resolution
 

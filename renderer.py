@@ -1,5 +1,5 @@
 import torch
-from utils.path_tracing import path_tracing_envmap_emitter, batched_path_tracing_dynamic_emitter, batched_path_tracing_preset_emitter, batched_path_tracing_tbn_preset_emitter
+from utils.path_tracing import path_tracing_envmap_emitter, batched_path_tracing_dynamic_emitter, batched_path_tracing_preset_emitter, batched_path_tracing_tbn_preset_emitter, batched_path_tracing_tbn_real_area_emitter
 from utils.scene_loader import load_uv_obj_to_mitsuba_scene
 from mitsuba import load_dict
 import mitsuba as mi
@@ -21,7 +21,18 @@ class ForwardRenderer:
             }
         })
         '''
-        self.scene=load_uv_obj_to_mitsuba_scene(cfg.renderer.mesh.path)
+        if cfg.renderer.mesh.path is not None:
+            self.scene=load_uv_obj_to_mitsuba_scene(cfg.renderer.mesh.path)
+        else:
+            self.scene = load_dict({
+            "type": "scene",
+            "shape_id": {
+                "type": "sphere",
+                "center": [0, 0, 0], 
+                "radius": 0.2,
+                "flip_normals": False
+            }
+        })
         self.material = material.to(self.device)
 
         print("type",cfg.renderer.emitter.type)
@@ -29,6 +40,8 @@ class ForwardRenderer:
             self.ray_tracer = path_tracing_envmap_emitter
         elif cfg.renderer.emitter.type == 'presetpoint':
             self.ray_tracer = batched_path_tracing_tbn_preset_emitter
+        elif cfg.renderer.emitter.type == 'realarea':
+            self.ray_tracer = batched_path_tracing_tbn_real_area_emitter
         # elif cfg.renderer.emitter.type == 'tbnpresetpoint':
         #     self.ray_tracer = batched_path_tracing_tbn_preset_emitter
         emitter_cfg = cfg.renderer.emitter

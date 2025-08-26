@@ -1,0 +1,32 @@
+type: "path_tracing_realarea_emitter"
+brdf_sampling: False # not actually used
+emitter_sampling: True # not actually used
+indir_depth: 0
+
+camera:
+  distance: 2.0
+  number_of_views: 40 # used to generate reference images
+  number_of_view_test: 10
+  views_per_batch: 8
+  look_at: [0.0, 0.0, 0.0]
+  up: [0.0, 1.0, 0.0]
+  position: [0.0, 0.0, -2.0]
+  camera_angle_x: 0.5
+
+mesh:
+  path: None # Use flat mesh for test
+
+emitter:
+  type: "realarea"
+  radius: 0.007 # value from specs
+  fwhm_deg: 115.0 # full width at half maximum angle(value for specs)
+  positions: [0.0, 0.0, 0.0] # to be updated
+  radiance: [1.0, 1.0, 1.0] # largest radiance at 90 degree(to be updated)
+
+spp:
+  train: 64
+  val: 64
+  test: 64
+SPP_chunk: 4
+
+resolution: [2048, 2048]

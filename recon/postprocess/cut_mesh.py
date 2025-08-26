@@ -12,8 +12,9 @@ T_b2cCV = np.array([
 ])
 
 # Global bounding box limits (x_min, y_min, z_min, x_max, y_max, z_max)
-# Adjust these values as needed for your specific use case
 global_bbox = [0.0, -0.15, -0.12, 0.3, 0.15, 0.05-0.12]  # Example values in meters
+# percentage cutting on the local bbox
+percentage_bbox = [0.1, 0.02, 0.7, 0.1, 0.02, 0.0]  # Example values in percentage
 
 def transform_mesh(mesh, T_w2c):
     """Apply a 4x4 transform to mesh vertices."""
@@ -54,7 +55,7 @@ def crop_mesh_bbox(mesh: trimesh.Trimesh, bbox):
     return mesh.submesh([face_indices], only_watertight=False)[0]
 
 def crop_mesh(mesh: trimesh.Trimesh, crop_percent=0.8):
-    """Crop mesh by percentage around the center AABB in XY plane only.
+    """Crop mesh by percentage around the center AABB using percentage_bbox ratios.
 
     Args:
         mesh (trimesh.Trimesh): Input mesh.
@@ -65,22 +66,21 @@ def crop_mesh(mesh: trimesh.Trimesh, crop_percent=0.8):
     """
     bounds_min = mesh.bounds[0]
     bounds_max = mesh.bounds[1]
-    size = bounds_max - bounds_min  # OK: no ptp() used
+    size = bounds_max - bounds_min
 
-    crop_margin = (1 - crop_percent) / 2.0
-    
-    # Only crop in XY plane, keep full Z range
+    # Use percentage_bbox to determine crop margins for each dimension
+    # percentage_bbox = [x_min_ratio, y_min_ratio, z_min_ratio, x_max_ratio, y_max_ratio, z_max_ratio]
     crop_min = bounds_min.copy()
     crop_max = bounds_max.copy()
     
-    # Apply cropping only to X and Y dimensions
-    crop_min[0] = bounds_min[0] + size[0] * crop_margin  # X min
-    crop_min[1] = bounds_min[1] + size[1] * crop_margin  # Y min
-    # Keep original Z min: crop_min[2] = bounds_min[2]
+    # Apply cropping using percentage_bbox ratios
+    crop_min[0] = bounds_min[0] + size[0] * percentage_bbox[0]  # X min
+    crop_min[1] = bounds_min[1] + size[1] * percentage_bbox[1]  # Y min
+    crop_min[2] = bounds_min[2] + size[2] * percentage_bbox[2]  # Z min
     
-    crop_max[0] = bounds_max[0] - size[0] * crop_margin  # X max
-    crop_max[1] = bounds_max[1] - size[1] * crop_margin  # Y max
-    # Keep original Z max: crop_max[2] = bounds_max[2]
+    crop_max[0] = bounds_max[0] - size[0] * percentage_bbox[3]  # X max
+    crop_max[1] = bounds_max[1] - size[1] * percentage_bbox[4]  # Y max
+    crop_max[2] = bounds_max[2] - size[2] * percentage_bbox[5]  # Z max
 
     bbox = [*crop_min, *crop_max]
     return crop_mesh_bbox(mesh, bbox)
