@@ -14,7 +14,7 @@ T_b2cCV = np.array([
 # Global bounding box limits (x_min, y_min, z_min, x_max, y_max, z_max)
 global_bbox = [0.0, -0.15, -0.12, 0.3, 0.15, 0.05-0.12]  # Example values in meters
 # percentage cutting on the local bbox
-percentage_bbox = [0.1, 0.02, 0.7, 0.1, 0.02, 0.0]  # Example values in percentage
+percentage_bbox = [0.12, 0.05, 0.7, 0.1, 0.05, 0.0]  # Example values in percentage
 
 def transform_mesh(mesh, T_w2c):
     """Apply a 4x4 transform to mesh vertices."""
