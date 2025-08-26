@@ -351,7 +351,7 @@ class RealAreaEmitter(nn.Module):
             light_id: B light indices
         Returns:
             wi: Bx3 sampled directions
-            pdf: Bx1 sampling pdf (solid angle pdf rather than area pdf)
+            pdf: Bx1 sampling pdf (area pdf)
             emit_position: Bx3 sampled positions
             emitter_normal: Bx3 sampled normals
         """
