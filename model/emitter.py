@@ -300,20 +300,20 @@ class RealAreaEmitter(nn.Module):
             radiance: (N, 1) largest radiance
         """
         super(RealAreaEmitter, self).__init__()
-        self.register_buffer('light_positions', positions)     # [N, 3]
-        self.register_buffer('light_radius', radius)           # [N, 1]
-        self.register_buffer('light_radiance', radiance)       # [N, 1 or 3]
+        self.register_buffer('light_positions', torch.tensor(positions))     # [N, 3]
+        self.register_buffer('light_radius', torch.tensor(radius).unsqueeze(0).transpose(0,1))           # [N, 1]
+        self.register_buffer('light_radiance', torch.tensor(radiance))       # [N, 1 or 3]
 
         # Angular exponent m from FWHM
         theta_half = math.radians(fwhm_deg * 0.5)
         m = math.log(0.5) / math.log(max(1e-8, math.cos(theta_half)))
         self.m = m
-        n = torch.as_tensor(light_normal, dtype=positions.dtype, device=positions.device)
+        n = torch.as_tensor(light_normal, dtype=self.light_positions.dtype, device=self.light_positions.device)
         n = n / (n.norm() + 1e-12)
         self.register_buffer('light_normal', n)
 
     @torch.no_grad()
-    def _directional_distribution(self, light_dir):
+    def _directional_distribution(self, light_dir,light_id):
         """
         Compute directional radiance L(θ) for rays headed from the light to the surface.
         Args:
@@ -328,7 +328,7 @@ class RealAreaEmitter(nn.Module):
         v = v / (v.norm(dim=-1, keepdim=True) + 1e-12)
 
         # cos(theta) between light normal and emission direction
-        cos_theta = torch.clamp((v * self.light_normal).sum(dim=-1, keepdim=True), min=0.0)
+        cos_theta = torch.clamp((v * self.light_normal[light_id]).sum(dim=-1, keepdim=True), min=0.0)
 
         # Cosine-power lobe
         Lshape = cos_theta.pow(self.m)  # (B,1)
@@ -344,10 +344,10 @@ class RealAreaEmitter(nn.Module):
     
     def sample_emitter(self, sample, position, light_id):
         """
-        Sample a direction(position) from the area light
+        Sample a direction(position) from the area light (circular disk).
         Args:
-            sample: Bx2 uniform samples for spherical sampling
-            position: Bx3 surface positions (unused)
+            sample: Bx2 uniform samples for disk sampling
+            position: Bx3 surface positions
             light_id: B light indices
         Returns:
             wi: Bx3 sampled directions
@@ -355,9 +355,149 @@ class RealAreaEmitter(nn.Module):
             emit_position: Bx3 sampled positions
             emitter_normal: Bx3 sampled normals
         """
-        # TODO
+        B = position.shape[0]
+        
+        # Get light properties for the specified light indices
+        light_pos = self.light_positions[light_id]  # (B, 3)
+        light_r = self.light_radius[light_id].squeeze(-1)  # (B,)
+        light_n = self.light_normal[light_id]  # (B, 3)
+        
+        # Uniform sampling on disk using polar coordinates
+        r_sample = torch.sqrt(sample[..., 0]) * light_r   # (B,)
+        theta = 2.0 * math.pi * sample[..., 1]           # (B,)
+        disk_x = r_sample * torch.cos(theta)             # (B,)
+        disk_y = r_sample * torch.sin(theta)             # (B,)
+        
+        # Create orthonormal basis for each light plane
+        up = torch.tensor([0.0, 1.0, 0.0], device=light_n.device, dtype=light_n.dtype)
+        up = up.unsqueeze(0).expand(B, 3)  # (B, 3)
+        
+        # Check for near-parallel cases and use alternative up vector
+        parallel_mask = torch.abs((light_n * up).sum(dim=-1)) > 0.9  # (B,)
+        alt_up = torch.tensor([1.0, 0.0, 0.0], device=light_n.device, dtype=light_n.dtype)
+        alt_up = alt_up.unsqueeze(0).expand(B, 3)  # (B, 3)
+        up = torch.where(parallel_mask.unsqueeze(-1), alt_up, up)  # (B, 3)
+        
+        # Compute u_axis for each light
+        u_axis = torch.cross(light_n, up, dim=-1)  # (B, 3)
+        u_axis = u_axis / (torch.norm(u_axis, dim=-1, keepdim=True) + 1e-8)  # (B, 3)
+        
+        # Compute v_axis for each light
+        v_axis = torch.cross(light_n, u_axis, dim=-1)  # (B, 3)
+        v_axis = v_axis / (torch.norm(v_axis, dim=-1, keepdim=True) + 1e-8)  # (B, 3)
+        
+        # Compute sampled position on light disk
+        emit_position = (
+            light_pos 
+            + disk_x.unsqueeze(-1) * u_axis 
+            + disk_y.unsqueeze(-1) * v_axis
+        )  # (B, 3)
+        
+        # Calculate direction from surface to light sample
+        wi = emit_position - position  # (B, 3)
+        distance = torch.norm(wi, dim=-1, keepdim=True)  # (B, 1)
+        wi = wi / distance  # (B, 3)
+        
+        # Calculate area-based PDF
+        # PDF = 1 / Area = 1 / (π r^2)
+        light_area = math.pi * light_r * light_r  # (B,)
+        pdf = 1.0 / light_area  # (B,)
+        pdf = pdf.unsqueeze(-1)  # (B, 1)
+        
+        # Emitter normal (same for all sampled points)
+        emitter_normal = light_n  # (B, 3)
+        
         return wi, pdf, emit_position, emitter_normal
 
+    def intersect(self, position, light_dir, light_id):
+        """
+        Intersect a ray with the area light (circular disk)
+        Args:
+            position: (B, 3) ray origins
+            light_dir: (B, 3) ray directions (normalized)
+            light_id: (B,) light indices
+        Returns:
+            t: (B,) intersection distances (negative if no intersection)
+            hit: (B,) boolean mask for valid intersections
+            hit_pos: (B, 3) intersection positions
+            light_idx: (B,) light indices
+        """
+        B = position.shape[0]
+        
+        # Get light properties for the specified light indices
+        light_pos = self.light_positions[light_id]  # (B, 3)
+        light_r = self.light_radius[light_id].squeeze(-1)  # (B,)
+        light_n = self.light_normal[light_id]  # (B, 3)
+        
+        # Ray-plane intersection
+        # Ray: p(t) = pos + t * dirs
+        # Plane: (p - light_pos) · light_normal = 0
+        # Substituting: (pos + t*dirs - light_pos) · light_normal = 0
+        # Solving for t: t = (light_pos - pos) · light_normal / (dirs · light_normal)
+        
+        # Compute denominator (ray direction dot plane normal)
+        denom = (light_dir * light_n).sum(dim=-1)  # (B,)
+
+        # Check if ray is parallel to plane (denom ≈ 0)
+        
+        # Compute numerator
+        to_light = light_pos - position  # (B, 3)
+        numer = (to_light * light_n).sum(dim=-1)  # (B,)
+        '''
+        print("position",position)
+        print("light_pos",light_pos)
+        print("to_light",to_light)
+        print("light_n",light_n)
+        
+        print("numer",numer)
+        print("denom",denom)
+        '''
+        # Compute intersection distance
+        t = numer / denom  # (B,)
+        
+        # Check if intersection is in front of ray origin
+        
+        # Compute intersection points
+        hit_pos = position + t.unsqueeze(-1) * light_dir  # (B, 3)
+        
+        # Check if intersection point is within the circular disk
+        # Create orthonormal basis for each light plane
+        up = torch.tensor([0.0, 1.0, 0.0], device=light_n.device, dtype=light_n.dtype)
+        up = up.unsqueeze(0).expand(B, 3)  # (B, 3)
+        
+        # Check for near-parallel cases and use alternative up vector
+        parallel_mask = torch.abs((light_n * up).sum(dim=-1)) > 0.9  # (B,)
+        alt_up = torch.tensor([1.0, 0.0, 0.0], device=light_n.device, dtype=light_n.dtype)
+        alt_up = alt_up.unsqueeze(0).expand(B, 3)  # (B, 3)
+        up = torch.where(parallel_mask.unsqueeze(-1), alt_up, up)  # (B, 3)
+        
+        # Compute u_axis for each light
+        u_axis = torch.cross(light_n, up, dim=-1)  # (B, 3)
+        u_axis = u_axis / (torch.norm(u_axis, dim=-1, keepdim=True) + 1e-8)  # (B, 3)
+        
+        # Compute v_axis for each light
+        v_axis = torch.cross(light_n, u_axis, dim=-1)  # (B, 3)
+        v_axis = v_axis / (torch.norm(v_axis, dim=-1, keepdim=True) + 1e-8)  # (B, 3)
+        
+        # Project intersection point onto the light plane coordinate system
+        to_hit = hit_pos - light_pos  # (B, 3)
+        u_coord = (to_hit * u_axis).sum(dim=-1)  # (B,)
+        v_coord = (to_hit * v_axis).sum(dim=-1)  # (B,)
+        
+        # Check if within circular disk bounds (distance from center <= radius)
+        dist_from_center = torch.sqrt(u_coord * u_coord + v_coord * v_coord)  # (B,)
+        
+        # Final hit mask: valid t, not parallel, and within disk
+        
+        # Set invalid distances to negative
+        #t = torch.where(hit, t, torch.full_like(t, -1.0))
+        hit=True
+        
+        # Light indices for each intersection
+        light_idx = light_id  # (B,)
+        
+        return t, hit, hit_pos, light_idx
+    
     def eval_emitter(self, position, light_dir, light_id):
         """
         Evaluate environment map radiance along given directions
@@ -369,8 +509,20 @@ class RealAreaEmitter(nn.Module):
             pdf: Bx1 pdf
             valid: B valid samples (always True for area light)
         """
-        # TODO
+        t, hit, hit_pos, light_idx=self.intersect(position,light_dir,light_id)
+        '''
+        print("t",t.shape)
+        print("hit_pos",hit_pos.shape)
+        print("light_dir",light_dir.shape)
+        print("light_normal",self.light_normal[light_id].shape)
+        '''
+        Le=self._directional_distribution(light_dir,light_id)*self.light_radiance[light_id]*(1.0/(t*t)).unsqueeze(-1)
+        dA_dw=((position-hit_pos)*(position-hit_pos)).sum(dim=-1)/((-light_dir)*self.light_normal[light_id]).sum(dim=-1)
+        pdf=1.0/(self.light_radius[light_id]*self.light_radius[light_id]*torch.pi)
+        pdf=pdf*dA_dw.unsqueeze(-1)
 
+        print("Le",Le.shape)
+        #print("t",t)
         return Le, pdf, torch.ones_like(pdf, dtype=torch.bool)  # Always valid
     
 class AreaEmitter(nn.Module):

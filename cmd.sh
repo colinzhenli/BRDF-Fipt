@@ -1,6 +1,6 @@
-CUDA_VISIBLE_DEVICES=0 \
+CUDA_VISIBLE_DEVICES=1 \
 python main.py \
-    renderer=realcapture_emitter \
+    renderer=realcapture_area_emitter \
     material=learnablesvpbr \
     experiment_name=Theia2_Time-record_Ani_Pre-generated-images_Single-chunk_Permed-Reweighted-IS_run_1 \
     output_folder=output \
@@ -8,7 +8,7 @@ python main.py \
     data.importance_sampling=False \
     data.use_single_chunk_sampling=False \
     data.uniform_sampling=False \
-    dataset_folder=/mnt/data/haoran/BRDF-Flit/pbr_dataset/Aug4_more_reference_images_isotropic \
+    dataset_folder=/mnt/data/haoran/BRDF-Flit/dataset_area \
     model.trainer.max_epochs=150 \
     model.trainer.limit_train_batches=512 \
     data.rays_num=32768

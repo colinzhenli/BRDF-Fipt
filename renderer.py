@@ -8,7 +8,7 @@ class ForwardRenderer:
     def __init__(self, cfg, material):
         self.cfg = cfg
         self.device = 'cuda'
-        '''
+        
         self.scene = load_dict({
             "type": "scene",
             "shape_id": {
@@ -33,6 +33,7 @@ class ForwardRenderer:
                 "flip_normals": False
             }
         })
+        '''
         self.material = material.to(self.device)
 
         print("type",cfg.renderer.emitter.type)

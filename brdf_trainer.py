@@ -10,6 +10,7 @@ from tqdm import tqdm
 import math
 from model.emitter import DynamicPointEmitter, PresetPointEmitter, RealAreaEmitter
 import os
+import json
 
 class BRDFTrainer(pl.LightningModule):
     def __init__(self, cfg, material, gt_material, roughness, metallic):
@@ -36,13 +37,56 @@ class BRDFTrainer(pl.LightningModule):
         #     positions=None, 
         #     intensities=None
         # )
-        self.emitter = RealAreaEmitter(
-            radius=cfg.renderer.emitter.radius,
-            positions=cfg.renderer.emitter.positions,
-            intensities=cfg.renderer.emitter.intensities
-        )
+        self.emitter = self.emitter_init_from_metadata(cfg)
         self.img_hw = cfg.renderer.resolution
 
+    def emitter_init_from_metadata(self, cfg):
+        metadata_path = os.path.join(self.cfg.metadata_path, 'emitter_metadata.json')
+        with open(metadata_path, 'r') as f:
+            metadata = json.load(f)
+        
+        # Extract data from metadata
+        positions = []
+        radiances = []
+        radii = []
+        normals = []
+        
+        for emitter_data in metadata:
+            positions.append(emitter_data['position'])
+            radiances.append(emitter_data['radiance'])
+            
+            # Handle radius - convert tensor to float if needed
+            radius = emitter_data['radius']
+            if isinstance(radius, list) and len(radius) == 1:
+                radius = radius[0]
+            elif isinstance(radius, list):
+                radius = radius  # Keep as list if multi-dimensional
+            radii.append(radius)
+            
+            normals.append(emitter_data['normal'])
+        
+        # Convert to tensors and create emitter
+        positions_tensor = torch.tensor(positions, dtype=torch.float32)
+        radiances_tensor = torch.tensor(radiances, dtype=torch.float32)
+        radii_tensor = torch.tensor(radii, dtype=torch.float32)
+        normals_tensor = torch.tensor(normals, dtype=torch.float32)
+        '''
+        print("radiances_tensor",radiances_tensor.shape)
+        print("radii_tensor",radii_tensor.shape)
+        print("positions_tensor",positions_tensor.shape)
+        print("normals_tensor",normals_tensor.shape)
+        '''        
+        # Create RealAreaEmitter with loaded parameters
+        emitter = RealAreaEmitter(
+            radius=radii_tensor,
+            positions=positions_tensor,
+            radiance=radiances_tensor,
+            fwhm_deg=cfg.renderer.emitter.fwhm_deg if hasattr(cfg.renderer.emitter, 'fwhm_deg') else 115.0,
+            light_normal=normals_tensor
+        )
+        
+        return emitter
+        
     # def gamma(self, x):
     #     mask = x <= 0.0031308
     #     ret = torch.empty_like(x)

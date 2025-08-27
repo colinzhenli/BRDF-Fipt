@@ -1,0 +1,12 @@
+{"time":"2025-08-27T01:49:01.635988752Z","level":"INFO","msg":"stream: starting","core version":"0.21.0"}
+{"time":"2025-08-27T01:49:01.88839835Z","level":"INFO","msg":"stream: created new stream","id":"l2nigoxo"}
+{"time":"2025-08-27T01:49:01.888458362Z","level":"INFO","msg":"stream: started","id":"l2nigoxo"}
+{"time":"2025-08-27T01:49:01.888473534Z","level":"INFO","msg":"sender: started","stream_id":"l2nigoxo"}
+{"time":"2025-08-27T01:49:01.888490883Z","level":"INFO","msg":"writer: Do: started","stream_id":"l2nigoxo"}
+{"time":"2025-08-27T01:49:01.888530447Z","level":"INFO","msg":"handler: started","stream_id":"l2nigoxo"}
+{"time":"2025-08-27T01:49:03.769482041Z","level":"INFO","msg":"stream: closing","id":"l2nigoxo"}
+{"time":"2025-08-27T01:49:04.226417017Z","level":"INFO","msg":"fileTransfer: Close: file transfer manager closed"}
+{"time":"2025-08-27T01:49:04.35492324Z","level":"INFO","msg":"handler: closed","stream_id":"l2nigoxo"}
+{"time":"2025-08-27T01:49:04.354981702Z","level":"INFO","msg":"writer: Close: closed","stream_id":"l2nigoxo"}
+{"time":"2025-08-27T01:49:04.35501641Z","level":"INFO","msg":"sender: closed","stream_id":"l2nigoxo"}
+{"time":"2025-08-27T01:49:04.355103204Z","level":"INFO","msg":"stream: closed","id":"l2nigoxo"}

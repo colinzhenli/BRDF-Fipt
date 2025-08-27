@@ -14,19 +14,22 @@ camera:
   camera_angle_x: 0.5
 
 mesh:
-  path: None # Use flat mesh for test
+  path:  # Use flat mesh for test
 
 emitter:
   type: "realarea"
-  radius: 0.007 # value from specs
+  num_lights: 40
+  dist: 2.4
+  radius: 0.028 # value from specs
   fwhm_deg: 115.0 # full width at half maximum angle(value for specs)
   positions: [0.0, 0.0, 0.0] # to be updated
-  radiance: [1.0, 1.0, 1.0] # largest radiance at 90 degree(to be updated)
+  radiance: [0.0, 0.0, 0.0] # largest radiance at 90 degree(to be updated)
+  normal: [0.0, 0.0, 1.0] # normal of the area light
 
 spp:
-  train: 64
-  val: 64
-  test: 64
+  train: 1
+  val: 1
+  test: 1
 SPP_chunk: 4
 
 resolution: [2048, 2048]

@@ -1,0 +1,1 @@
+{"epoch":4,"lr-Adam":0.001,"train/psnr":9.176128387451172,"_runtime":54,"_timestamp":1.7563330118055046e+09,"trainer/global_step":2499,"train/recon_loss":0.10206235945224762,"_wandb":{"runtime":54},"_step":99,"train/total_loss":0.10206235945224762,"train/latent_reg":0}

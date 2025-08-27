@@ -10,7 +10,7 @@ from renderer import ForwardRenderer
 from brdf_trainer import BRDFTrainer
 from model.brdf import SvPBRBRDF
 from model.neural_brdf import LearnableSvPBRBRDF, SvLatentModel, AnisotropicLatentTexturedModel, LatentTexturedModel
-from model.emitter import DynamicPointEmitter, PresetPointEmitter
+from model.emitter import DynamicPointEmitter, PresetPointEmitter, RealAreaEmitter
 from torch.utils.data import DataLoader
 from itertools import islice
 from utils.dataset import SphereTestDataset, SphereValDataset
@@ -21,6 +21,9 @@ import importlib
 import warnings
 import logging
 import cv2
+from viztracer import VizTracer
+import sys
+
 warnings.filterwarnings("ignore")
 logging.getLogger("pytorch_lightning").setLevel(logging.ERROR)
 
@@ -264,9 +267,24 @@ def main(cfg):
     focal = (0.5 * w / np.tan(0.5 * camera_angle_x)).item()
     directions = get_ray_directions(h, w, focal)
     
-    emitter = PresetPointEmitter(
-        positions=torch.tensor([pos["position"] for pos in light_positions], device="cuda"),
-        intensities=torch.tensor([[50.0, 50.0, 50.0] for _ in range(number_of_lights)], device="cuda")
+    # emitter = PresetPointEmitter(
+    #     positions=torch.tensor([pos["position"] for pos in light_positions], device="cuda"),
+    #     intensities=torch.tensor([[50.0, 50.0, 50.0] for _ in range(number_of_lights)], device="cuda")
+    # )
+    # Create area light emitter with normals pointing toward origin
+    light_positions_tensor = torch.tensor([pos["position"] for pos in light_positions], device="cuda")
+    light_radiance = torch.tensor([[5000.0, 5000.0, 5000.0] for _ in range(number_of_lights)], device="cuda")
+    light_radius = torch.tensor([cfg.renderer.emitter.radius for _ in range(number_of_lights)], device="cuda")  # Small radius for area lights
+    
+    # Calculate normals pointing from light positions toward origin
+    light_normals = -light_positions_tensor / (torch.norm(light_positions_tensor, dim=-1, keepdim=True) + 1e-12)
+    
+    emitter = RealAreaEmitter(
+        radius=light_radius,
+        positions=light_positions_tensor,
+        radiance=light_radiance,
+        fwhm_deg=cfg.renderer.emitter.fwhm_deg,  # Full width at half maximum in degrees
+        light_normal=light_normals  # Use first light's normal (assuming single light setup)
     )
     
     print(f"==> Generating {len(camera_dicts)} x {len(light_positions)} = {len(camera_dicts) * len(light_positions)} reference images...")
@@ -294,14 +312,31 @@ def main(cfg):
             "c2w_matrix": c2w.tolist()
         })
     
+    print("light_normals", light_normals.shape)
     # Store emitter metadata
     emitter_metadata = []
     for light_idx, light_pos in enumerate(light_positions):
+        # Convert tensor to list to avoid JSON serialization issues
+        normal = light_normals[light_idx]
+        if hasattr(normal, 'tolist'):
+            normal = normal.tolist()
+        elif hasattr(normal, 'item') and normal.dim() == 0:
+            print("item")
+            normal = normal.item()
+
+        radius = light_radius[light_idx]
+        if hasattr(radius, 'tolist'):
+            radius = radius.tolist()
+        elif hasattr(radius, 'item') and radius.dim() == 0:
+            print("item")
+            radius = radius.item()
+
         emitter_metadata.append({
             "emitter_id": light_idx,
+            "radius": radius,
             "position": light_pos["position"],
-            "intensity": [50.0, 50.0, 50.0],
-            "distance": light_distance
+            "radiance": [50.0, 50.0, 50.0],
+            "normal": normal,
         })
     with torch.no_grad():
         for cam_idx, camera_dict in tqdm(enumerate(camera_dicts), total=len(camera_dicts), desc="Processing cameras"):
@@ -310,14 +345,22 @@ def main(cfg):
             rays_o, rays_d, dxdu, dydv = get_rays(directions, c2w, focal=focal)
             rays = torch.cat([rays_o, rays_d, dxdu, dydv], dim=-1).unsqueeze(0).cuda()
             
+            i=0
+            #tracer = VizTracer()
+            #tracer.start()
             for light_idx, light_pos in enumerate(light_positions):
                 # Create emitter with single light at specific position
-
+                i+=1
                 light_idx_tensor = torch.tensor([light_idx], device="cuda").expand(rays.shape[0], rays.shape[1])
                 
                 # Render image
                 gt_params = torch.zeros(1).cuda()
+
+                '''
                 rgbs_gt, *_ = gt_renderer.render(emitter, rays, light_idx_tensor, cfg.renderer.spp.test, gt_params, None)
+                
+                #if i>3: 
+                #    break
                 
                 # Reshape and save before gamma correction
                 img_gt = rgbs_gt.reshape(*resolution, -1)
@@ -338,6 +381,9 @@ def main(cfg):
                     img_gt_gamma.permute(2, 0, 1), 
                     os.path.join(output_dir, image_filename)
                 )
+                '''
+
+                image_filename = f"image_{image_idx:06d}.png"#need to be deleted
                 # Store metadata
                 metadata.append({
                     "image_id": image_idx,
@@ -347,6 +393,9 @@ def main(cfg):
                 })
                 
                 image_idx += 1
+            #tracer.stop()
+            #tracer.save(f"generate_images_tracer.json")
+            #sys.exit()
     
     # Save metadata to JSON file
     metadata_filename = os.path.join(output_dir, "metadata.json")
@@ -358,6 +407,7 @@ def main(cfg):
     with open(camera_metadata_filename, 'w') as f:
         json.dump(camera_metadata, f, indent=2, default=lambda x: list(x) if hasattr(x, '__iter__') and not isinstance(x, (str, bytes)) else str(x))
     
+    #print(f"==> Emitter metadata: {emitter_metadata}")
     # Save emitter metadata to separate JSON file
     emitter_metadata_filename = os.path.join(output_dir, "emitter_metadata.json")
     with open(emitter_metadata_filename, 'w') as f:

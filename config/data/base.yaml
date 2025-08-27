@@ -16,4 +16,4 @@ batch_size: 1 # equal to train_num
 multi_resolution: False
 downsample_iter: [5000, 10000]
 
-debug: False
+debug: True

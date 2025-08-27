@@ -1,0 +1,12 @@
+{"time":"2025-08-27T01:59:53.42696294Z","level":"INFO","msg":"stream: starting","core version":"0.21.0"}
+{"time":"2025-08-27T01:59:53.691525455Z","level":"INFO","msg":"stream: created new stream","id":"seiql2ka"}
+{"time":"2025-08-27T01:59:53.691583258Z","level":"INFO","msg":"stream: started","id":"seiql2ka"}
+{"time":"2025-08-27T01:59:53.691597717Z","level":"INFO","msg":"sender: started","stream_id":"seiql2ka"}
+{"time":"2025-08-27T01:59:53.69160842Z","level":"INFO","msg":"handler: started","stream_id":"seiql2ka"}
+{"time":"2025-08-27T01:59:53.691591894Z","level":"INFO","msg":"writer: Do: started","stream_id":"seiql2ka"}
+{"time":"2025-08-27T01:59:55.521111176Z","level":"INFO","msg":"stream: closing","id":"seiql2ka"}
+{"time":"2025-08-27T01:59:55.935484914Z","level":"INFO","msg":"fileTransfer: Close: file transfer manager closed"}
+{"time":"2025-08-27T01:59:56.078961791Z","level":"INFO","msg":"handler: closed","stream_id":"seiql2ka"}
+{"time":"2025-08-27T01:59:56.079027893Z","level":"INFO","msg":"writer: Close: closed","stream_id":"seiql2ka"}
+{"time":"2025-08-27T01:59:56.079039439Z","level":"INFO","msg":"sender: closed","stream_id":"seiql2ka"}
+{"time":"2025-08-27T01:59:56.079136781Z","level":"INFO","msg":"stream: closed","id":"seiql2ka"}
