@@ -10,7 +10,7 @@ from renderer import ForwardRenderer
 from brdf_trainer import BRDFTrainer
 from model.brdf import SvPBRBRDF
 from model.neural_brdf import LearnableSvPBRBRDF, SvLatentModel, AnisotropicLatentTexturedModel, LatentTexturedModel
-from model.emitter import DynamicPointEmitter, PresetPointEmitter
+from model.emitter import DynamicPointEmitter, PresetPointEmitter, RealAreaEmitter
 from torch.utils.data import DataLoader
 from itertools import islice
 from utils.dataset import SphereTestDataset, SphereValDataset
@@ -264,9 +264,24 @@ def main(cfg):
     focal = (0.5 * w / np.tan(0.5 * camera_angle_x)).item()
     directions = get_ray_directions(h, w, focal)
     
-    emitter = PresetPointEmitter(
-        positions=torch.tensor([pos["position"] for pos in light_positions], device="cuda"),
-        intensities=torch.tensor([[50.0, 50.0, 50.0] for _ in range(number_of_lights)], device="cuda")
+    # emitter = PresetPointEmitter(
+    #     positions=torch.tensor([pos["position"] for pos in light_positions], device="cuda"),
+    #     intensities=torch.tensor([[50.0, 50.0, 50.0] for _ in range(number_of_lights)], device="cuda")
+    # )
+    # Create area light emitter with normals pointing toward origin
+    light_positions_tensor = torch.tensor([pos["position"] for pos in light_positions], device="cuda")
+    light_radiance = torch.tensor([[50.0, 50.0, 50.0] for _ in range(number_of_lights)], device="cuda")
+    light_radius = torch.tensor([cfg.renderer.emitter.radius for _ in range(number_of_lights)], device="cuda")  # Small radius for area lights
+    
+    # Calculate normals pointing from light positions toward origin
+    light_normals = -light_positions_tensor / (torch.norm(light_positions_tensor, dim=-1, keepdim=True) + 1e-12)
+    
+    emitter = RealAreaEmitter(
+        radius=light_radius,
+        positions=light_positions_tensor,
+        radiance=light_radiance,
+        fwhm_deg=cfg.renderer.emitter.fwhm_deg,  # Full width at half maximum in degrees
+        light_normal=light_normals  # Use first light's normal (assuming single light setup)
     )
     
     print(f"==> Generating {len(camera_dicts)} x {len(light_positions)} = {len(camera_dicts) * len(light_positions)} reference images...")
@@ -300,8 +315,8 @@ def main(cfg):
         emitter_metadata.append({
             "emitter_id": light_idx,
             "position": light_pos["position"],
-            "intensity": [50.0, 50.0, 50.0],
-            "distance": light_distance
+            "radiance": [50.0, 50.0, 50.0],
+            "normal": light_normals[light_idx],
         })
     with torch.no_grad():
         for cam_idx, camera_dict in tqdm(enumerate(camera_dicts), total=len(camera_dicts), desc="Processing cameras"):

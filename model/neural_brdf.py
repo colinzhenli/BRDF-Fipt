@@ -206,8 +206,8 @@ class LearnableSvPBRBRDF(nn.Module):
         brdf = brdf_diff + brdf_spec
         
         if torch.isnan(brdf).any() or torch.isinf(brdf).any():
-            import pdb; pdb.set_trace()
-
+            print("brdf is nan or inf")
+        # Debug: set all brdf to 1
         return brdf, pdf
 
     def compute_anisotropic_svbrdf_pdf(self,
@@ -363,6 +363,7 @@ class LearnableSvPBRBRDF(nn.Module):
             else:
                 brdf, pdf = self.compute_svbrdf_pdf(albedo, roughness, metallic, wi, wo, normal)
             brdf = color * brdf
+            # brdf = torch.ones_like(brdf)
             
         return brdf, pdf
     
@@ -1129,7 +1130,7 @@ class LatentTexturedModel(LightningModule):
         self.predict_normal = cfg.predict_normal
         if self.predict_normal:
             total_latent_dim = total_latent_dim + 3
-        self.pbr_texture = load_pbr_texture('/mnt/data/colin/colin/BRDF-Fipt/fabric_pattern_07_4k/textures').unsqueeze(0).cuda()
+        # self.pbr_texture = load_pbr_texture('/mnt/data/colin/colin/BRDF-Fipt/fabric_pattern_07_4k/textures').unsqueeze(0).cuda()
         
         
         # Create 2D texture latent grids
@@ -1137,6 +1138,12 @@ class LatentTexturedModel(LightningModule):
         self.latent_texture = nn.Parameter(
             torch.randn(1, total_latent_dim, self.texture_resolution, self.texture_resolution) * 0.1
         )
+        # Initialize normal prediction channels if enabled
+        if self.predict_normal:
+            # Set the last 3 channels (normal prediction) to (0, 0, 1)
+            with torch.no_grad():
+                self.latent_texture[:, -3:, :, :] = torch.tensor([0.0, 0.0, 1.0]).view(1, 3, 1, 1)
+        
         # gaussian blur parameters
         self.Gaussian_blur = cfg.Gaussian_blur
         self.blur_sigma0 = 8.0
@@ -1334,7 +1341,7 @@ class LatentTexturedModel(LightningModule):
 
         return v_local
     
-    def eval_brdf(self, gt_params, pos, wi, wo, normal, latent=None, batch_mask=None):
+    def eval_brdf(self, gt_params, pos, wi, wo, normal, uv, TBN, latent=None, batch_mask=None):
         """
         Evaluate BRDF and pdf after transforming world-space vectors to local space.
         Args:
@@ -1354,32 +1361,32 @@ class LatentTexturedModel(LightningModule):
         NoV = (wo*normal).sum(-1,keepdim=True)
         """ load gt color for reference """
         factor = 1.0
-        params = self.pbr_texture
-        H, W = params.shape[1], params.shape[2]
-        crop_h = int((H - H * factor) // 2)
-        crop_w = int((W - W * factor) // 2)
-        new_h = int(H * factor)
-        new_w = int(W * factor)
-        params = params[:, crop_h:crop_h+new_h, crop_w:crop_w+new_w, :]
-        uv = compute_uv(pos, 0.8, 0.8)
+        # params = self.pbr_texture``
+        # H, W = params.shape[1], params.shape[2]
+        # crop_h = int((H - H * factor) // 2)
+        # crop_w = int((W - W * factor) // 2)
+        # new_h = int(H * factor)
+        # new_w = int(W * factor)
+        # params = params[:, crop_h:crop_h+new_h, crop_w:crop_w+new_w, :]
+        # uv = compute_uv(pos, 0.8, 0.8)
 
         # Step 2: Texture sampling
-        arm, color, normal_local = sample_texture(params, uv)
-        albedo, roughness, metallic = arm[:, 0:1], arm[:, 1:2], arm[:, 2:3]
+        # arm, color, normal_local = sample_texture(params, uv)
+        # albedo, roughness, metallic = arm[:, 0:1], arm[:, 1:2], arm[:, 2:3]
 
         # Step 3: TBN frame
-        T, B, N_geo = compute_tbn(pos, uv, 0.8, 0.8)
-
-        # Step 4: Transform local normal to world
-        n_world = local_to_world_normal(normal_local, T, B, N_geo)
+        # T, B, N_geo = compute_tbn(pos, uv, 0.8, 0.8)
+        # T, B, N_geo = TBN
+        # # Step 4: Transform local normal to world
+        # n_world = local_to_world_normal(normal_local, T, B, N_geo)
         
         if self.training and self.Gaussian_blur:
             tex = self._blur_latent(self.global_step)
         else:
             tex = self.latent_texture       
         latent = self.sample_latent_from_texture(pos, tex)
-        if self.use_gt_normal:
-            normal = n_world
+        # if self.use_gt_normal:
+        #     normal = n_world
         if self.predict_normal:
             normal = torch.nn.functional.normalize(latent[..., -3:], dim=-1)
         wi_local = self.world_to_local(wi, normal)
@@ -1460,7 +1467,7 @@ class AnisotropicLatentTexturedModel(LightningModule):
             total_latent_dim = self.latent_dim
         if self.predict_frame:
             total_latent_dim = total_latent_dim + 6
-        self.pbr_texture = load_pbr_texture('/mnt/data/colin/colin/BRDF-Fipt/denim_fabric_03_4k/textures').unsqueeze(0).cuda()
+        # self.pbr_texture = load_pbr_texture('/mnt/data/colin/colin/BRDF-Fipt/denim_fabric_03_4k/textures').unsqueeze(0).cuda()
         
         
         # Create 2D texture latent grids
@@ -1470,7 +1477,7 @@ class AnisotropicLatentTexturedModel(LightningModule):
         
         if self.predict_frame:
             # Last 6 dimensions: normal (1,0,0) and tangent (0,1,0)
-            latent_init[:, -6:-3, :, :] = torch.tensor([1.0, 0.0, 0.0]).view(1, 3, 1, 1)  # normal
+            latent_init[:, -6:-3, :, :] = torch.tensor([0.0, 0.0, 1.0]).view(1, 3, 1, 1)  # normal
             latent_init[:, -3:, :, :] = torch.tensor([0.0, 1.0, 0.0]).view(1, 3, 1, 1)    # tangent
         
         self.latent_texture = nn.Parameter(latent_init)
@@ -1643,7 +1650,7 @@ class AnisotropicLatentTexturedModel(LightningModule):
 
         return v_local
     
-    def eval_brdf(self, gt_params, pos, wi, wo, normal,uv, latent=None, batch_mask=None):
+    def eval_brdf(self, gt_params, pos, wi, wo, normal,uv, TBN, latent=None, batch_mask=None):
         """
         Evaluate BRDF and pdf after transforming world-space vectors to local space.
         Args:

@@ -300,6 +300,7 @@ class SphereImageDataset(IterableDataset):
         self.set_step(0)
         self.directions = get_ray_directions(h, w, self.focal)
         self.all_rays, self.all_rgbs, self.all_emitter_ids, self.all_pdf = self.preload_rays_and_rgbs(downsample_scale=1)   
+        
     def preload_rays_and_rgbs(self, downsample_scale=1):
         all_rays = []
         all_rgbs = []

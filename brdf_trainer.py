@@ -5,11 +5,13 @@ import pl_bolts
 from renderer import ForwardRenderer
 import torchvision
 from torchviz import make_dot
+import json
 from viztracer import VizTracer
 from tqdm import tqdm
 import math
 from model.emitter import DynamicPointEmitter, PresetPointEmitter, RealAreaEmitter
 import os
+from utils.pose_refiner import GlobalHandEyeRefiner
 
 class BRDFTrainer(pl.LightningModule):
     def __init__(self, cfg, material, gt_material, roughness, metallic):
@@ -30,6 +32,8 @@ class BRDFTrainer(pl.LightningModule):
         print("after latent reg weight")
         self.renderer = ForwardRenderer(cfg, self.material)
         self.gt_renderer = ForwardRenderer(cfg, self.gt_material)
+        if cfg.data.handeye_refiner:
+            self.handeye_refiner = GlobalHandEyeRefiner(sigma_t_mm=0.5, sigma_r_deg=0.1, json_path=cfg.data.metadata_path)
         # self.emitter = PresetPointEmitter(
         #     read_from_metadata=True,
         #     metadata_path=os.path.join(self.cfg.metadata_path, 'emitter_metadata.json'),
@@ -37,11 +41,10 @@ class BRDFTrainer(pl.LightningModule):
         #     intensities=None
         # )
         self.emitter = RealAreaEmitter(
-            radius=cfg.renderer.emitter.radius,
-            positions=cfg.renderer.emitter.positions,
-            intensities=cfg.renderer.emitter.intensities
+            cfg = cfg.renderer.emitter,
+            json_path = cfg.data.metadata_path
         )
-        self.img_hw = cfg.renderer.resolution
+        self.img_hw = (cfg.renderer.camera.intrinsics.height, cfg.renderer.camera.intrinsics.width)
 
     # def gamma(self, x):
     #     mask = x <= 0.0031308
@@ -170,7 +173,10 @@ class BRDFTrainer(pl.LightningModule):
         # ------------------------------------------------------------------
         # 1. Un-pack inputs
         # ------------------------------------------------------------------
-        rays, rgbs_gt, emitter_ids, weighted_pdf = batch['rays'], batch['rgbs'], batch['emitter_ids'], batch['pdf']
+        rays, rgbs_gt, emitter_ids, weighted_pdf, camera_ids = batch['rays'], batch['rgbs'], batch['emitter_ids'], batch['pdf'], batch['camera_ids']
+        prior = 0.0
+        if self.handeye_refiner:
+            rays, prior = self.handeye_refiner.apply_handeye_delta_to_rays(rays, camera_ids)
         # forward renders
         rgbs, vis, ray_params = self.renderer.render(self.emitter, rays, emitter_ids, self.cfg.renderer.spp.train,
                                         None, None)                       # f(r)
@@ -188,8 +194,7 @@ class BRDFTrainer(pl.LightningModule):
         # ------------------------------------------------------------------
         # 6.  Add regulariser + compute PSNR
         # ------------------------------------------------------------------
-        latent_reg = 0.0
-        loss       = recon_loss + self.hparams.model.loss.latent_reg_loss.weight * latent_reg
+        loss       = recon_loss + prior*self.hparams.model.loss.refiner_prior_loss.weight
 
         psnr_loss  = torch.nn.functional.mse_loss(self.gamma(rgbs),
                                                 self.gamma(rgbs_gt),
@@ -201,7 +206,7 @@ class BRDFTrainer(pl.LightningModule):
         # ------------------------------------------------------------------
         self.log_dict({
             'train/recon_loss':   recon_loss,
-            'train/latent_reg':   latent_reg,
+            'train/refiner_prior':   prior,
             'train/total_loss':   loss,
             'train/psnr':         psnr,
         }, prog_bar=True, batch_size=rays.shape[0])
@@ -211,6 +216,9 @@ class BRDFTrainer(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         """ batch pbr texture: [B, H, W, 16] """
         rays, rgbs_gt, emitter_ids = batch['rays'], batch['rgbs'], batch['emitter_ids']
+        prior = 0.0
+        if self.handeye_refiner:
+            rays, prior = self.handeye_refiner.apply_handeye_delta_to_rays(rays, batch['camera_ids'])
 
         # forward renders
         rgbs, vis, ray_params = self.renderer.render(self.emitter, rays, emitter_ids, self.cfg.renderer.spp.train, None, None)    
@@ -222,8 +230,7 @@ class BRDFTrainer(pl.LightningModule):
             recon_loss = NF.l1_loss(rgbs, rgbs_gt)
         elif self.hparams.model.loss.recon_loss.name == "l2":
             recon_loss = NF.mse_loss(rgbs, rgbs_gt)
-        latent_reg = 0
-        loss = recon_loss + self.hparams.model.loss.latent_reg_loss.weight * latent_reg
+        loss = recon_loss + prior*self.hparams.model.loss.refiner_prior_loss.weight
         
         # Handle batch of images
         batch_size = 1
@@ -237,32 +244,44 @@ class BRDFTrainer(pl.LightningModule):
             # Create output directory for each sample
             output_dir = os.path.join(
                 self.cfg.exp_output_root_path,
-                f'demin_fabric_03_4k'
+                f'images'
             )
             os.makedirs(output_dir, exist_ok=True)
             
-            # Save ground truth and result images
-            torchvision.utils.save_image(
-                self.gamma(sample_rgbs_gt.permute(2, 0, 1)),
-                os.path.join(output_dir, f'gt_view_{batch_idx}_{b}.png')
-            )
+            # # Save ground truth and result images
+            # torchvision.utils.save_image(
+            #     self.gamma(sample_rgbs_gt.permute(2, 0, 1)),
+            #     os.path.join(output_dir, f'gt_view_{batch_idx}_{b}.png')
+            # )
             # Save non-gamma-corrected result image
             torchvision.utils.save_image(
                 sample_rgbs_gt.permute(2, 0, 1),
                 os.path.join(output_dir, f'gt_view_linear_{batch_idx}_{b}.png')
             )
             torchvision.utils.save_image(
-                self.gamma(sample_rgbs.permute(2, 0, 1)),
+                # self.gamma(sample_rgbs.permute(2, 0, 1)),
+                sample_rgbs.permute(2, 0, 1),
                 os.path.join(output_dir, f'result_view_{batch_idx}_{b}.png')
             )
             
-        # save the learned pbr normal map
-        pbr_normal_map = self.material.pbr_texture.data[0, :, :, 10:13]
-        torchvision.utils.save_image(
-            pbr_normal_map.permute(2, 0, 1),
-            os.path.join(output_dir, f'pbr_normal_map_{batch_idx}_{b}.png')
-        )
-        
+        # # save the learned pbr normal map
+        # pbr_normal_map = self.material.pbr_texture.data[0, :, :, 10:13]
+        # torchvision.utils.save_image(
+        #     pbr_normal_map.permute(2, 0, 1),
+        #     os.path.join(output_dir, f'pbr_normal_map_{batch_idx}_{b}.png')
+        # )
+        # Save pose refinement parameters if available
+        # if hasattr(self, 'handeye_refiner') and self.handeye_refiner is not None:
+        #     refine_params = {
+        #         'xi': self.handeye_refiner.xi.detach().cpu().numpy().tolist(),
+        #         'rotation_delta': self.handeye_refiner.xi[:3].detach().cpu().numpy().tolist(),
+        #         'translation_delta': self.handeye_refiner.xi[3:].detach().cpu().numpy().tolist(),
+        #         'step': self.global_step
+        #     }
+            
+        #     refine_output_path = os.path.join(output_dir, f'pose_refinement_{batch_idx}.json')
+        #     with open(refine_output_path, 'w') as f:
+        #         json.dump(refine_params, f, indent=2)
         self.log('val/loss', loss)
         self.log('val/psnr', psnr)        
         return
