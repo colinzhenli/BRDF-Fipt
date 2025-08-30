@@ -17,11 +17,13 @@ def load_uv_obj_to_mitsuba_scene(obj_path="mesh_test/cube_with_uv.obj"):
     """
     if not os.path.isfile(obj_path):
         raise FileNotFoundError(f"OBJ 文件不存在: {obj_path}")
-    obj_path = load_and_transform_mesh_trimesh(obj_path)
+    
+    # obj_path = load_and_transform_mesh_trimesh(obj_path)
+    # obj_path = obj_path.replace(".obj", "_uv.ply")
 
     # 构建形状加载字典
     shape_dict = {
-        "type": "obj",
+        "type": "ply",
         "filename": obj_path,
         # "to_world": transform
     }

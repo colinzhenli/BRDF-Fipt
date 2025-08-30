@@ -67,5 +67,61 @@ def uv_unwrap_and_compute_TBN(obj_name, angle_limit=89.0, island_margin=0.02):
     print(f"✅ UV unwrapping and TBN calculation completed, total {len(uv_map)} loops")
     return uv_map, tbn_list
 
-# Example usage
-uvs, tbn = uv_unwrap_and_compute_TBN("fuse_post")
+def export_mesh_with_uv_ply(input_path, angle_limit=89.0, island_margin=0.02, apply_modifiers=False, triangulate=False):
+    # Fetch object
+    output_path = input_path.replace(".ply", "_uv.ply")
+    # Import the PLY file first
+    bpy.ops.import_mesh.ply(filepath=input_path)
+    
+    # Get the imported object (it will be the active object after import)
+    obj = bpy.context.active_object
+    if not obj or obj.type != 'MESH':
+        raise ValueError(f"❌ Mesh object named {input_path} not found")
+
+    # Make active/selected
+    bpy.ops.object.mode_set(mode='OBJECT')
+    bpy.ops.object.select_all(action='DESELECT')
+    obj.select_set(True)
+    bpy.context.view_layer.objects.active = obj
+
+    # Ensure there is a UV map (unwrap if missing)
+    if obj.data.uv_layers.active is None:
+        bpy.ops.object.mode_set(mode='EDIT')
+        bpy.ops.mesh.select_all(action='SELECT')
+        bpy.ops.uv.smart_project(angle_limit=angle_limit, island_margin=island_margin)
+        bpy.ops.object.mode_set(mode='OBJECT')
+
+    # Optionally apply modifiers so the exported mesh matches the viewport
+    if apply_modifiers:
+        for m in list(obj.modifiers):
+            bpy.ops.object.modifier_apply(modifier=m.name)
+
+    # Optionally triangulate (some pipelines prefer triangulated faces)
+    if triangulate:
+        tri = obj.modifiers.new(name="__triangulate__", type='TRIANGULATE')
+        bpy.ops.object.modifier_apply(modifier=tri.name)
+
+    # Export as PLY with UVs
+    print(obj.scale)
+    bpy.ops.export_mesh.ply(
+        filepath=output_path,
+        use_selection=True,
+        use_normals=True,
+        use_uv_coords=True
+    )
+    print(f"📦 Exported '{input_path}' with UVs → {output_path}")
+
+# Example
+def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="Process mesh with UV unwrapping")
+    parser.add_argument("input_path", help="Path to the input mesh file")
+    args = parser.parse_args()
+    
+    export_mesh_with_uv_ply(input_path=args.input_path)
+
+if __name__ == "__main__":
+    main()
+
+# # Example usage
+# uvs, tbn = uv_unwrap_and_compute_TBN("Cut_mesh")

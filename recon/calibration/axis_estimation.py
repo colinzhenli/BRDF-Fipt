@@ -209,7 +209,7 @@ def board_pose_charuco(img_bgr: np.ndarray, K: np.ndarray, D: np.ndarray):
         distCoeffs=D,
         flags=cv2.SOLVEPNP_ITERATIVE
     )
-    if not ok:
+    if not ok:  
         return None
 
     R, _ = cv2.Rodrigues(rvec)
