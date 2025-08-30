@@ -404,6 +404,58 @@ def estimate_world2base(scan_log_path, images_txt_path, images,
     # T_BW[2, 3] += 0.12
     return T_BW
 
+def save_camera_log_from_colmap(camera_c2w, s, R, t, output_path):
+    """
+    Convert COLMAP camera-to-world poses to camera-to-base poses and save to camera log.
+    
+    Parameters
+    ----------
+    camera_c2w : list of (4,4) arrays
+        COLMAP camera-to-world transformation matrices
+    s : float
+        Scale factor from Umeyama alignment
+    R : (3,3) array
+        Rotation matrix from Umeyama alignment
+    t : (3,) array
+        Translation vector from Umeyama alignment
+    output_path : str | Path
+        Path to save the camera log JSON file
+    """
+    # Build world-to-base transformation matrix
+    T_BW = np.eye(4)
+    T_BW[:3, :3] = s * R
+    T_BW[:3, 3] = t
+    
+    camera_log = []
+    
+    for i, C2W in enumerate(camera_c2w):
+        C2W = np.asarray(C2W)
+        
+        # Apply world-to-base transformation to get camera-to-base
+        C2B = T_BW @ C2W
+        
+        # Extract position and rotation matrix
+        position = C2B[:3, 3] * 1000.0  # Convert to mm to match scan_log format
+        rotation_matrix = C2B[:3, :3]
+        
+        # Create camera log entry
+        camera_entry = {
+            "id": i,
+            "position": position.tolist(),
+            "rotation_matrix": rotation_matrix.tolist()
+        }
+        
+        camera_log.append(camera_entry)
+    
+    # Save camera log to JSON file
+    with open(output_path, 'w') as f:
+        json.dump(camera_log, f, indent=2)
+    
+    print(f"Camera log saved to: {output_path}")
+    print(f"Saved {len(camera_log)} camera poses")
+    
+    return camera_log
+
 def transform_mesh_to_base(mesh_path, T_BW, output_path=None):
     """
     Load a mesh and transform it from COLMAP world coordinates to robot base coordinates.

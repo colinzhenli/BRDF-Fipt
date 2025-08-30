@@ -1,0 +1,16 @@
+defaults:
+  - base
+
+dataset_name: "real"
+pbr_path: 
+shape:
+  type: "real"
+  center: [0.0, 0.0, 0.0]
+  radius: 0.2
+
+pixel: True
+ray_diff: True
+custom_c2w: True
+
+metadata_path: /media/raid/cloth/Lighting_test_Aug22/scan_log_0822.json
+handeye_refiner: True # whether to learn the refiner

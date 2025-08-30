@@ -419,7 +419,7 @@ def path_tracing_envmap_emitter(scene,emitter_net,material_net,rays_o,rays_d,dx_
         emit_brdf,brdf_pdf = material_net.eval_brdf(gt_params,position, wi,wo,normal,latent, batch_mask) # gt_params will not be used in neural brdf model
         w_mis = torch.where((emit_pdf>0)&(~brdf_pdf.isinf()),emit_pdf*emit_pdf/(emit_pdf*emit_pdf+brdf_pdf*brdf_pdf),0)
         w_mis[emit_pdf.isinf()|(brdf_pdf==0)] = 1
-        L[active_next] += emit_brdf*emit_weight * w_mis
+        L[active_next] += emit_brdf*emit_weight
 
     # sample brdf
     if brdf_sampling:
@@ -504,14 +504,14 @@ def batched_path_tracing_tbn_real_area_emitter(scene,emitter_net,material_net,ra
     if emitter_sampling:
         wi, emit_pdf, emit_position, emitter_normal= emitter_net.sample_emitter(torch.rand_like(position[..., :2]), position, light_id)
         # visibility test
-        emit_weight,emit_pdf, _ = emitter_net.eval_emitter(emit_position, wi, light_id)
+        emit_weight,emit_pdf, _ = emitter_net.eval_emitter(position, wi, light_id)
         G = (-wi*emitter_normal).sum(-1).abs() / (emit_position-position).pow(2).sum(-1).clamp_min(1e-6) # B, 1
         emit_weight = emit_weight*G[...,None]/emit_pdf.clamp_min(1e-6)
         # emit brdf
         emit_brdf,brdf_pdf = material_net.eval_brdf(None, position, wi,wo,normal,uv, TBN, latent, batch_mask) # gt_params will not be used in neural brdf model
         w_mis = torch.where((emit_pdf>0)&(~brdf_pdf.isinf()),emit_pdf*emit_pdf/(emit_pdf*emit_pdf+brdf_pdf*brdf_pdf),0)
         w_mis[emit_pdf.isinf()|(brdf_pdf==0)] = 1
-        L[vis] += emit_brdf*emit_weight * w_mis
+        L[vis] += emit_brdf*emit_weight
     # sample brdf
     if brdf_sampling:
         wi,brdf_pdf,brdf_weight = material_net.sample_brdf(

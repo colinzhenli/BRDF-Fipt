@@ -12,21 +12,41 @@ camera:
   up: [0.0, 1.0, 0.0]
   position: [0.0, 0.0, -2.0]
   camera_angle_x: 0.5
+  R_c2g: [[-0.00369406,  0.99992083,  0.01202885],
+          [-0.00272167,  0.01201883, -0.99992407],
+          [-0.99998947, -0.00372652,  0.00267706]]
+  t_c2g: [0.03668630125, -0.02461733549, 0.02764501449]
+  intrinsics:
+    width: 3072
+    height: 2048
+    focal_length: 6711.5398985131415
+    cx: 1536
+    cy: 1024
+    distortion: -0.039172832523040095
 
 mesh:
-  path: None # Use flat mesh for test
+  path: /media/raid/cloth/Lighting_test_Aug22/Meshes/Cut_mesh_uv.ply # Use flat mesh for test
 
 emitter:
   type: "realarea"
+  num_lights: 40
+  dist: 4.0
   radius: 0.007 # value from specs
   fwhm_deg: 115.0 # full width at half maximum angle(value for specs)
   positions: [0.0, 0.0, 0.0] # to be updated
-  radiance: [1.0, 1.0, 1.0] # largest radiance at 90 degree(to be updated)
-
+  radiance: [20.0, 20.0, 20.0] # largest radiance at 90 degree(to be updated)
+  R_l2g: [[1.0,  0.0,  0.0],
+          [0.0,  1.0,  0.0],
+          [0.0,  0.0,  1.0]]
+  t_l2g: [0.0, 0.102, -0.02112]
+  base2_to_base1: [[ 9.99999959e-01,  2.33227594e-04, -1.69051819e-04,  7.22042468e-03],
+                  [-2.36740680e-04,  9.99777598e-01, -2.10878871e-02,  8.26339062e-03],
+                  [ 1.64095944e-04,  2.10879262e-02,  9.99777611e-01,  3.93500345e-03],
+                  [ 0.00000000e+00,  0.00000000e+00,  0.00000000e+00,  1.00000000e+00]]
 spp:
-  train: 64
-  val: 64
-  test: 64
+  train: 1
+  val: 1
+  test: 1
 SPP_chunk: 4
 
 resolution: [2048, 2048]
