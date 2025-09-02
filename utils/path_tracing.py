@@ -37,9 +37,6 @@ def ray_intersect(scene,xs,ds):
     valid = (~ts.isinf())
     
     idx[~valid] = -1
-    #normals[:,0]=0
-    #normals[:,1]=1
-    #normals[:,2]=0
     normals = double_sided(-ds,normals)
     return positions,normals,ret.uv.torch(),idx,valid
 
