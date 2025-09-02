@@ -3,14 +3,6 @@ import numpy as np
 import argparse
 import os
 
-# Your first image's T_b2cCV matrix
-T_b2cCV = np.array([
-    [3.05632940e-05, -9.99989470e-01,  4.58831481e-03, -1.73842111e-1],
-    [-5.78015280e-01,  3.72652000e-03,  8.16017436e-01,  1.46225606e-1],
-    [-8.16025946e-01, -2.67706000e-03, -5.78009078e-01,  7.58373379e-1],
-    [0.0, 0.0, 0.0, 1.0]
-])
-
 # Global bounding box limits (x_min, y_min, z_min, x_max, y_max, z_max)
 global_bbox = [0.0, -0.15, -0.12, 0.3, 0.15, 0.05-0.12]  # Example values in meters
 # percentage cutting on the local bbox
@@ -88,14 +80,6 @@ def crop_mesh(mesh: trimesh.Trimesh, crop_percent=0.8):
 
 def main(input_path, output_path, crop_percent):
     mesh = trimesh.load(input_path, force='mesh')
-
-    # # Step 1: Apply T_b2cCV to transform mesh to base (world) coordinate frame
-    # mesh = transform_mesh(mesh, T_b2cCV)
-
-    # # Step 2: Optionally export full transformed mesh for visualization/debug
-    # transformed_path = os.path.splitext(output_path)[0] + "_transformed.ply"
-    # mesh.export(transformed_path)
-    # print(f"Saved transformed mesh to: {transformed_path}")
 
     print("skipping transform")
     print("cropping by bbox")

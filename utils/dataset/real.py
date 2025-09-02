@@ -11,13 +11,18 @@ from pathlib import Path
 from torch.utils.data import IterableDataset
 from tqdm import tqdm
 import matplotlib.pyplot as plt
-from utils.io import load_camera_light_metadata
+from utils.io import load_camera_light_metadata, load_camera_metadata
 
 def build_4x4(R, t):
     T = np.eye(4, dtype=float)
     T[:3, :3] = R
     T[:3, 3]  = t
     return T
+
+def _cv_to_gl(cv):
+    # convert to GL convention used in iNGP
+    gl = cv * torch.tensor([1, -1, -1, 1])
+    return gl
 
 def get_ray_directions(H, W, focal, cx, cy, distortion):
     """ get camera ray direction with radial distortion correction, using opengl convention
@@ -103,6 +108,7 @@ def get_c2w(camera):
     c2w = torch.eye(4)
     c2w[:3,:3] = torch.stack([right, up, forward], dim=1)
     c2w[:3,3] = position
+    c2w = _cv_to_gl(c2w)
     c2w = c2w[:3,:4]
     return c2w
 
@@ -140,8 +146,10 @@ class RealImageDataset(IterableDataset):
         
         # Load metadata from JSON file
         metadata_path = cfg.data.metadata_path
-        metadata, camera_metadata, emitter_metadata = load_camera_light_metadata(metadata_path)
-        metadata = metadata[2:] # skip first 2 images with invalid light
+        camera_metadata_path = cfg.data.camera_metadata_path
+        metadata, _, _= load_camera_light_metadata(metadata_path)
+        camera_metadata = load_camera_metadata(camera_metadata_path)
+        
         # Filter out metadata entries with non-existent image files
         valid_metadata = []
         for item in metadata:
@@ -183,16 +191,16 @@ class RealImageDataset(IterableDataset):
         all_camera_ids = []
         for img_data in tqdm(self.metadata, desc="Loading images and rays"):
             # Get camera info using camera_id
-            camera_id = img_data["camera_id"]
-            camera_info = self.camera_metadata[camera_id]
+            overall_id = img_data["overall_id"]
+            camera_info = self.camera_metadata[str(overall_id)]
             camera_dict = {
                 "position": camera_info["position"],
                 "rotation_matrix": camera_info["rotation_matrix"],
-                "euler": camera_info["euler"]
             }
             
             # Generate rays for this camera
-            c2w = get_c2w_from_robot_pose(camera_dict, self.R_c2g, self.t_c2g)
+            # c2w = get_c2w_from_robot_pose(camera_dict, self.R_c2g, self.t_c2g)
+            c2w = torch.from_numpy(build_4x4(camera_dict["rotation_matrix"], camera_dict["position"])[:3, :4]).float()
             rays_o, rays_d, dxdu, dydv = get_rays(self.directions, c2w, focal=self.intrinsics['focal_length'])
             rays = torch.cat([rays_o, rays_d, dxdu, dydv], dim=-1)
             # Load original RGB image (without gamma correction)
@@ -229,7 +237,7 @@ class RealImageDataset(IterableDataset):
             # Get emitter ID directly from metadata
             emitter_id = img_data["emitter_id"]
             emitter_ids = torch.full((rays.shape[0],), emitter_id, dtype=torch.long)
-            camera_ids = torch.full((rays.shape[0],), int(camera_id), dtype=torch.long)
+            camera_ids = torch.full((rays.shape[0],), int(overall_id), dtype=torch.long)
             # Filter out low luminance rays
             luminance = (0.2126 * img_flat[..., 0] +
                         0.7152 * img_flat[..., 1] +
@@ -434,8 +442,9 @@ class RealValDataset(Dataset):
         
         # Load metadata from JSON file
         metadata_path = cfg.data.metadata_path
-        metadata, camera_metadata, _ = load_camera_light_metadata(metadata_path)
-        metadata = metadata[2:] # skip first 2 images with invalid light
+        camera_metadata_path = cfg.data.camera_metadata_path
+        metadata, _, _ = load_camera_light_metadata(metadata_path)
+        camera_metadata = load_camera_metadata(camera_metadata_path)
         # Filter out metadata entries with non-existent image files
         valid_metadata = []
         for item in metadata:
@@ -470,16 +479,16 @@ class RealValDataset(Dataset):
         img_data = self.metadata[idx]
         
         # Get camera info using camera_id
-        camera_id = img_data["camera_id"]
-        camera_info = self.camera_metadata[camera_id]
+        overall_id = img_data["overall_id"]
+        camera_info = self.camera_metadata[str(overall_id)]
         camera_dict = {
             "position": camera_info["position"],
             "rotation_matrix": camera_info["rotation_matrix"],
-            "euler": camera_info["euler"]
         }
         
         # Generate rays for this camera
-        c2w = get_c2w_from_robot_pose(camera_dict, self.R_c2g, self.t_c2g)
+        # c2w = get_c2w_from_robot_pose(camera_dict, self.R_c2g, self.t_c2g)
+        c2w = torch.from_numpy(build_4x4(camera_dict["rotation_matrix"], camera_dict["position"])[:3, :4]).float()
         rays_o, rays_d, dxdu, dydv = get_rays(self.directions, c2w, focal=self.focal)
         rays = torch.cat([rays_o, rays_d, dxdu, dydv], dim=-1)
         
@@ -501,7 +510,7 @@ class RealValDataset(Dataset):
         
         # Get emitter ID directly from metadata
         emitter_ids = torch.full((rays.shape[0],), img_data["emitter_id"], dtype=torch.long)
-        camera_ids = torch.full((rays.shape[0],), int(camera_id), dtype=torch.long)
+        camera_ids = torch.full((rays.shape[0],), int(overall_id), dtype=torch.long)
         return {
             'rays': rays,
             'rgbs': img_flat,

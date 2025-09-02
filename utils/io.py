@@ -2,6 +2,7 @@ import json
 import os
 import glob
 import torch
+from utils.transform import build_rot_about_point, build_cw_rotz_from_deg
 
 def load_camera_light_metadata(json_path):
     """
@@ -96,14 +97,14 @@ def load_camera_metadata(json_path):
     camera_metadata = {}
     
     for item in camera_light_data:
-        camera_id = item['id']
+        # camera_id = item['id']
+        overall_id = item['overall_id']
         
         # Store camera metadata only for non-appeared camera id
-        if str(camera_id) not in camera_metadata:
-            camera_metadata[str(camera_id)] = {
+        if str(overall_id) not in camera_metadata:
+            camera_metadata[str(overall_id)] = {
                 'position': [pos / 1000.0 for pos in item['position']],
                 'rotation_matrix': item['rotation_matrix'],
-                'euler': item['euler']
             }
     
     return camera_metadata
@@ -162,6 +163,7 @@ def read_light_transforms(json_path):
     
     for item in data:
         light_id = item.get('light_id', 0)
+        turn_angle = item.get('turn_angle', 0.0)
         
         # Only process if we haven't seen this light ID before
         if light_id not in seen_light_ids:
@@ -169,9 +171,10 @@ def read_light_transforms(json_path):
             
             rotation_matrix = item['rotation_matrix_light']
             position = item['position_light'] # convert to meter
-            
+
             # Convert to light-to-world transformation matrix
             light2world = rotation_position_to_light2world(rotation_matrix, position)
-            light_transforms.append(light2world)
+            Tw2w0 = build_rot_about_point(build_cw_rotz_from_deg(-turn_angle)) # tranform world back to 0-angle world
+            light_transforms.append(Tw2w0 @ light2world)
     
     return torch.stack(light_transforms).cuda()  # (N, 4, 4)
