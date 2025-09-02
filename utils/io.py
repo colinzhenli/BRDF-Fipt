@@ -36,13 +36,21 @@ def load_camera_light_metadata(json_path):
         phi = item['phi']
         theta = item['theta']
         
-        # Store camera metadata only for non-appeared camera id
-        if str(camera_id) not in camera_metadata:
-            camera_metadata[str(camera_id)] = {
-                'position': [pos / 1000.0 for pos in item['position']],
-                'rotation_matrix': item['rotation_matrix'],
-                'euler': item['euler']
-            }
+        # # Store camera metadata only for non-appeared camera id
+        # if str(camera_id) not in camera_metadata:
+        #     camera_metadata[str(camera_id)] = {
+        #         'position': [pos / 1000.0 for pos in item['position']],
+        #         'rotation_matrix': item['rotation_matrix'],
+        #         'euler': item['euler']
+        #     }
+        """ 
+        camera_id is not unique, so we use overall_id to store camera metadata
+        """
+        camera_metadata[str(overall_id)] = {
+            'position': [pos / 1000.0 for pos in item['position']],
+            'rotation_matrix': item['rotation_matrix'],
+            'euler': item['euler']
+        }
         
         # Store emitter metadata (light info)
         if str(light_id) not in emitter_metadata:

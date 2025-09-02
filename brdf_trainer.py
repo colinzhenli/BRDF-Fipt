@@ -34,6 +34,8 @@ class BRDFTrainer(pl.LightningModule):
         self.gt_renderer = ForwardRenderer(cfg, self.gt_material)
         if cfg.data.handeye_refiner:
             self.handeye_refiner = GlobalHandEyeRefiner(sigma_t_mm=0.5, sigma_r_deg=0.1, json_path=cfg.data.metadata_path)
+        else:
+            self.handeye_refiner = None
         # self.emitter = PresetPointEmitter(
         #     read_from_metadata=True,
         #     metadata_path=os.path.join(self.cfg.metadata_path, 'emitter_metadata.json'),
@@ -264,12 +266,12 @@ class BRDFTrainer(pl.LightningModule):
                 os.path.join(output_dir, f'result_view_{batch_idx}_{b}.png')
             )
             
-        # # save the learned pbr normal map
-        # pbr_normal_map = self.material.pbr_texture.data[0, :, :, 10:13]
-        # torchvision.utils.save_image(
-        #     pbr_normal_map.permute(2, 0, 1),
-        #     os.path.join(output_dir, f'pbr_normal_map_{batch_idx}_{b}.png')
-        # )
+        # save the learned pbr normal map
+        pbr_normal_map = self.material.pbr_texture.data[0, :, :, 10:13]
+        torchvision.utils.save_image(
+            pbr_normal_map.permute(2, 0, 1),
+            os.path.join(output_dir, f'pbr_normal_map_{batch_idx}_{b}.png')
+        )
         # Save pose refinement parameters if available
         # if hasattr(self, 'handeye_refiner') and self.handeye_refiner is not None:
         #     refine_params = {
