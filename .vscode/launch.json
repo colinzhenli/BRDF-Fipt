@@ -22,37 +22,37 @@
         //         // "--percent", "0.8"
         //     ]
         // },
-        // {
-        //     "name": "2DGS Train",
-        //     "type": "python",
-        //     "request": "launch",
-        //     "program": "./recon/2dgs/train.py",
-        //     "console": "integratedTerminal",
-        //     "justMyCode": true,
-        //     "env": {
-        //         "CUDA_VISIBLE_DEVICES": "0"
-        //     },
-        //     "args": [
-        //         "-s", "/media/raid/cloth/Pipeline_test_images_Aug15/undistorted"
-        //     ]
-        // },
         {
-            "name": "Python: Current File",
+            "name": "2DGS Train",
             "type": "python",
             "request": "launch",
-            "program": "main.py",
+            "program": "./recon/preprocess/purple_filter.py",
             "console": "integratedTerminal",
             "justMyCode": true,
             "env": {
-                "CUDA_VISIBLE_DEVICES": "3"
+                "CUDA_VISIBLE_DEVICES": "0"
             },
             "args": [
-                "dataset_folder=/media/raid/cloth/Lighting_test_Aug22/BRDF_recon/images_raw",
-                "renderer=realcapture_area_emitter",
-                "material=learnablesvpbr",
-                "experiment_name=Single-image_PBR_Handeye-refiner_debug",
+                "exp_folder=/media/raid/cloth/Single_step_recon_Sep1"
             ]
-        }
+        },
+        // {
+        //     "name": "Python: Current File",
+        //     "type": "python",
+        //     "request": "launch",
+        //     "program": "main.py",
+        //     "console": "integratedTerminal",
+        //     "justMyCode": true,
+        //     "env": {
+        //         "CUDA_VISIBLE_DEVICES": "3"
+        //     },
+        //     "args": [
+        //         "dataset_folder=/media/raid/cloth/Lighting_test_Aug22/BRDF_recon/images_raw",
+        //         "renderer=realcapture_area_emitter",
+        //         "material=learnablesvpbr",
+        //         "experiment_name=Single-image_PBR_New_handeye_run_1",
+        //     ]
+        // }
     ]
 
 }

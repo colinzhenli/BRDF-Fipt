@@ -17,4 +17,4 @@ multi_resolution: False
 downsample_iter: [-1, -1]
 
 debug: True
-debug_num: 10
+debug_num: 1

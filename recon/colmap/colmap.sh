@@ -1,6 +1,6 @@
 PROJECT="${1:?usage: $0 <project_dir>}"
 gpu_id="${2:?usage: $0 <gpu_id>}"
-IMG_DIR="${PROJECT}/images_raw"
+IMG_DIR="${PROJECT}/masks/filtered_purple"
 DB="${PROJECT}/database.db"
 OUT_SPARSE="${PROJECT}/sparse"         # triangulated sparse model goes here
 UNDIST_OUT="${PROJECT}/undistorted"          # undistorted workspace (optional)
@@ -18,7 +18,7 @@ echo "== Mapping =="
 mkdir -p ${PROJECT}/sparse
 CUDA_VISIBLE_DEVICES=$gpu_id colmap mapper \
     --database_path=${PROJECT}/database.db \
-    --image_path=${PROJECT}/images_raw \
+    --image_path=${IMG_DIR} \
     --output_path=${PROJECT}/sparse
 
 echo "== Bundle adjust =="
@@ -38,7 +38,7 @@ done
 
 echo "== Undistort images =="
 colmap image_undistorter \
-    --image_path=${PROJECT}/images_raw \
+    --image_path=${IMG_DIR} \
     --input_path=${PROJECT}/sparse \
     --output_path=${UNDIST_OUT} \
     --output_type=COLMAP
