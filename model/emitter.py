@@ -307,7 +307,7 @@ class RealAreaEmitter(nn.Module):
         # Extract configuration parameters
         radius = cfg.get('radius', 0.007)
         fwhm_deg = cfg.get('fwhm_deg', 115.0)
-        radiance = torch.tensor(cfg.get('radiance'), dtype=torch.float32, device='cuda')
+        self.light_radiance = nn.Parameter(torch.tensor(cfg.get('radiance'), dtype=torch.float32, device='cuda'))
         R_l2g = torch.tensor(cfg.get('R_l2g'), dtype=torch.float32, device='cuda')
         t_l2g = torch.tensor(cfg.get('t_l2g'), dtype=torch.float32, device='cuda')
         base2_to_base1 = torch.tensor(cfg.get('base2_to_base1'), dtype=torch.float32, device='cuda')
@@ -316,7 +316,7 @@ class RealAreaEmitter(nn.Module):
         m = math.log(0.5) / math.log(max(1e-8, math.cos(theta_half)))
         self.register_buffer('m', torch.tensor(m, dtype=torch.float32))
         self.register_buffer('light_radius', torch.tensor(radius, dtype=torch.float32))
-        self.register_buffer('light_radiance', torch.tensor(radiance, dtype=torch.float32))
+
         # Compute light transformation matrix
         g2b = read_light_transforms(json_path) # [N, 4, 4]
         g2b = base2_to_base1.unsqueeze(0) @ g2b
@@ -325,12 +325,11 @@ class RealAreaEmitter(nn.Module):
         l2g[:3, 3] = t_l2g
         l2w = g2b @ l2g
         self.register_buffer('light_positions', l2w[:, :3, 3])  # [N, 3] - translation part
-        light_normal_local = torch.tensor([0.0, 1.0, 0.0], dtype=torch.float32, device='cuda')
+        light_normal_local = torch.tensor([0.0, -1.0, 0.0], dtype=torch.float32, device='cuda')
         light_normals_world = torch.matmul(l2w[:, :3, :3], light_normal_local)  # [N, 3]
         light_normals_world = light_normals_world / (light_normals_world.norm(dim=-1, keepdim=True) + 1e-12)
         self.register_buffer('light_normal', light_normals_world)
                 
-    @torch.no_grad()
     def _directional_distribution(self, light_dir,light_id):
         """
         Compute directional radiance L(θ) for rays headed from the light to the surface.
@@ -540,6 +539,7 @@ class RealAreaEmitter(nn.Module):
         #print("t",t)
         if torch.isnan(Le).any():
             print("Le is nan")
+        # Le = torch.ones_like(Le) * 10
         return Le, pdf, torch.ones_like(pdf, dtype=torch.bool)  # Always valid
     
 class AreaEmitter(nn.Module):

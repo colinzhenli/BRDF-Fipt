@@ -430,12 +430,12 @@ def read_model(path, ext=""):
     if ext == ".txt":
         cameras = read_cameras_text(os.path.join(path, "cameras" + ext))
         images = read_images_text(os.path.join(path, "images" + ext))
-        points3D = read_points3D_text(os.path.join(path, "points3D") + ext)
+        # points3D = read_points3D_text(os.path.join(path, "points3D") + ext)
     else:
         cameras = read_cameras_binary(os.path.join(path, "cameras" + ext))
         images = read_images_binary(os.path.join(path, "images" + ext))
-        points3D = read_points3D_binary(os.path.join(path, "points3D") + ext)
-    return cameras, images, points3D
+        # points3D = read_points3D_binary(os.path.join(path, "points3D") + ext)
+    return cameras, images
 
 
 def write_model(cameras, images, points3D, path, ext=".bin"):
@@ -492,7 +492,7 @@ def main():
 
     print("num_cameras:", len(cameras))
     print("num_images:", len(images))
-    print("num_points3D:", len(points3D))
+    # print("num_points3D:", len(points3D))
 
     if args.output_model is not None:
         write_model(cameras, images, points3D, path=args.output_model, ext=args.output_format)

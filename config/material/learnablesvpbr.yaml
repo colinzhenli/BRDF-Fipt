@@ -2,7 +2,7 @@ type: "LearnableSvPBRBRDF"
 
 
 colorful_texture: True
-anisotropic: False
+anisotropic: True
 init_std: 1
 soft_constraint: False
 texture_res: 2048

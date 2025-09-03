@@ -64,12 +64,12 @@ def load_camera_light_metadata(json_path):
         # Round phi and theta to 3 decimal places
         phi_rounded = f"{phi:.3f}"
         theta_rounded = f"{theta:.3f}"
-        filename = f"scan-{light_id}-{camera_id}-phi{phi_rounded}_theta{theta_rounded}.png"
+        filename = f"masked_scan-{light_id}-{camera_id}-phi{phi_rounded}_theta{theta_rounded}.png"
         
         # Create metadata entry
         metadata.append({
-            'id': overall_id,
-            'camera_id': str(camera_id),
+            'overall_id': overall_id,
+            'camera_id': camera_id,
             'emitter_id': light_id,  # Using emitter_id to match SphereImageDataset
             'filename': filename
         })
@@ -174,7 +174,10 @@ def read_light_transforms(json_path):
 
             # Convert to light-to-world transformation matrix
             light2world = rotation_position_to_light2world(rotation_matrix, position)
+            ROTATION_FACTOR = 1.0405
+            turn_angle = turn_angle * ROTATION_FACTOR
             Tw2w0 = build_rot_about_point(build_cw_rotz_from_deg(-turn_angle)) # tranform world back to 0-angle world
+            Tw2w0 = torch.from_numpy(Tw2w0).float()
             light_transforms.append(Tw2w0 @ light2world)
     
     return torch.stack(light_transforms).cuda()  # (N, 4, 4)

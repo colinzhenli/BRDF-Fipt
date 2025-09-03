@@ -200,7 +200,8 @@ class RealImageDataset(IterableDataset):
             
             # Generate rays for this camera
             # c2w = get_c2w_from_robot_pose(camera_dict, self.R_c2g, self.t_c2g)
-            c2w = torch.from_numpy(build_4x4(camera_dict["rotation_matrix"], camera_dict["position"])[:3, :4]).float()
+            c2w = torch.from_numpy(build_4x4(camera_dict["rotation_matrix"], camera_dict["position"])).float()
+            c2w = _cv_to_gl(c2w)[:3, :4]
             rays_o, rays_d, dxdu, dydv = get_rays(self.directions, c2w, focal=self.intrinsics['focal_length'])
             rays = torch.cat([rays_o, rays_d, dxdu, dydv], dim=-1)
             # Load original RGB image (without gamma correction)
@@ -488,7 +489,8 @@ class RealValDataset(Dataset):
         
         # Generate rays for this camera
         # c2w = get_c2w_from_robot_pose(camera_dict, self.R_c2g, self.t_c2g)
-        c2w = torch.from_numpy(build_4x4(camera_dict["rotation_matrix"], camera_dict["position"])[:3, :4]).float()
+        c2w = torch.from_numpy(build_4x4(camera_dict["rotation_matrix"], camera_dict["position"])).float()
+        c2w = _cv_to_gl(c2w)[:3, :4]
         rays_o, rays_d, dxdu, dydv = get_rays(self.directions, c2w, focal=self.focal)
         rays = torch.cat([rays_o, rays_d, dxdu, dydv], dim=-1)
         

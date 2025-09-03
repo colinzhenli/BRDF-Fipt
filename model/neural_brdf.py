@@ -126,7 +126,8 @@ class LearnableSvPBRBRDF(nn.Module):
         # Randomly initialize learnable PBR texture
         # Channels: [albedo(3), roughness(1), metallic(1), normal(3)] = 8 total
         self.texture_res = cfg.texture_res
-        
+        # Set random seed for reproducible texture initialization
+        # torch.manual_seed(42)
         # Initialize texture with proper values
         texture_init = torch.randn(1, self.texture_res, self.texture_res, 21) * self.init_std
         
@@ -208,6 +209,7 @@ class LearnableSvPBRBRDF(nn.Module):
         if torch.isnan(brdf).any() or torch.isinf(brdf).any():
             print("brdf is nan or inf")
         # Debug: set all brdf to 1
+        # brdf = torch.ones_like(brdf)
         return brdf, pdf
 
     def compute_anisotropic_svbrdf_pdf(self,
@@ -262,6 +264,7 @@ class LearnableSvPBRBRDF(nn.Module):
 
 
     def eval_brdf(self, params, pos, wi, wo, normal,uv, TBN, latent=None, batch_mask=None):
+        """ wi is light direction, wo is view direction """
         TBN=TBN.permute(2,0,1)
         #print("TBN",TBN.shape)
         NoL = (wi*normal).sum(-1, keepdim=True)
@@ -355,7 +358,8 @@ class LearnableSvPBRBRDF(nn.Module):
                 metallic = torch.clamp(arm[:, 2:3], 0.01, 0.99)  # [eps, 1-eps]
 
             # Step 4: Transform local normal to world
-            n_world = local_to_world_normal(normal_local, T, B, N_geo)
+            # n_world = local_to_world_normal(normal_local, T, B, N_geo)
+            n_world = normal_local # use normal map instead of geometry normal
 
             # Evaluate BRDF with mapped parameters
             if self.normal_map:

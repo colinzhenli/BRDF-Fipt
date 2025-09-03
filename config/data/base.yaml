@@ -3,8 +3,8 @@ val_num: 9
 test_num: 1
 num_workers: 0
 # batch_num: 2048 #4096 # steps per epoch
-rays_num: 32768  # pixels per batch
-# rays_num: 131072 # 4 times more rays
+# rays_num: 32768  # pixels per batch
+rays_num: 131072 # 4 times more rays
 
 
 importance_sampling: False
