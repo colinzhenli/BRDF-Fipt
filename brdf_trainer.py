@@ -183,9 +183,9 @@ class BRDFTrainer(pl.LightningModule):
         rgbs, vis, ray_params = self.renderer.render(self.emitter, rays, emitter_ids, self.cfg.renderer.spp.train,
                                         None, None)                       # f(r)
         if self.hparams.model.loss.recon_loss.name == "l1":
-            per_pix = torch.abs(rgbs - rgbs_gt).mean(dim=-1)        # (S,)
+            per_pix = torch.abs(rgbs[vis] - rgbs_gt.squeeze(0)[vis]).mean(dim=-1)        # (S,)
         else:  # "l2"
-            per_pix = torch.pow(rgbs - rgbs_gt, 2).mean(dim=-1)     # (S,)
+            per_pix = torch.pow(rgbs[vis] - rgbs_gt.squeeze(0)[vis], 2).mean(dim=-1)     # (S,)
 
         if self.hparams.data.importance_sampling:
             weights    = 1.0 / weighted_pdf.clamp(min=1e-5)                              # importance weights
@@ -199,7 +199,7 @@ class BRDFTrainer(pl.LightningModule):
         loss       = recon_loss + prior*self.hparams.model.loss.refiner_prior_loss.weight
 
         psnr_loss  = torch.nn.functional.mse_loss(self.gamma(rgbs[vis]),
-                                                self.gamma(rgbs_gt[vis]),
+                                                self.gamma(rgbs_gt.squeeze(0)[vis]),
                                                 reduction='mean')
         psnr       = 10.0 * torch.log10(1.0 / psnr_loss.clamp_min(1e-5))
 
@@ -225,13 +225,13 @@ class BRDFTrainer(pl.LightningModule):
         # forward renders
         rgbs, vis, ray_params = self.renderer.render(self.emitter, rays, emitter_ids, self.cfg.renderer.spp.train, None, None)    
 
-        psnr_loss = torch.nn.functional.mse_loss(self.gamma(rgbs[vis]), self.gamma(rgbs_gt[vis]), reduction='mean')
+        psnr_loss = torch.nn.functional.mse_loss(self.gamma(rgbs[vis]), self.gamma(rgbs_gt.squeeze(0)[vis]), reduction='mean')
         psnr = 10.0 * torch.log10((1.0 ** 2) / psnr_loss.clamp_min(1e-5))
         
         if self.hparams.model.loss.recon_loss.name == "l1":
-            recon_loss = NF.l1_loss(rgbs[vis], rgbs_gt[vis])
+            recon_loss = NF.l1_loss(rgbs[vis], rgbs_gt.squeeze(0)[vis])
         elif self.hparams.model.loss.recon_loss.name == "l2":
-            recon_loss = NF.mse_loss(rgbs[vis], rgbs_gt[vis])
+            recon_loss = NF.mse_loss(rgbs[vis], rgbs_gt.squeeze(0)[vis])
         loss = recon_loss + prior*self.hparams.model.loss.refiner_prior_loss.weight
         
         # Handle batch of images
@@ -266,12 +266,12 @@ class BRDFTrainer(pl.LightningModule):
                 os.path.join(output_dir, f'result_view_{batch_idx}_{b}.png')
             )
             
-        # save the learned pbr normal map
-        pbr_normal_map = self.material.pbr_texture.data[0, :, :, 10:13]
-        torchvision.utils.save_image(
-            pbr_normal_map.permute(2, 0, 1),
-            os.path.join(output_dir, f'pbr_normal_map_{batch_idx}_{b}.png')
-        )
+        # # save the learned pbr normal map
+        # pbr_normal_map = self.material.pbr_texture.data[0, :, :, 10:13]
+        # torchvision.utils.save_image(
+        #     pbr_normal_map.permute(2, 0, 1),
+        #     os.path.join(output_dir, f'pbr_normal_map_{batch_idx}_{b}.png')
+        # )
         # Save pose refinement parameters if available
         # if hasattr(self, 'handeye_refiner') and self.handeye_refiner is not None:
         #     refine_params = {

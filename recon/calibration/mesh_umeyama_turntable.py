@@ -10,17 +10,24 @@ Hand–eye calibration with metric upgrade.
 """
 
 import os
+import sys
 import json
 import argparse
 import numpy as np
 import cv2
 from scipy.spatial.transform import Rotation as R
 from read_write_model import read_model, qvec2rotmat
+# Add project root to Python path
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
 from utils.transform import build_4x4, build_cw_rotz_from_deg, build_ccw_rotz_from_deg, build_rot_about_point
 import re
 from pathlib import Path
 
-TURNTABLE_CENTER = np.array([0.2115, -0.1961, -0.06])
+# TURNTABLE_CENTER = np.array([0.2115, -0.1961, -0.06])
+TURNTABLE_CENTER = np.array([0.20, -0.1961, 6])
 R_CAMERA2GRIPPER = np.array([[-0.00369406,  0.99992083,  0.01202885],
                       [-0.00272167,  0.01201883, -0.99992407],
                       [-0.99998947, -0.00372652,  0.00267706]])
@@ -28,6 +35,7 @@ R_CAMERA2GRIPPER = np.array([[-0.00369406,  0.99992083,  0.01202885],
 t_CAMERA2GRIPPER = np.array([0.02634460753, -0.01919117879, 0.03014509088])
 
 CLOCKWISE_ROTATION = True
+THETA_FACTOR = 1.04
 
 def sim3_umeyama(P, Q, with_scale=True):
     """
@@ -103,7 +111,7 @@ def rotated_c2w(json_entry, R_c2g, t_c2g, turntable_center):
     """
     # T_g2b from robot state
     R_g2b = np.asarray(json_entry["rotation_matrix"], dtype=float)
-    t_g2b = np.asarray(json_entry["position"], dtype=float)
+    t_g2b = np.asarray(json_entry["position"], dtype=float) / 1000.0 # mm to m
     T_g2b = build_4x4(R_g2b, t_g2b)
 
     # T_c2g (given)
@@ -114,14 +122,17 @@ def rotated_c2w(json_entry, R_c2g, t_c2g, turntable_center):
 
     # Rotate the whole world back by -turn_angle about the turntable axis at center
     theta = float(json_entry.get("turn_angle", 0.0))
+    theta_factor = THETA_FACTOR
+    theta = theta * theta_factor
     if CLOCKWISE_ROTATION:
-        T_b2w0 = build_rot_about_point(build_cw_rotz_from_deg(-theta))
+        T_b2w0 = build_rot_about_point(build_cw_rotz_from_deg(-theta), turntable_center)
     else:
-        T_b2w0 = build_rot_about_point(build_ccw_rotz_from_deg(-theta))
+        T_b2w0 = build_rot_about_point(build_ccw_rotz_from_deg(-theta), turntable_center)
 
     # Camera -> 0-angle world
     T_c2w0 = T_b2w0 @ T_c2b
     return T_c2w0
+    # return T_c2b
     
 def load_robot_poses_c2w0(scan_log_path, images):
     """
@@ -221,10 +232,42 @@ def estimate_world2base(scan_log_path, images):
     cam_centres_base  = np.vstack(cam_centres_base)
     cam_centres_world = np.vstack(cam_centres_world)
 
-    # ---------- similarity (scale,R,t)  world → base --------------------------
-    s, R, t = sim3_umeyama(cam_centres_world, cam_centres_base)
-    T_BW = build_4x4(s * R, t)
+    # # ---------- similarity (scale,R,t)  world → base --------------------------
+    # cam_centres_world_1 = cam_centres_world[:10]
+    # cam_centres_base_1 = cam_centres_base[:10]
+    # cam_centres_world_2 = cam_centres_world[10:20] # use first 10 without rotation
+    # cam_centres_base_2 = cam_centres_base[10:20]
+    s, R, t = sim3_umeyama(cam_centres_world[:20], cam_centres_base[:20])
+    # s2, R2, t2 = sim3_umeyama(cam_centres_world_2, cam_centres_base_2)
+    # # Compare the two similarity transformations
+    # print(f"First similarity transformation (frames 0-9):")
+    # print(f"  Scale: {s:.6f}")
+    # print(f"  Rotation matrix:\n{R}")
+    # print(f"  Translation: {t}")
     
+    # print(f"\nSecond similarity transformation (frames 10-19):")
+    # print(f"  Scale: {s2:.6f}")
+    # print(f"  Rotation matrix:\n{R2}")
+    # print(f"  Translation: {t2}")
+    
+    # print(f"\nDifferences:")
+    # print(f"  Scale difference: {abs(s - s2):.6f}")
+    # print(f"  Rotation matrix difference (Frobenius norm): {np.linalg.norm(R - R2):.6f}")
+    # print(f"  Translation difference (L2 norm): {np.linalg.norm(t - t2):.6f}")
+    
+    T_BW = build_4x4(s * R, t)
+    # Debug: compute transferred camera centers from world to base
+    cam_centres_world_homogeneous = np.hstack([cam_centres_world, np.ones((cam_centres_world.shape[0], 1))])
+    cam_centres_transferred = (T_BW @ cam_centres_world_homogeneous.T).T[:, :3]
+    
+    # Print debug information
+    print(f"Original camera centers in base coordinates (first 3):")
+    print(cam_centres_base[:3])
+    print(f"Transferred camera centers from world to base (first 3):")
+    print(cam_centres_transferred[:3])
+    print(f"Difference (first 3):")
+    print(cam_centres_base[:3] - cam_centres_transferred[:3])
+    print(f"Mean error: {np.mean(np.linalg.norm(cam_centres_base - cam_centres_transferred, axis=1)):.6f}")
     return T_BW, cam_c2w, log_idx
 
 def transform_mesh_to_base(mesh_path, T_BW, output_path=None):
@@ -285,6 +328,6 @@ if __name__ == "__main__":
     # Set camera log path to be in the same folder as scan log with name "rotated_camera.json"
     scan_log_dir = Path(args.scan_log_path).parent
     camera_log_path = scan_log_dir / "rotated_camera.json"
-    cameras, images, points3D = read_model(args.model_path, ext=".bin")
+    cameras, images = read_model(args.model_path, ext=".bin")
     main(args.scan_log_path, images, args.mesh_path, camera_log_path)
  
