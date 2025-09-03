@@ -6,36 +6,36 @@
     // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
     "version": "0.2.0",
     "configurations": [
-        // {
-        //     "name": "Python: Current File",
-        //     "type": "python",
-        //     "request": "launch",
-        //     "program": "./recon/colmap/build_camera.py",
-        //     "console": "integratedTerminal",
-        //     "justMyCode": true,
-        //     "env": {
-        //         "CUDA_VISIBLE_DEVICES": "3"
-        //     },
-        //     "args": [
-        //         // "--input", "/media/raid/cloth/Pipeline_test_images_Aug15/fuse_post_lift_up_transformed.ply",
-        //         // "--output", "/media/raid/cloth/Pipeline_test_images_Aug15/mesh_cropped_lift_up.ply",
-        //         // "--percent", "0.8"
-        //     ]
-        // },
         {
-            "name": "2DGS Train",
+            "name": "Python: Current File",
             "type": "python",
             "request": "launch",
-            "program": "./recon/preprocess/purple_filter.py",
+            "program": "./recon/calibration/solve_turntable_center.py",
             "console": "integratedTerminal",
             "justMyCode": true,
             "env": {
-                "CUDA_VISIBLE_DEVICES": "0"
+                "CUDA_VISIBLE_DEVICES": "3"
             },
             "args": [
-                "exp_folder=/media/raid/cloth/Single_step_recon_Sep1"
-            ]
+                "--scan_log_path", "/media/raid/cloth/Single_step_recon_Sep1/scan_log_0901.json",
+                "--mesh_path", "/media/raid/cloth/Single_step_recon_Sep1/Meshes/fuse_pose_cut_before_transformed.ply",
+                "--model_path", "/media/raid/cloth/Single_step_recon_Sep1/BRDF_recon/undistorted/sparse/0"
+                ]
         },
+        // {
+        //     "name": "2DGS Train",
+        //     "type": "python",
+        //     "request": "launch",
+        //     "program": "./recon/preprocess/purple_filter.py",
+        //     "console": "integratedTerminal",
+        //     "justMyCode": true,
+        //     "env": {
+        //         "CUDA_VISIBLE_DEVICES": "0"
+        //     },
+        //     "args": [
+        //         "exp_folder=/media/raid/cloth/Single_step_recon_Sep1"
+        //     ]
+        // },
         // {
         //     "name": "Python: Current File",
         //     "type": "python",
@@ -47,10 +47,10 @@
         //         "CUDA_VISIBLE_DEVICES": "3"
         //     },
         //     "args": [
-        //         "dataset_folder=/media/raid/cloth/Lighting_test_Aug22/BRDF_recon/images_raw",
+        //         "dataset_folder=/media/raid/cloth/Single_step_recon_Sep1/BRDF_recon/undistorted/images",
         //         "renderer=realcapture_area_emitter",
         //         "material=learnablesvpbr",
-        //         "experiment_name=Single-image_PBR_New_handeye_run_1",
+        //         "experiment_name=Single-image_Normal-map-only_Learnable-radiance_PBR-BRDF-recon_debug"
         //     ]
         // }
     ]

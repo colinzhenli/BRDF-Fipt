@@ -33,7 +33,7 @@ camera:
     distortion: 0.0
 
 mesh:
-  path: /media/raid/cloth/Lighting_test_Aug22/Meshes/Cut_mesh_uv.ply # Use flat mesh for test
+  path: /media/raid/cloth/Single_step_recon_Sep1/Meshes/fuse_pose_cut_before_transformed_transformed_uv.ply
 
 emitter:
   type: "realarea"
@@ -42,7 +42,7 @@ emitter:
   radius: 0.007 # value from specs
   fwhm_deg: 115.0 # full width at half maximum angle(value for specs)
   positions: [0.0, 0.0, 0.0] # to be updated
-  radiance: [20.0, 20.0, 20.0] # largest radiance at 90 degree(to be updated)
+  radiance: [200.0, 200.0, 200.0] # largest radiance at 90 degree(to be updated)
   R_l2g: [[1.0,  0.0,  0.0],
           [0.0,  1.0,  0.0],
           [0.0,  0.0,  1.0]]
