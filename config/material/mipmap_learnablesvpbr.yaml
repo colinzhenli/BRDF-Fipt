@@ -1,11 +1,11 @@
-type: "LearnableSvPBRBRDF"
+type: "MipmapLearnableSvPBRBRDF"
 
 
 colorful_texture: True
 anisotropic: False
 init_std: 1
 soft_constraint: False
-texture_res: 512
+texture_res: 2048
 
 roughness: 0.2
 metallic: 0.2
@@ -14,6 +14,9 @@ perlin_scale: 0.1
 perlin_randomness: 0.1
 normal_map: True # whether use normal map or sphere normals
 scale_factor: 1.0 # scale factor for pbr maps
+prefliter: True
+mipmap_levels: 4
+base_footprint: 1e-5
 
 pbr_texture_path: '/mnt/data/colin/colin/BRDF-Fipt/fabric_pattern_07_4k/textures'
 # pbr_texture_path: /mnt/data/colin/colin/BRDF-Fipt/denim_fabric_03_4k/textures

@@ -8,18 +8,18 @@ import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
 from renderer import ForwardRenderer
 from brdf_trainer import BRDFTrainer
-from model.brdf import SvPBRBRDF, SvLatentModel, AnisotropicLatentTexturedModel
+from model.neural_brdf import SvLatentModel, AnisotropicLatentTexturedModel, LearnableSvPBRBRDF
 from model.emitter import DynamicPointEmitter
 from torch.utils.data import DataLoader
 from itertools import islice
 from utils.dataset import SphereTestDataset, SphereValDataset
 import hydra
-from model.brdf import LatentTexturedModel
 from pytorch_lightning.strategies import DDPStrategy
 import importlib
 import warnings
 import logging
-import cv2
+from utils.dataset import RealValDataset
+from model.emitter import RealAreaEmitter
 warnings.filterwarnings("ignore")
 logging.getLogger("pytorch_lightning").setLevel(logging.ERROR)
 
@@ -133,11 +133,7 @@ def main(cfg):
     checkpoint_output_path = os.path.join(cfg.exp_output_root_path, "training")
     os.makedirs(checkpoint_output_path, exist_ok=True)
 
-    gt_material_cfg = hydra.compose(config_name="config", overrides=["material=svpbr"]).material  
-    point_emitter_cfg = hydra.compose(config_name="config", overrides=["renderer=realcapture_emitter"])
-    albedo = gt_material_cfg.albedo
-    roughness = gt_material_cfg.roughness
-    metallic = gt_material_cfg.metallic
+    area_emitter_cfg = hydra.compose(config_name="config", overrides=["renderer=realcapture_area_emitter"])
 
     if cfg.material.type == "LatentTexturedModel":
         material = LatentTexturedModel(cfg.material)  # MLP model uses mlp_pbr config
@@ -145,110 +141,47 @@ def main(cfg):
         material = SvLatentModel(cfg.material)  # MLP model uses mlp_pbr config
     elif cfg.material.type == "AnisotropicLatentTexturedModel":
         material = AnisotropicLatentTexturedModel(cfg.material)  # MLP model uses mlp_pbr config
+    elif cfg.material.type == "LearnableSvPBRBRDF":
+        material = LearnableSvPBRBRDF(cfg.material)  # MLP model uses mlp_pbr config
     else:
         raise ValueError(f"Invalid material type: {cfg.material.type}")
-    
-    gt_material = SvPBRBRDF(
-        cfg=gt_material_cfg,
-        albedo=torch.tensor(albedo)
-    )  # Ground truth uses pbr config
 
-    model = BRDFTrainer(point_emitter_cfg, material, gt_material, roughness, metallic)
+    model = BRDFTrainer(area_emitter_cfg, material, material, None, None)
     model.cuda()
 
     if os.path.isfile(cfg.model.ckpt_path):
         print(f"=> loading model checkpoint '{cfg.model.ckpt_path}'")
-        checkpoint = torch.load(cfg.model.ckpt_path, map_location=model.device, weights_only=False)
-        # Load parameters that exist in the checkpoint, keep new parameters as initialized
-        model_dict = model.state_dict()
-        pretrained_dict = {k: v for k, v in checkpoint['state_dict'].items() if k in model_dict}
-        model_dict.update(pretrained_dict)
-        model.load_state_dict(model_dict)
-        print(f"=> loaded checkpoint successfully. {len(pretrained_dict)}/{len(model_dict)} parameters loaded.")
+        ckpt = torch.load(cfg.model.ckpt_path, map_location=model.device, weights_only=False)
+        state = ckpt["state_dict"].copy()
+        model.load_state_dict(state, strict=False)
+
     else:
         raise FileNotFoundError(f"No checkpoint found at '{cfg.model.ckpt_path}'.")
 
-
-    
     # Initialize the dataset for batch processing
-    dataset = SphereValDataset(point_emitter_cfg, gt_folder=None)
-    dataloader = DataLoader(dataset, batch_size=cfg.data.batch_size, num_workers=cfg.data.num_workers)
+    dataset = RealValDataset(cfg, gt_folder=cfg.gt_folder)
+    output_dir = os.path.join(cfg.exp_output_root_path, "multiple-spp_rotated_view_images")
+    os.makedirs(output_dir, exist_ok=True)
 
     print("==> rendering ground truth and predictions using environmental map...")
-    resolution = cfg.renderer.resolution
+    resolution = cfg.renderer.camera.intrinsics.height, cfg.renderer.camera.intrinsics.width
 
     model.eval()
-    gt_renderer = ForwardRenderer(cfg, gt_material)
     renderer = ForwardRenderer(cfg, material)
-    psnr_list = []
-    delta_e_list = []
     with torch.no_grad():
         for idx, batch in tqdm(enumerate(dataset), total=len(dataset), desc="Processing materials"):
-            # Render step logic
-            rays, gt_params = batch['rays'].to(model.device).unsqueeze(0), batch['gt_params'].to(model.device).unsqueeze(0)
-            emitter = DynamicPointEmitter(
-                ray_num = rays.shape[1],
-                dist=cfg.renderer.emitter.dist,
-                num_lights=cfg.renderer.emitter.num_lights,
-                camera_phi = batch['phi'],
-                theta_angle = cfg.renderer.emitter.theta_angle,
-                random_positions = False,
-                random_intensities = False,
-                different_per_point = False
-            )
-            
-            rgbs_pred, *_ = renderer.render(emitter, rays, cfg.renderer.spp.test, gt_params, None)
-            if cfg.gt_folder is None:
-                with torch.no_grad():
-                    rgbs_gt, *_ = gt_renderer.render(emitter, rays, cfg.renderer.spp.test, gt_params, None)
-            else:
-                rgbs_gt = batch['rgbs'].to(model.device)
-            
-            psnr_loss = torch.nn.functional.mse_loss(model.gamma(rgbs_pred), model.gamma(rgbs_gt), reduction='mean')
-            psnr = 10.0 * torch.log10((1.0 ** 2) / psnr_loss.clamp_min(1e-5))
-            psnr_list.append(psnr.item())
-            # Reshape for visualization
-            img_pred = rgbs_pred.reshape(*resolution, -1)
-            img_gt = rgbs_gt.reshape(*resolution, -1)
-            delta_e = compute_delta_e(img_pred, img_gt, model.gamma)
-            avg_delta_e = delta_e.mean().item()    
-            delta_e_list.append(avg_delta_e)
-            
-            # Compute error map between prediction and ground truth with sign
-            error_map = img_pred - img_gt  # shape: [H, W, 3]
-            error_scalar = error_map.sum(dim=-1, keepdim=True)  # shape: [H, W, 1]
-            
-            # Calculate brightness of ground truth for normalization
-            brightness = img_gt.sum(dim=-1, keepdim=True).clamp_min(1e-6)  # Avoid division by zero
-            
-            # Normalize error by the brightness (relative error)
-            relative_error = error_scalar / brightness
-            error_magnitude = relative_error.abs()
-            
-            # Create red-blue error visualization
-            error_map_r = torch.zeros_like(relative_error)
-            error_map_b = torch.zeros_like(relative_error)
-            error_map_r[relative_error > 0] = error_magnitude[relative_error > 0]
-            error_map_b[relative_error < 0] = error_magnitude[relative_error < 0]
-            error_map_display = torch.cat([error_map_r, torch.zeros_like(error_map_r), error_map_b], dim=-1)
-            
-            # Save error map and images
-            output_dir = os.path.join(
-                cfg.exp_output_root_path,
-                f'fabric_pattern_07_4k'
-            )
-            os.makedirs(output_dir, exist_ok=True)
-            torchvision.utils.save_image(
-                error_map_display.permute(2, 0, 1), 
-                os.path.join(output_dir, f'error_map_view_{idx}.png')
-            )
-            torchvision.utils.save_image(model.gamma(img_gt.permute(2, 0, 1)), os.path.join(output_dir, f'gt_view_{idx}.png'))
-            torchvision.utils.save_image(model.gamma(img_pred.permute(2, 0, 1)), os.path.join(output_dir, f'result_view_{idx}.png'))
+            turntable_center = torch.tensor(cfg.renderer.turntable_center, device=model.device)
+            model.emitter._update_poses_for_vis(turntable_center, 100)
+            # Fix camera id to 0 and use emitter index same as idx
+            """ TODO: change the dataset to get rays only from the first camera for testing """
+            batch['camera_ids'] = torch.zeros_like(batch['camera_ids'])
+            batch['emitter_ids'] = torch.full_like(batch['emitter_ids'], idx)
+            rays, emitter_ids = batch['rays'].to(model.device).unsqueeze(0), batch['emitter_ids'].to(model.device).unsqueeze(0)
 
-    avg_psnr = sum(psnr_list) / len(psnr_list)
-    print(f"Final average PSNR across all test materials: {avg_psnr:.2f}")
-    avg_delta_e = sum(delta_e_list) / len(delta_e_list)
-    print(f"Final average Delta E across all test materials: {avg_delta_e:.2f}")
+            rgbs_pred, *_ = renderer.render(model.emitter, rays, emitter_ids, cfg.renderer.spp.test, None, None)    
+            
+            img_pred = rgbs_pred.reshape(*resolution, -1)
+            torchvision.utils.save_image((img_pred.permute(2, 0, 1)), os.path.join(output_dir, f'result_view_{idx}.png'))
 
 if __name__ == "__main__":
     main()

@@ -481,6 +481,7 @@ class RealValDataset(Dataset):
         
         # Get camera info using camera_id
         overall_id = img_data["overall_id"]
+        # overall_id = 0 # debug with the first camera
         camera_info = self.camera_metadata[str(overall_id)]
         camera_dict = {
             "position": camera_info["position"],
@@ -512,6 +513,8 @@ class RealValDataset(Dataset):
         
         # Get emitter ID directly from metadata
         emitter_ids = torch.full((rays.shape[0],), img_data["emitter_id"], dtype=torch.long)
+        # emitter_ids = torch.full((rays.shape[0],), idx, dtype=torch.long)
+        
         camera_ids = torch.full((rays.shape[0],), int(overall_id), dtype=torch.long)
         return {
             'rays': rays,
@@ -520,3 +523,4 @@ class RealValDataset(Dataset):
             'gt_params': torch.zeros(1),
             'camera_ids': camera_ids,
         }
+        

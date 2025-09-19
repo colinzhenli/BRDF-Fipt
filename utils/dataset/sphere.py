@@ -581,6 +581,7 @@ class SphereValDataset(Dataset):
         
         # Get camera info using camera_id
         camera_id = img_data["camera_id"]
+        # camera_id = 0 # debug with the first camera
         camera_info = self.camera_metadata[camera_id]
         camera_dict = {
             "position": camera_info["position"],

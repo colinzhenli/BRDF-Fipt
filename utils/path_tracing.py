@@ -50,10 +50,10 @@ def ray_intersect_with_tbn(scene, xs, ds):
     ret = ret.compute_surface_interaction(rays_mi)
 
     positions = ret.p.torch()
-    normals   = NF.normalize(ret.sh_frame.n.torch(), dim=-1)
+    normals   = NF.normalize(ret.n.torch(), dim=-1)
 
-    tangent   = NF.normalize(ret.dp_du.torch(), dim=-1)
-    bitangent = NF.normalize(torch.cross(normals, tangent), dim=-1)
+    tangent   = NF.normalize(ret.sh_frame.s.torch(), dim=-1)
+    bitangent = NF.normalize(ret.sh_frame.t.torch(), dim=-1)
     TBN = torch.stack([tangent, bitangent, normals], dim=-1)  # [B, 3, 3]
 
     ts  = ret.t.torch()
@@ -61,8 +61,64 @@ def ray_intersect_with_tbn(scene, xs, ds):
     idx[~valid] = -1
     normals = double_sided(-ds, normals)
 
-    return positions, normals, ret.uv.torch(), idx, valid, TBN
+    return positions, normals, ret.uv.torch(), ret.dp_du.torch(), ret.dp_dv.torch(), idx, valid, TBN
 
+def uv_footprint_simple(ro, wi, p, n, dp_du, dp_dv, dx_du, dy_dv, eps=1e-8):
+    t = ((p - ro) * wi).sum(-1, keepdim=True).clamp_min(0.0)
+    cosi = (n * wi).sum(-1, keepdim=True).abs().clamp_min(eps)
+    theta = 0.5 * torch.sqrt((dx_du**2).sum(-1, keepdim=True) + (dy_dv**2).sum(-1, keepdim=True))
+    r_surf = (t * theta) / cosi
+    ru = r_surf / dp_du.norm(dim=-1, keepdim=True).clamp_min(eps)
+    rv = r_surf / dp_dv.norm(dim=-1, keepdim=True).clamp_min(eps)
+    return torch.sqrt(ru * rv)  # isotropic radius in UV
+
+def compute_footprint(rays_o, rays_d, p, dp_du, dp_dv, dx_du, dy_dv, eps=1e-8):
+    """
+    Compute the surface footprint (per-pixel projected area) for each ray hit.
+
+    Args:
+        rays_o, rays_d: (N,3) ray origins and directions
+        p:              (N,3) hit positions
+        dp_du, dp_dv:   (N,3) surface partials at hit (∂p/∂u, ∂p/∂v)
+        dx_du, dy_dv:   (N,3) direction differentials wrt screen x and y (from get_rays)
+        eps:            small epsilon to avoid division by zero
+
+    Returns:
+        dp_dx, dp_dy:   (N,3) 3D intersection differentials on the surface for screen x,y
+        area:           (N,)  footprint area on the surface (per pixel)
+        n:              (N,3) shading normal at the hit
+        t:              (N,)  parameter distance along each ray to the hit
+    """
+    # Distance t to hit; works whether rays_d is normalized or not
+    d = rays_d
+    o = rays_o
+    t = ((p - o) * d).sum(-1) / (d * d).sum(-1).clamp_min(eps)  # (N,)
+
+    # Surface normal
+    n = torch.cross(dp_du, dp_dv, dim=-1)
+    n = n / (n.norm(dim=-1, keepdim=True) + eps)  # (N,3)
+
+    ndotd = (n * d).sum(-1).clamp(min=-1.0, max=1.0)  # (N,)
+    # Avoid near-grazing division
+    ndotd = torch.where(ndotd.abs() < eps, ndotd.sign() * eps, ndotd)
+
+    def one_axis(dd):  # dd = d_x or d_y
+        ndotdd = (n * dd).sum(-1)                # (N,)
+        dt = - t * ndotdd / ndotd                # (N,)
+        dp = t[..., None] * dd + dt[..., None] * d  # (N,3)
+
+        # optional: remove any tiny normal component (numerical stability)
+        dp = dp - (dp * n).sum(-1, keepdim=True) * n
+        return dp
+
+    dp_dx = one_axis(dx_du)
+    dp_dy = one_axis(dy_dv)
+
+    # Footprint area = area of parallelogram spanned by dp_dx and dp_dy
+    area = torch.linalg.norm(torch.cross(dp_dx, dp_dy, dim=-1), dim=-1)  # (N,)
+
+    return area
+    
 def batched_path_tracing_dynamic_emitter(scene,emitter_net,material_net,rays_o,rays_d,dx_du,dy_dv,spp, brdf_sampling, emitter_sampling, gt_params=None, latent=None):
     """ Path trace current scene
     Args:
@@ -444,6 +500,96 @@ def path_tracing_envmap_emitter(scene,emitter_net,material_net,rays_o,rays_d,dx_
     L = L.reshape(B,spp,3).mean(1)
     return L
 
+# def batched_path_tracing_tbn_real_area_emitter(scene,emitter_net,material_net,rays_o,rays_d,dx_du,dy_dv, light_id, spp, brdf_sampling, emitter_sampling, gt_params=None, latent=None):
+#     """ Path trace with real capture
+#     Args:
+#         scene: mitsuba scene
+#         emitter_net: emitter object
+#         material_net: material object
+#         rays_o: BxNx3 ray origin
+#         rays_d: BxNx3 ray direction
+#         dx_du,dy_dv: BxNx3 ray differential
+#         spp: samples per pixel
+#         brdf_sampling: boolean flag for BRDF importance sampling
+#         emitter_sampling: boolean flag for emitter importance sampling
+#         gt_params: optional ground truth material parameters
+#         latent: optional batched latent code for material network
+#     Return:
+#         L: (B*N)x3 traced results unbatched
+#     """
+#     # flatten the rays
+#     # Create batch mask where each row contains the same batch index
+#     # For rays with shape B, N, 3, create mask with shape B, N
+#     batch_mask = torch.arange(len(rays_o), device=rays_o.device).view(rays_o.shape[0], 1).expand(rays_o.shape[0], rays_o.shape[1])
+#     # batch_mask = torch.zeros(len(rays_o), device=rays_o.device)
+#     rays_o = rays_o.reshape(-1,3)
+#     rays_d = rays_d.reshape(-1,3)
+#     dx_du = dx_du.reshape(-1,3)
+#     dy_dv = dy_dv.reshape(-1,3)
+#     light_id = light_id.reshape(-1)
+#     batch_mask = batch_mask.reshape(-1)
+#     N = len(rays_o)
+#     device = rays_o.device
+    
+#     # sample camera ray
+#     du,dv = torch.rand(2,len(rays_o),spp,1,device=device)-0.5
+#     wi = NF.normalize(rays_d[:,None]+dx_du[:,None]*du+dy_dv[:,None]*dv,dim=-1).reshape(-1,3)
+#     # wi = rays_d
+#     # Add mask for wi z component
+#     position = rays_o.repeat_interleave(spp,0)
+    
+#     # compute first intersection
+#     position,normal,uv, _,vis, TBN = ray_intersect_with_tbn(scene,position,wi)
+#     # position, normal, vis = ray_sphere_intersect(scene,position,wi)
+#     L = torch.zeros(vis.shape[0],3,device=device)
+#     if not vis.any():
+#         print("No valid intersection")
+#         return L.reshape(N,spp,3).mean(1), None, None
+#     position = position[vis]
+#     normal = normal[vis]
+#     uv=uv[vis]
+#     batch_mask = batch_mask[vis]
+#     wo = -wi[vis]
+#     light_id = light_id[vis]
+#     TBN = TBN[vis]
+    
+#     # deterministic sampling
+#     if emitter_sampling:
+#         wi, emit_pdf, emit_position, emitter_normal= emitter_net.sample_emitter(torch.rand_like(position[..., :2]), position, light_id)
+#         # visibility test
+#         emit_weight,emit_pdf, _ = emitter_net.eval_emitter(position, wi, light_id)
+#         G = (-wi*emitter_normal).sum(-1).abs() / (emit_position-position).pow(2).sum(-1).clamp_min(1e-6) # B, 1
+#         emit_weight = emit_weight*G[...,None]/emit_pdf.clamp_min(1e-6)
+#         # emit brdf
+#         emit_brdf,brdf_pdf = material_net.eval_brdf(None, position, wi,wo,normal,uv, TBN, latent, batch_mask) # gt_params will not be used in neural brdf model
+#         w_mis = torch.where((emit_pdf>0)&(~brdf_pdf.isinf()),emit_pdf*emit_pdf/(emit_pdf*emit_pdf+brdf_pdf*brdf_pdf),0)
+#         w_mis[emit_pdf.isinf()|(brdf_pdf==0)] = 1
+#         L[vis] += emit_brdf*emit_weight
+#     # sample brdf
+#     if brdf_sampling:
+#         wi,brdf_pdf,brdf_weight = material_net.sample_brdf(
+#             gt_params,
+#             position,
+#             torch.rand(len(normal),device=device),
+#             torch.rand(len(normal),2,device=device),
+#             wo,normal,
+#             latent,
+#             batch_mask
+#         ) # ground truth roughness will be used in brdf sampling
+    
+#         # Evaluate Le
+#         Le, emit_pdf, _ = emitter_net.eval_emitter(position, wi, light_id)
+#         G = (-wi*normal).sum(-1).abs() / (emit_position-position).pow(2).sum(-1).clamp_min(1e-6) # B, 1
+#         Le = Le*G[...,None]/emit_pdf.clamp_min(1e-6)
+        
+#         w_mis = torch.where((brdf_pdf>0)&(~emit_pdf.isinf()),brdf_pdf*brdf_pdf/(emit_pdf*emit_pdf+brdf_pdf*brdf_pdf),0)
+#         w_mis[brdf_pdf.isinf()|(emit_pdf==0)] = 1
+#         w_mis[w_mis.isnan()] = 0
+#         L[vis] += brdf_weight*Le * w_mis
+#     ray_params = torch.cat([position, wi, wo], dim=-1)
+
+#     return L, vis, ray_params
+
 def batched_path_tracing_tbn_real_area_emitter(scene,emitter_net,material_net,rays_o,rays_d,dx_du,dy_dv, light_id, spp, brdf_sampling, emitter_sampling, gt_params=None, latent=None):
     """ Path trace with real capture
     Args:
@@ -481,18 +627,26 @@ def batched_path_tracing_tbn_real_area_emitter(scene,emitter_net,material_net,ra
     # wi = rays_d
     # Add mask for wi z component
     position = rays_o.repeat_interleave(spp,0)
+    light_id = light_id.repeat_interleave(spp,0)
     
     # compute first intersection
-    position,normal,uv, _,vis, TBN = ray_intersect_with_tbn(scene,position,wi)
+    position,normal,uv, dp_du, dp_dv, _, vis, TBN = ray_intersect_with_tbn(scene,position,wi)
+    
+    footprint_vis = uv_footprint_simple(rays_o.repeat_interleave(spp,0)[vis], wi[vis], position[vis], normal[vis], dp_du[vis], dp_dv[vis], dx_du.repeat_interleave(spp,0)[vis], dy_dv.repeat_interleave(spp,0)[vis])
+    
     # position, normal, vis = ray_sphere_intersect(scene,position,wi)
     L = torch.zeros(vis.shape[0],3,device=device)
     if not vis.any():
         print("No valid intersection")
         return L.reshape(N,spp,3).mean(1), None, None
+    batch_size = position.shape[0]
+    batch_mask = torch.zeros(batch_size, dtype=torch.long, device=position.device)
+    batch_mask = batch_mask[vis]
     position = position[vis]
+
     normal = normal[vis]
     uv=uv[vis]
-    batch_mask = batch_mask[vis]
+
     wo = -wi[vis]
     light_id = light_id[vis]
     TBN = TBN[vis]
@@ -505,7 +659,7 @@ def batched_path_tracing_tbn_real_area_emitter(scene,emitter_net,material_net,ra
         G = (-wi*emitter_normal).sum(-1).abs() / (emit_position-position).pow(2).sum(-1).clamp_min(1e-6) # B, 1
         emit_weight = emit_weight*G[...,None]/emit_pdf.clamp_min(1e-6)
         # emit brdf
-        emit_brdf,brdf_pdf = material_net.eval_brdf(None, position, wi,wo,normal,uv, TBN, latent, batch_mask) # gt_params will not be used in neural brdf model
+        emit_brdf,brdf_pdf = material_net.eval_brdf(None, position, wi,wo,normal,uv, TBN, latent, batch_mask, footprint_vis) # gt_params will not be used in neural brdf model
         w_mis = torch.where((emit_pdf>0)&(~brdf_pdf.isinf()),emit_pdf*emit_pdf/(emit_pdf*emit_pdf+brdf_pdf*brdf_pdf),0)
         w_mis[emit_pdf.isinf()|(brdf_pdf==0)] = 1
         L[vis] += emit_brdf*emit_weight
@@ -531,5 +685,8 @@ def batched_path_tracing_tbn_real_area_emitter(scene,emitter_net,material_net,ra
         w_mis[w_mis.isnan()] = 0
         L[vis] += brdf_weight*Le * w_mis
     ray_params = torch.cat([position, wi, wo], dim=-1)
-
+    L = L.reshape(N,spp,3).mean(1)
+    # Merge visibility across multiple spp - if any ray is visible, vis is true
+    vis_reshaped = vis.reshape(N, spp)
+    vis = vis_reshaped.any(dim=1)
     return L, vis, ray_params
