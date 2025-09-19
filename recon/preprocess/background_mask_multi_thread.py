@@ -6,14 +6,53 @@ import cv2
 from PIL import Image
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
+os.environ["OPENCV_IO_ENABLE_OPENEXR"] = "1"
+ROTATION_CENTER = (0.15054801, -0.22801754, 0.21486147)
+ROTATION_AXIS = (-0.00553423, 0.02421833, 0.99969137)
+# Project rotation center to plane z = -0.055 along the rotation axis
+def project_center_to_plane(center, axis, plane_z):
+    """
+    Project a point along a direction vector to a plane z = plane_z.
+    
+    Args:
+        center: (3,) array, the point to project
+        axis: (3,) array, the direction vector
+        plane_z: float, the z-coordinate of the target plane
+    
+    Returns:
+        (3,) array, the projected point on the plane
+    """
+    center = np.array(center)
+    axis = np.array(axis)
+    
+    # Normalize the axis vector
+    axis_norm = axis / np.linalg.norm(axis)
+    
+    # Calculate parameter t for intersection with plane z = plane_z
+    # Point on line: center + t * axis_norm
+    # For intersection: center[2] + t * axis_norm[2] = plane_z
+    t = (plane_z - center[2]) / axis_norm[2]
+    
+    # Calculate the projected point
+    projected_center = center + t * axis_norm
+    
+    return projected_center
 
+# Project the rotation center to the plane z = -0.055
+ROTATION_CENTER = project_center_to_plane(ROTATION_CENTER, ROTATION_AXIS, -0.055)
+print(f"Projected rotation center: {ROTATION_CENTER}")
+RECT_CENTER = (0.14511, -0.2228, -0.055)
+# RECT_SIZE = (0.28, 0.35) # 420x297 mm
+RECT_SIZE = (0.26, 0.33) # 420x297 mm
+INITIAL_ANGLE_DEG = -1.0
+NUM_WORKERS = 16
 
 # Add project root to Python path
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-from utils.io import load_camera_light_metadata
+from utils.io import load_camera_turntable_light_metadata
 
 # ----------------------- math & geometry -----------------------
 
@@ -84,12 +123,129 @@ def create_circular_mask_from_turntable(width, height, K, T_g2c,
     mask = (val <= 0).astype(np.uint8)
     return mask
 
-# ----------------------- threaded worker -----------------------
+def create_rotated_rectangle_mask_closedform(
+    width, height,
+    K, T_g2c,
+    turntable_center,              # (x, y, z) world coords
+    rect_center,                   # (x, y, z) world coords (on XY plane)
+    rect_size,                     # (w, h) in world units
+    angle_deg                      # CCW rotation about +Z through turntable_center
+):
+    """
+    Create a binary mask (H, W) for a rectangle on the XY plane using a closed-form
+    projective test (no polygon filling). The rectangle is first defined axis-aligned
+    by rect_center_w & rect_size, then rigidly rotated CCW by `angle_deg` about +Z
+    through the turntable_center. The mask is the intersection of 4 half-planes
+    obtained by mapping the rectangle edges with the dual homography H^{-T}.
+
+    Args:
+        width, height: output mask size in pixels
+        K: (3,3) intrinsics
+        T_g2c: (4,4) world->camera transform
+        turntable_center: (3,) world coords
+        rect_center: (3,) world coords (pre-rotation)
+        rect_size: (w, h) in world units
+        angle_deg: float, CCW
+
+    Returns:
+        np.uint8 mask of shape (height, width), values {0,1}
+    """
+    K = np.asarray(K, dtype=np.float64)
+    T_g2c = np.asarray(T_g2c, dtype=np.float64)
+    tt = np.asarray(turntable_center, dtype=np.float64).reshape(3)
+    rc = np.asarray(rect_center, dtype=np.float64).reshape(3)
+    rw, rh = float(rect_size[0]), float(rect_size[1])
+
+    # ----- 1) Build homography H for plane Z = Zp (the XY plane at Zp)
+    Zp = rc[2]  # plane height (the rectangle lies on this plane)
+    R = T_g2c[:3, :3]
+    t = T_g2c[:3, 3]
+    r1, r2, r3 = R[:, 0], R[:, 1], R[:, 2]
+    p0 = r3 * Zp + t
+    H = K @ np.column_stack((r1, r2, p0))             # (3x3) plane->image
+    H_invT = np.linalg.inv(H).T                       # dual homography for lines
+
+    # ----- 2) Axis-aligned rectangle corners in the plane, then rotate about tt
+    dx, dy = rw * 0.5, rh * 0.5
+    # CCW order in plane coordinates
+    base_corners = np.array([
+        [rc[0] - dx, rc[1] - dy, 1.0],
+        [rc[0] + dx, rc[1] - dy, 1.0],
+        [rc[0] + dx, rc[1] + dy, 1.0],
+        [rc[0] - dx, rc[1] + dy, 1.0],
+    ], dtype=np.float64)
+
+    # Rotation about any axis through ROTATION_CENTER
+    th = np.deg2rad(angle_deg)
+    # Default to Z-axis rotation if no axis is specified
+    rotation_axis = np.array(ROTATION_AXIS, dtype=np.float64)
+    
+    # Use Rodrigues' rotation formula for arbitrary axis
+    n = rotation_axis / (np.linalg.norm(rotation_axis) + 1e-15)
+    nx, ny, nz = n
+    K = np.array([[0.0, -nz,  ny],
+                  [nz,  0.0, -nx],
+                  [-ny,  nx,  0.0]], dtype=np.float64)
+    I = np.eye(3)
+    c, s = np.cos(th), np.sin(th)
+    Rz2 = I + s * K + (1.0 - c) * (K @ K)
+
+    # Apply rotation in the plane (homogeneous points with last coord 1)
+    tt_xy1 = np.array([tt[0], tt[1], 1.0], dtype=np.float64)
+    corners_plane = ((Rz2 @ (base_corners.T - tt_xy1[:, None])) + tt_xy1[:, None]).T  # (4,3)
+
+    # ----- 3) Build the 4 plane lines (each edge) and map them to image lines
+    # Line from homogeneous points p and q: l = p x q
+    def cross2(p, q):
+        return np.array([
+            p[1]*q[2] - p[2]*q[1],
+            p[2]*q[0] - p[0]*q[2],
+            p[0]*q[1] - p[1]*q[0],
+        ], dtype=np.float64)
+
+    lines_plane = []
+    for i in range(4):
+        p = corners_plane[i]
+        q = corners_plane[(i + 1) % 4]
+        l = cross2(p, q)                 # plane line (a x + b y + c = 0)
+        lines_plane.append(l / (np.linalg.norm(l[:2]) + 1e-15))
+    lines_plane = np.stack(lines_plane, axis=0)  # (4,3)
+
+    # Map plane lines to image lines: l' ~ H^{-T} l
+    lines_img = (H_invT @ lines_plane.T).T
+    # Normalize for numerical stability
+    lines_img = lines_img / (np.linalg.norm(lines_img[:, :2], axis=1, keepdims=True) + 1e-15)  # (4,3)
+
+    # Determine consistent inequality direction.
+    # Project plane centroid, then enforce "inside" as having non-negative dot.
+    centroid_plane = np.mean(corners_plane, axis=0)  # (3,)
+    centroid_img_h = H @ centroid_plane
+    centroid_img = centroid_img_h[:2] / (centroid_img_h[2] + 1e-15)
+    centroid_h = np.array([centroid_img[0], centroid_img[1], 1.0], dtype=np.float64)
+    sgn = np.sign(lines_img @ centroid_h)  # (4,)
+    sgn[sgn == 0] = 1.0
+    lines_img *= sgn[:, None]  # flip if needed so centroid is inside (>=0)
+
+    # ----- 4) Evaluate line inequalities at pixel centers (vectorized)
+    xs = (np.arange(width, dtype=np.float64) + 0.5)
+    ys = (np.arange(height, dtype=np.float64) + 0.5)
+    X, Y = np.meshgrid(xs, ys)   # (H,W)
+    ones = np.ones_like(X)
+
+    # For each line a*u + b*v + c >= 0
+    a = lines_img[:, 0][:, None, None]   # (4,1,1)
+    b = lines_img[:, 1][:, None, None]   # (4,1,1)
+    cst = lines_img[:, 2][:, None, None] # (4,1,1)
+
+    vals = a * X[None, ...] + b * Y[None, ...] + cst   # (4,H,W)
+    inside = np.all(vals >= 0.0, axis=0)               # (H,W)
+
+    return inside.astype(np.uint8)
 
 def _process_one_image_task(task):
     (
         filename, width, height, K, R_c2g, t_c2g,
-        camera_info, turntable_center, turntable_radius,
+        camera_info, turn_angle,
         image_folder, mask_dir, masked_images_dir
     ) = task
 
@@ -97,33 +253,146 @@ def _process_one_image_task(task):
         # Build per-frame extrinsics
         c2w = get_c2w_from_robot_pose(camera_info, R_c2g, t_c2g)
         w2c = np.linalg.inv(c2w)
+        # Convert from OpenGL to OpenCV coordinate system
+        # OpenGL: +Y up, -Z forward, +X right
+        # OpenCV: -Y up, +Z forward, +X right
+        # Transformation matrix: flip Y and Z axes
+        opengl_to_opencv = np.array([
+            [1,  0,  0, 0],
+            [0, -1,  0, 0],
+            [0,  0, -1, 0],
+            [0,  0,  0, 1]
+        ], dtype=np.float64)
 
-        # Load image
+        w2c = opengl_to_opencv @ w2c
+        
+
+        # Paths & ext
         image_path = os.path.join(image_folder, filename)
+        ext = os.path.splitext(filename)[1].lower()
+
+        # ---- Read image (use OpenCV for EXR as requested) ----
         image = cv2.imread(image_path, cv2.IMREAD_UNCHANGED)
         if image is None:
-            return None
+            return {'original': filename, 'error': 'Image read failed'}
 
-        # Create mask (exact conic)
-        mask = create_circular_mask_from_turntable(
-            width, height, K, w2c, turntable_center, turntable_radius
-        )
+        # ---- Create binary mask (0/1) ----
+        mask = create_rotated_rectangle_mask_closedform(
+            width, height,
+            K, w2c,
+            ROTATION_CENTER,
+            RECT_CENTER,
+            (RECT_SIZE[0], RECT_SIZE[1]),
+            turn_angle
+        ).astype(np.uint8)
 
-        # Apply mask
-        masked_image = image.copy()
-        masked_image[mask == 0] = 0
+        # ---- Apply mask ----
+        if image.ndim == 2:
+            # grayscale
+            if ext == ".exr":
+                masked = image.astype(np.float32) * mask.astype(np.float32)
+            else:
+                masked = np.where(mask == 1, image, 0)
+        else:
+            # color
+            if ext == ".exr":
+                masked = image.astype(np.float32) * mask[..., None].astype(np.float32)
+            else:
+                masked = np.where(mask[..., None] == 1, image, 0)
 
-        # Save outputs
-        mask_filename = f"mask_{filename}"
+        # ---- Project rectangle center and rotation center to image coordinates ----
+        # Rectangle center (rotated)
+        th = np.deg2rad(turn_angle)
+        c, s = np.cos(th), np.sin(th)
+        Rz = np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]], dtype=np.float64)
+        
+        # Rotate rectangle center about rotation center
+        rect_center_vec = np.array(RECT_CENTER) - np.array(ROTATION_CENTER)
+        rotated_rect_center_vec = Rz @ rect_center_vec
+        rotated_rect_center = np.array(ROTATION_CENTER) + rotated_rect_center_vec
+        
+        # Project to image coordinates
+        rect_center_h = np.array([rotated_rect_center[0], rotated_rect_center[1], rotated_rect_center[2], 1.0])
+        rotation_center_h = np.array([ROTATION_CENTER[0], ROTATION_CENTER[1], ROTATION_CENTER[2], 1.0])
+        
+        rect_center_cam = w2c @ rect_center_h
+        rotation_center_cam = w2c @ rotation_center_h
+        
+        rect_center_img = K @ rect_center_cam[:3]
+        rotation_center_img = K @ rotation_center_cam[:3]
+        
+        rect_center_px = (int(rect_center_img[0] / rect_center_img[2]), int(rect_center_img[1] / rect_center_img[2]))
+        rotation_center_px = (int(rotation_center_img[0] / rotation_center_img[2]), int(rotation_center_img[1] / rotation_center_img[2]))
+
+        # ---- Save mask PNG (0/255) ----
+        mask_filename = f"mask_{os.path.splitext(filename)[0]}.png"
+        mask_out_path = os.path.join(mask_dir, mask_filename)
+        cv2.imwrite(mask_out_path, (mask * 255).astype(np.uint8))
+
+        # ---- Save masked image per simple policy ----
         masked_filename = f"masked_{filename}"
-        cv2.imwrite(os.path.join(mask_dir, mask_filename), (mask * 255).astype(np.uint8))
-        cv2.imwrite(os.path.join(masked_images_dir, masked_filename), masked_image)
+        masked_out_path = os.path.join(masked_images_dir, masked_filename)
+        if ext == ".exr":
+            # Normalize by 65535.0
+            max_val = 65535.0
+            if max_val > 0:
+                masked_norm = (masked / max_val).astype(np.float32)
+            else:
+                masked_norm = np.zeros_like(masked, dtype=np.float32)
+            ok = cv2.imwrite(masked_out_path, masked_norm)
+            if not ok:
+                return {'original': filename, 'error': 'EXR write failed'}
+            
+            # Save PNG version for visualization with circles
+            png_filename = f"masked_{os.path.splitext(filename)[0]}.png"
+            png_out_path = os.path.join(masked_images_dir, png_filename)
+            # Convert to 8-bit for PNG visualization (clamp to [0,1] then scale to [0,255])
+            masked_vis = np.clip(masked_norm, 0, 1) * 255.0
+            masked_vis = masked_vis.astype(np.uint8)
+            
+            # Draw circles on visualization image
+            if masked_vis.ndim == 2:
+                masked_vis = cv2.cvtColor(masked_vis, cv2.COLOR_GRAY2BGR)
+            # cv2.circle(masked_vis, rect_center_px, 10, (0, 255, 0), 2)  # Red circle for rectangle center
+            # cv2.circle(masked_vis, rotation_center_px, 5, (0, 255, 0), 2)  # Green circle for rotation center
+            
+            cv2.imwrite(png_out_path, masked_vis)
+        elif ext == ".png":
+            # Keep PNG values as-is (no normalization), preserve original dtype
+            masked_vis = masked.copy()
+            # if masked_vis.ndim == 2:
+            #     masked_vis = cv2.cvtColor(masked_vis.astype(np.uint8), cv2.COLOR_GRAY2BGR)
+            # else:
+            #     masked_vis = masked_vis.astype(np.uint8)
+            
+            # Draw circles on visualization image
+            # cv2.circle(masked_vis, rect_center_px, 5, (0, 0, 255), 2)  # Red circle for rectangle center
+            # cv2.circle(masked_vis, rotation_center_px, 10, (0, 255, 0), 2)  # Green circle for rotation center
+            
+            ok = cv2.imwrite(masked_out_path, masked_vis)
+            if not ok:
+                return {'original': filename, 'error': 'PNG write failed'}
+        else:
+            # Fallback: behave like PNG (keep as-is)
+            masked_vis = masked.copy()
+            if masked_vis.ndim == 2:
+                masked_vis = cv2.cvtColor(masked_vis.astype(np.uint8), cv2.COLOR_GRAY2BGR)
+            else:
+                masked_vis = masked_vis.astype(np.uint8)
+            
+            # Draw circles on visualization image
+            cv2.circle(masked_vis, rect_center_px, 5, (0, 0, 255), 2)  # Red circle for rectangle center
+            cv2.circle(masked_vis, rotation_center_px, 5, (0, 255, 0), 2)  # Green circle for rotation center
+            
+            ok = cv2.imwrite(masked_out_path, masked_vis)
+            if not ok:
+                return {'original': filename, 'error': f'Write failed for {ext}'}
 
         return {'original': filename, 'mask': mask_filename, 'masked': masked_filename}
-    except Exception as e:
-        # If something goes wrong, return a marker to keep the pipeline going
-        return {'original': filename, 'error': str(e)}
 
+    except Exception as e:
+        return {'original': filename, 'error': str(e)}
+    
 # ----------------------- public API (threaded) -----------------------
 
 def create_turntable_mask(image_folder, output_folder, json_path, config, 
@@ -151,7 +420,7 @@ def create_turntable_mask(image_folder, output_folder, json_path, config,
     os.makedirs(masked_images_dir, exist_ok=True)
     
     # Load camera metadata
-    metadata, camera_metadata, emitter_metadata = load_camera_light_metadata(json_path)
+    metadata, camera_metadata, emitter_metadata = load_camera_turntable_light_metadata(json_path)
     
     # Intrinsics
     intrinsics = config['intrinsics']
@@ -171,17 +440,18 @@ def create_turntable_mask(image_folder, output_folder, json_path, config,
     # Build tasks
     tasks = []
     for img_data in metadata:
-        overall_id = img_data["id"]
-        camera_info = camera_metadata[str(overall_id)]
+        overall_id = img_data["overall_id"]
+        camera_id = img_data["camera_id"]
+        camera_info = camera_metadata[str(camera_id)]
         camera_dict = {
             "position": camera_info["position"],
             "rotation_matrix": camera_info["rotation_matrix"],
             "euler": camera_info["euler"]
         }
+        turn_angle = img_data['turn_angle'] + INITIAL_ANGLE_DEG
         tasks.append((
             img_data['filename'], width, height, K, R_c2g, t_c2g,
-            camera_dict, np.asarray(turntable_center, dtype=np.float64),
-            float(turntable_radius), image_folder, mask_dir, masked_images_dir
+            camera_dict, turn_angle, image_folder, mask_dir, masked_images_dir
         ))
 
     processed_files = []
@@ -199,23 +469,20 @@ def create_turntable_mask(image_folder, output_folder, json_path, config,
     return processed_files
 
 def process_images_with_turntable_mask(image_folder, output_folder, json_path, 
-                                     config, turntable_radius=0.1, 
-                                     turntable_center=(0.0, 0.0, 0.0),
+                                     config,
                                      num_workers=None):
     """
     Process all images in a folder with turntable masking using multiple threads.
     """
     processed_files = create_turntable_mask(
         image_folder, output_folder, json_path, config,
-        turntable_radius, turntable_center, num_workers=num_workers
+        num_workers=num_workers
     )
     
     summary_path = os.path.join(output_folder, 'processing_summary.json')
     with open(summary_path, 'w') as f:
         json.dump({
             'processed_files': processed_files,
-            'turntable_radius': turntable_radius,
-            'turntable_center': turntable_center,
             'total_processed': len(processed_files)
         }, f, indent=2)
     
@@ -230,18 +497,15 @@ from omegaconf import DictConfig
 
 @hydra.main(version_base=None, config_path="../../config", config_name="config")
 def main(cfg: DictConfig):
-    image_folder = os.path.join(cfg.exp_folder, "BRDF_recon", "original_images")
+    image_folder = os.path.join(cfg.exp_folder, "BRDF_recon", "", "images")
     output_folder = os.path.join(cfg.exp_folder, "BRDF_recon", "masks")
-    json_path = os.path.join(cfg.exp_folder, "scan_log_0901.json")
-    turntable_radius = 0.16
-    turntable_center = (0.2115, -0.1961, -0.06)
+    json_path = os.path.join(cfg.exp_folder, "BRDF_recon", "scan_log_0915_reindexed.json")
 
     # threads only
-    num_workers = min(32, os.cpu_count() or 32)
+    num_workers = min(NUM_WORKERS, os.cpu_count() or NUM_WORKERS)
 
     process_images_with_turntable_mask(
         image_folder, output_folder, json_path, cfg.renderer.camera,
-        turntable_radius, turntable_center,
         num_workers=num_workers
     )
 

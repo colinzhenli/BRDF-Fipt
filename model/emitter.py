@@ -307,28 +307,73 @@ class RealAreaEmitter(nn.Module):
         # Extract configuration parameters
         radius = cfg.get('radius', 0.007)
         fwhm_deg = cfg.get('fwhm_deg', 115.0)
-        self.light_radiance = nn.Parameter(torch.tensor(cfg.get('radiance'), dtype=torch.float32, device='cuda'))
+        # self.light_radiance = nn.Parameter(torch.tensor(cfg.get('radiance'), dtype=torch.float32, device='cuda'))
+        self.register_buffer('light_radiance', torch.tensor(cfg.get('radiance'), dtype=torch.float32, device='cuda'))
+
+        theta_half = math.radians(fwhm_deg * 0.5)
+        m = math.log(0.5) / math.log(max(1e-8, math.cos(theta_half)))
+        self.register_buffer('m', torch.tensor(m, dtype=torch.float32, device='cuda'))
+        self.register_buffer('light_radius', torch.tensor(radius, dtype=torch.float32, device='cuda'))
+
+        self.l2w = self._compute_l2w(cfg, json_path)
+        self.register_buffer('light_positions', self.l2w[:, :3, 3])  # [N, 3] - translation part
+        light_normal_local = torch.tensor([0.0, -1.0, 0.0], dtype=torch.float32, device='cuda')
+        light_normals_world = torch.matmul(self.l2w[:, :3, :3], light_normal_local)  # [N, 3]
+        light_normals_world = light_normals_world / (light_normals_world.norm(dim=-1, keepdim=True) + 1e-12)
+        self.register_buffer('light_normal', light_normals_world)
+        
+    def _compute_l2w(self, cfg, json_path):
+        """
+        Compute the world transform for each light.
+        """
+        # Compute light transformation matrix
         R_l2g = torch.tensor(cfg.get('R_l2g'), dtype=torch.float32, device='cuda')
         t_l2g = torch.tensor(cfg.get('t_l2g'), dtype=torch.float32, device='cuda')
         base2_to_base1 = torch.tensor(cfg.get('base2_to_base1'), dtype=torch.float32, device='cuda')
-        
-        theta_half = math.radians(fwhm_deg * 0.5)
-        m = math.log(0.5) / math.log(max(1e-8, math.cos(theta_half)))
-        self.register_buffer('m', torch.tensor(m, dtype=torch.float32))
-        self.register_buffer('light_radius', torch.tensor(radius, dtype=torch.float32))
-
-        # Compute light transformation matrix
         g2b = read_light_transforms(json_path) # [N, 4, 4]
-        g2b = base2_to_base1.unsqueeze(0) @ g2b
+        g2b0 = base2_to_base1.unsqueeze(0) @ g2b
         l2g = torch.eye(4, device='cuda')
         l2g[:3, :3] = R_l2g
         l2g[:3, 3] = t_l2g
-        l2w = g2b @ l2g
-        self.register_buffer('light_positions', l2w[:, :3, 3])  # [N, 3] - translation part
+        l2w = g2b0 @ l2g
+        return l2w
+    
+    def _update_poses_for_vis(self, turntable_center, steps):
+        turntable_center = turntable_center.to(self.l2w.device)
         light_normal_local = torch.tensor([0.0, -1.0, 0.0], dtype=torch.float32, device='cuda')
-        light_normals_world = torch.matmul(l2w[:, :3, :3], light_normal_local)  # [N, 3]
-        light_normals_world = light_normals_world / (light_normals_world.norm(dim=-1, keepdim=True) + 1e-12)
-        self.register_buffer('light_normal', light_normals_world)
+        p0_world = self.l2w[:3, 3]   # [3]
+        R0_world = self.l2w[:3, :3]  # [3,3]
+        n0_world = (R0_world @ light_normal_local)  # [3]
+        n0_world = n0_world / (n0_world.norm() + 1e-12)
+
+        # Clockwise in right-handed (+Z out) means negative angles
+        angles = torch.arange(steps, device='cuda', dtype=torch.float32) * (-2.0 * math.pi / steps)  # [60]
+
+        c = torch.cos(angles)
+        s = torch.sin(angles)
+        # Batch of Rz(θ): shape [60, 3, 3]
+        Rz = torch.zeros(steps, 3, 3, device='cuda', dtype=torch.float32)
+        Rz[:, 0, 0] =  c
+        Rz[:, 0, 1] = -s
+        Rz[:, 1, 0] =  s
+        Rz[:, 1, 1] =  c
+        Rz[:, 2, 2] =  1.0
+
+        # Rotate the position around the center: p' = Rz*(p0 - center) + center
+        rel = p0_world - turntable_center  # [3]
+        rel = rel.unsqueeze(-1)            # [3,1] for batch matmul
+        pos_rot = (Rz @ rel).squeeze(-1) + turntable_center  # [60,3]
+
+        # Rotate the normal as a direction: n' = Rz * n0
+        n0 = n0_world.unsqueeze(-1)  # [3,1]
+        nor_rot = (Rz @ n0).squeeze(-1)  # [60,3]
+        nor_rot = nor_rot / (nor_rot.norm(dim=-1, keepdim=True) + 1e-12)
+
+        # ---- Register buffers ----
+        with torch.no_grad():
+            self.light_positions = pos_rot
+            self.light_normal = nor_rot
+
                 
     def _directional_distribution(self, light_dir,light_id):
         """
@@ -535,50 +580,125 @@ class RealAreaEmitter(nn.Module):
         pdf=1.0/(self.light_radius.expand(B)*self.light_radius.expand(B)*torch.pi)
         pdf=pdf.unsqueeze(-1)*dA_dw.unsqueeze(-1)
 
-        # print("Le",Le.shape)
-        #print("t",t)
         if torch.isnan(Le).any():
             print("Le is nan")
-        # Le = torch.ones_like(Le) * 10
         return Le, pdf, torch.ones_like(pdf, dtype=torch.bool)  # Always valid
     
 class AreaEmitter(nn.Module):
     """ reference triangle mesh emitters from FIPT paper"""
-    def __init__(self,emitter_path):
+    # def __init__(self,emitter_path):
+    #     """ emitter_path file 
+    #     is_emitter: B indicator of whether a triangle is emitter
+    #     emitter_vertices: Kx3x3 triangle vertices of emitters
+    #     emitter_area: K surface areas of emitters
+    #     emitter_radiance: Bx3x3 emitter radiance
+    #     """
+    #     super(AreaEmitter,self).__init__()
+        
+    #     weight = torch.load(emitter_path,map_location='cpu')
+        
+    #     is_emitter = weight['is_emitter']
+    #     emitter_vertices = weight['emitter_vertices']
+    #     emitter_area = weight['emitter_area']
+    #     emitter_radiance = weight['emitter_radiance']
+
+    #     self.register_buffer('is_emitter',is_emitter)
+    #     self.register_buffer('emitter_vertices',emitter_vertices)
+    #     self.register_buffer('emitter_area',emitter_area)
+    #     self.register_buffer('radiance',emitter_radiance)
+        
+    #     # emitter idx mapping, -1 indicates not an emitter
+    #     emitter_idx = torch.full((len(is_emitter),),-1,device=is_emitter.device,dtype=torch.long)
+    #     emitter_idx[is_emitter] = torch.arange(is_emitter.sum(),device=is_emitter.device)
+    #     self.register_buffer('emitter_idx',emitter_idx)
+        
+    #     # emitter idx to triangle idx
+    #     triangle_idx = torch.arange(len(is_emitter))[is_emitter]
+    #     self.register_buffer('triangle_idx',triangle_idx)
+        
+    #     # sample emitters uniformly
+    #     emitter_pdf = NF.normalize(torch.ones_like(emitter_area),dim=-1,p=1)
+    #     emitter_cdf = emitter_pdf.cumsum(-1).contiguous()
+    #     self.register_buffer('emitter_pdf',emitter_pdf)
+    #     self.register_buffer('emitter_cdf',emitter_cdf)
+    def __init__(self, emitter_path):
         """ emitter_path file 
         is_emitter: B indicator of whether a triangle is emitter
         emitter_vertices: Kx3x3 triangle vertices of emitters
         emitter_area: K surface areas of emitters
         emitter_radiance: Bx3x3 emitter radiance
         """
-        super(AreaEmitter,self).__init__()
-        
-        weight = torch.load(emitter_path,map_location='cpu')
-        
-        is_emitter = weight['is_emitter']
-        emitter_vertices = weight['emitter_vertices']
-        emitter_area = weight['emitter_area']
-        emitter_radiance = weight['emitter_radiance']
+        super(AreaEmitter, self).__init__()
 
-        self.register_buffer('is_emitter',is_emitter)
-        self.register_buffer('emitter_vertices',emitter_vertices)
-        self.register_buffer('emitter_area',emitter_area)
-        self.register_buffer('radiance',emitter_radiance)
-        
-        # emitter idx mapping, -1 indicates not an emitter
-        emitter_idx = torch.full((len(is_emitter),),-1,device=is_emitter.device,dtype=torch.long)
-        emitter_idx[is_emitter] = torch.arange(is_emitter.sum(),device=is_emitter.device)
-        self.register_buffer('emitter_idx',emitter_idx)
-        
-        # emitter idx to triangle idx
+        weight = torch.load(emitter_path, map_location='cpu')
+
+        is_emitter        = weight['is_emitter']
+        emitter_vertices  = weight['emitter_vertices']   # [K, 3, 3]
+        emitter_area      = weight['emitter_area']       # [K]
+        emitter_radiance  = weight['emitter_radiance']   # [B, 3, 3]
+
+        # ---- Register original buffers (unchanged) ----
+        self.register_buffer('is_emitter', is_emitter)
+        self.register_buffer('emitter_vertices', emitter_vertices)
+        self.register_buffer('emitter_area', emitter_area)
+        self.register_buffer('radiance', emitter_radiance)
+
+        # Emitter idx mapping, -1 indicates not an emitter
+        emitter_idx = torch.full((len(is_emitter),), -1, device=is_emitter.device, dtype=torch.long)
+        emitter_idx[is_emitter] = torch.arange(is_emitter.sum(), device=is_emitter.device)
+        self.register_buffer('emitter_idx', emitter_idx)
+
+        # Emitter idx to triangle idx
         triangle_idx = torch.arange(len(is_emitter))[is_emitter]
-        self.register_buffer('triangle_idx',triangle_idx)
-        
-        # sample emitters uniformly
-        emitter_pdf = NF.normalize(torch.ones_like(emitter_area),dim=-1,p=1)
+        self.register_buffer('triangle_idx', triangle_idx)
+
+        # Sample emitters uniformly
+        emitter_pdf = NF.normalize(torch.ones_like(emitter_area), dim=-1, p=1)
         emitter_cdf = emitter_pdf.cumsum(-1).contiguous()
-        self.register_buffer('emitter_pdf',emitter_pdf)
-        self.register_buffer('emitter_cdf',emitter_cdf)
+        self.register_buffer('emitter_pdf', emitter_pdf)
+        self.register_buffer('emitter_cdf', emitter_cdf)
+
+        # ---- New: generate 60 emitter positions along a 360° trajectory (clockwise) ----
+        # Turntable center (world space)
+        TURNTABLE_CENTER = torch.tensor([0.21056884, -0.1938618, 0.0], dtype=emitter_vertices.dtype)
+
+        # Define a single "emitter position" as the overall centroid of all emitting triangles
+        # centroid of a triangle = mean of its 3 vertices; overall position = area-weighted mean
+        tri_centroids = emitter_vertices.mean(dim=1)                    # [K, 3]
+        areas = emitter_area.clamp_min(1e-12)                           # avoid div-by-zero
+        weighted_sum = (tri_centroids * areas.unsqueeze(-1)).sum(dim=0) # [3]
+        total_area = areas.sum()
+        base_pos = weighted_sum / total_area                            # [3] starting position
+
+        # Build 60 angles from 0 to 2π (clockwise => negative angles)
+        num_steps = 60
+        thetas = torch.linspace(0.0, 2.0 * torch.pi, steps=num_steps, dtype=emitter_vertices.dtype)
+        thetas = -thetas  # clockwise
+
+        # Helper: rotate a 3D point around Z about a center
+        def rotate_around_z(p, center, theta):
+            # p, center: [3]; return: [3]
+            c, s = torch.cos(theta), torch.sin(theta)
+            Rz = torch.tensor([[c, -s, 0.0],
+                            [s,  c, 0.0],
+                            [0.0, 0.0, 1.0]], dtype=p.dtype, device=p.device)
+            return (Rz @ (p - center)) + center
+
+        # Generate trajectory positions
+        # keep everything on the same device as emitter_vertices
+        base_pos = base_pos.to(emitter_vertices.device)
+        TURNTABLE_CENTER = TURNTABLE_CENTER.to(emitter_vertices.device)
+        thetas = thetas.to(emitter_vertices.device)
+
+        positions = []
+        for th in thetas:
+            positions.append(rotate_around_z(base_pos, TURNTABLE_CENTER, th))
+        emitter_positions = torch.stack(positions, dim=0)  # [60, 3]
+
+        # Store center & positions for downstream use
+        self.register_buffer('turntable_center', TURNTABLE_CENTER)
+        self.register_buffer('emitter_positions', emitter_positions)
+
     
     def forward(self,triangle_idx):
         """ get emitter radiance

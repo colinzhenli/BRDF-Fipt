@@ -4,19 +4,17 @@ import glob
 import torch
 from utils.transform import build_rot_about_point, build_cw_rotz_from_deg
 
-def load_camera_light_metadata(json_path):
+def load_camera_turntable_light_metadata(json_path):
     """
     Load camera and light relation from JSON file and create metadata for images.
     
     Args:
         json_path (str): Path to the JSON file containing camera-light relations
-        image_folder (str): Path to folder containing images with naming pattern 
-                           "scan-{light_id}-{camera_id}-phi{phi}_theta{theta}.png"
     
     Returns:
         dict: Metadata containing:
-            - metadata: list of dicts with keys ['id', 'camera_id', 'light_id', 'filename']
-            - camera_metadata: dict mapping camera_id to camera info
+            - metadata: list of dicts with keys ['overall_id', 'camera_id', 'emitter_id', 'filename', 'turn_angle']
+            - camera_metadata: dict mapping overall_id to camera info
             - emitter_metadata: dict mapping light_id to light info
     """
     # Load JSON file
@@ -29,25 +27,18 @@ def load_camera_light_metadata(json_path):
     
     # Create metadata list
     metadata = []
-    overall_id = 0
     
     for item in camera_light_data:
-        camera_id = item['id']
+        overall_id = item['id']
+        camera_id = item['camera_id']
         light_id = item['light_id']
         phi = item['phi']
         theta = item['theta']
+        turn_angle = item['turn_angle']
+        filename = item['filename']
         
-        # # Store camera metadata only for non-appeared camera id
-        # if str(camera_id) not in camera_metadata:
-        #     camera_metadata[str(camera_id)] = {
-        #         'position': [pos / 1000.0 for pos in item['position']],
-        #         'rotation_matrix': item['rotation_matrix'],
-        #         'euler': item['euler']
-        #     }
-        """ 
-        camera_id is not unique, so we use overall_id to store camera metadata
-        """
-        camera_metadata[str(overall_id)] = {
+        # Store camera metadata using overall_id
+        camera_metadata[str(camera_id)] = {
             'position': [pos / 1000.0 for pos in item['position']],
             'rotation_matrix': item['rotation_matrix'],
             'euler': item['euler']
@@ -60,20 +51,14 @@ def load_camera_light_metadata(json_path):
                 'rotation_matrix': item['rotation_matrix_light']
             }
         
-        # Generate filename based on the pattern: scan-{light_id}-{camera_id}-phi{phi}_theta{theta}.png
-        # Round phi and theta to 3 decimal places
-        phi_rounded = f"{phi:.3f}"
-        theta_rounded = f"{theta:.3f}"
-        filename = f"masked_scan-{light_id}-{camera_id}-phi{phi_rounded}_theta{theta_rounded}.png"
-        
         # Create metadata entry
         metadata.append({
             'overall_id': overall_id,
             'camera_id': camera_id,
             'emitter_id': light_id,  # Using emitter_id to match SphereImageDataset
-            'filename': filename
+            'filename': filename,
+            'turn_angle': turn_angle
         })
-        overall_id += 1
     
     return metadata, camera_metadata, emitter_metadata
 

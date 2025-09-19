@@ -65,12 +65,13 @@ class ForwardRenderer:
                 )
                 L += L0
         else:
-            L0, vis, ray_params = self.ray_tracer(
-                self.scene, emitter, self.material,
-                rays_x, rays_d, dxdu, dydv, 
-                light_idx, self.SPP_chunk, brdf_sampling=self.cfg.renderer.brdf_sampling, emitter_sampling=self.cfg.renderer.emitter_sampling, gt_params=gt_params, latent=latent
-            )
-            L += L0
+            for _ in range(spp // self.SPP_chunk):
+                L0, vis, ray_params = self.ray_tracer(
+                    self.scene, emitter, self.material,
+                    rays_x, rays_d, dxdu, dydv, 
+                    light_idx, self.SPP_chunk, brdf_sampling=self.cfg.renderer.brdf_sampling, emitter_sampling=self.cfg.renderer.emitter_sampling, gt_params=gt_params, latent=latent
+                )
+                L += L0
         rgbs = L / (spp // self.SPP_chunk)
         rgbs = rgbs.squeeze(0) # squeeze the batch dimension
         return rgbs, vis, ray_params
