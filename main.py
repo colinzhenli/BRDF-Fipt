@@ -10,6 +10,7 @@ from renderer import ForwardRenderer
 from brdf_trainer import BRDFTrainer
 from model.brdf import SvPBRBRDF
 from model.neural_brdf import SvLatentModel, LatentTexturedModel, AnisotropicLatentTexturedModel, LearnableSvPBRBRDF
+from model.mipmap_brdf import MipmapLearnableSvPBRBRDF
 from torch.utils.data import DataLoader
 from utils.dataset import RealImageDataset, RealValDataset
 import hydra
@@ -58,6 +59,8 @@ def main(cfg):
         material = AnisotropicLatentTexturedModel(cfg.material)  # MLP model uses mlp_pbr config
     elif cfg.material.type == "LearnableSvPBRBRDF":
         material = LearnableSvPBRBRDF(cfg.material)  # MLP model uses mlp_pbr config
+    elif cfg.material.type == "MipmapLearnableSvPBRBRDF":
+        material = MipmapLearnableSvPBRBRDF(cfg.material)  # MLP model uses mlp_pbr config
     else:
         raise ValueError(f"Invalid material type: {cfg.material.type}")
     gt_material = SvPBRBRDF(

@@ -263,7 +263,7 @@ class LearnableSvPBRBRDF(nn.Module):
         return brdf, pdf
 
 
-    def eval_brdf(self, params, pos, wi, wo, normal,uv, TBN, latent=None, batch_mask=None):
+    def eval_brdf(self, params, pos, wi, wo, normal,uv, TBN, latent=None, batch_mask=None, footprint_vis=None):
         """ wi is light direction, wo is view direction """
         TBN=TBN.permute(2,0,1)
         #print("TBN",TBN.shape)

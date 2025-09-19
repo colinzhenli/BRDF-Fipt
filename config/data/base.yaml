@@ -6,7 +6,7 @@ num_workers: 0
 # rays_num: 32768  # pixels per batch
 rays_num: 131072 # 4 times more rays
 
-
+filtered_puple_ids: 086, 560, 0039
 importance_sampling: False
 use_single_chunk_sampling: False
 uniform_sampling: False

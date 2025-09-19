@@ -167,7 +167,74 @@ class BRDFTrainer(pl.LightningModule):
             # Return a default texture if loading fails
             H, W = 1024, 1024
             return torch.ones(H, W, 6)
-        
+    
+    def save_pbr_texture(self, output_dir, batch_idx, b):
+        # Check if material has prefilter option
+        if self.hparams.material.prefliter:
+            # Save the finest level PBR texture when using prefilter
+            pbr_texture_data = self.material.pbr_texture.data[0]
+            
+            # Save albedo map (channels 0-3)
+            pbr_albedo_map = pbr_texture_data[:, :, 0:3]
+            torchvision.utils.save_image(
+                pbr_albedo_map.permute(2, 0, 1),
+                os.path.join(output_dir, f'pbr_albedo_map_{batch_idx}_{b}.png')
+            )
+            
+            # Save normal map (channels 10-13)
+            pbr_normal_map = pbr_texture_data[:, :, 10:13]
+            torchvision.utils.save_image(
+                pbr_normal_map.permute(2, 0, 1),
+                os.path.join(output_dir, f'pbr_normal_map_{batch_idx}_{b}.png')
+            )
+            
+            # Save roughness map (channel 7)
+            pbr_roughness_map = pbr_texture_data[:, :, 7:8]
+            torchvision.utils.save_image(
+                pbr_roughness_map.permute(2, 0, 1),
+                os.path.join(output_dir, f'pbr_roughness_map_{batch_idx}_{b}.png')
+            )
+            
+            # Save metallic map (channel 8)
+            pbr_metallic_map = pbr_texture_data[:, :, 8:9]
+            torchvision.utils.save_image(
+                pbr_metallic_map.permute(2, 0, 1),
+                os.path.join(output_dir, f'pbr_metallic_map_{batch_idx}_{b}.png')
+            )
+        else:
+            # Save individual mipmap textures when not using prefilter
+            if hasattr(self.material, 'mipmap_textures'):
+                for level, mipmap_texture in enumerate(self.material.mipmap_textures):
+                    texture_data = mipmap_texture.data[0]
+                    
+                    # Save albedo mipmap
+                    mipmap_albedo = texture_data[:, :, 0:3]
+                    torchvision.utils.save_image(
+                        mipmap_albedo.permute(2, 0, 1),
+                        os.path.join(output_dir, f'mipmap_albedo_level_{level}_{batch_idx}_{b}.png')
+                    )
+                    
+                    # Save normal mipmap
+                    mipmap_normal = texture_data[:, :, 10:13]
+                    torchvision.utils.save_image(
+                        mipmap_normal.permute(2, 0, 1),
+                        os.path.join(output_dir, f'mipmap_normal_level_{level}_{batch_idx}_{b}.png')
+                    )
+                    
+                    # Save roughness mipmap
+                    mipmap_roughness = texture_data[:, :, 7:8]
+                    torchvision.utils.save_image(
+                        mipmap_roughness.permute(2, 0, 1),
+                        os.path.join(output_dir, f'mipmap_roughness_level_{level}_{batch_idx}_{b}.png')
+                    )
+                    
+                    # Save metallic mipmap
+                    mipmap_metallic = texture_data[:, :, 8:9]
+                    torchvision.utils.save_image(
+                        mipmap_metallic.permute(2, 0, 1),
+                        os.path.join(output_dir, f'mipmap_metallic_level_{level}_{batch_idx}_{b}.png')
+                    )
+                    
     def training_step(self, batch, batch_idx):
         """
         with importance sampling
@@ -227,6 +294,7 @@ class BRDFTrainer(pl.LightningModule):
 
         psnr_loss = torch.nn.functional.mse_loss(self.gamma(rgbs[vis]), self.gamma(rgbs_gt.squeeze(0)[vis]), reduction='mean')
         psnr = 10.0 * torch.log10((1.0 ** 2) / psnr_loss.clamp_min(1e-5))
+        emitter_radiance = self.emitter.light_radiance.detach().cpu().numpy()
         
         if self.hparams.model.loss.recon_loss.name == "l1":
             recon_loss = NF.l1_loss(rgbs[vis], rgbs_gt.squeeze(0)[vis])
@@ -266,12 +334,6 @@ class BRDFTrainer(pl.LightningModule):
                 os.path.join(output_dir, f'result_view_{batch_idx}_{b}.png')
             )
             
-        # # save the learned pbr normal map
-        # pbr_normal_map = self.material.pbr_texture.data[0, :, :, 10:13]
-        # torchvision.utils.save_image(
-        #     pbr_normal_map.permute(2, 0, 1),
-        #     os.path.join(output_dir, f'pbr_normal_map_{batch_idx}_{b}.png')
-        # )
         # Save pose refinement parameters if available
         # if hasattr(self, 'handeye_refiner') and self.handeye_refiner is not None:
         #     refine_params = {
@@ -285,6 +347,7 @@ class BRDFTrainer(pl.LightningModule):
         #     with open(refine_output_path, 'w') as f:
         #         json.dump(refine_params, f, indent=2)
         self.log('val/loss', loss)
+        self.log('val/emitter_radiance', emitter_radiance.mean())
         self.log('val/psnr', psnr)        
         return
 

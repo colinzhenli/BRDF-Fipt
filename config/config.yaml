@@ -5,8 +5,8 @@ defaults:
   - material: svlatent_model
 
 experiment_name: test
-exp_folder: /media/raid/cloth/Single_step_recon_Sep1
-dataset_folder: /media/raid/cloth/Single_step_recon_Sep1/BRDF_recon/undistorted/images
+exp_folder: /media/raid/cloth/New_turntable_Sep15
+dataset_folder: /media/raid/cloth/New_turntable_Sep15/Axis_est_Sep14/images
 output_folder: /media/raid/cloth/output/BRDF
 exp_output_root_path: ${output_folder}/${data.dataset_name}/${experiment_name}
 gt_folder: ${dataset_folder}
