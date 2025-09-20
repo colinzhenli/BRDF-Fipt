@@ -67,7 +67,7 @@
         //         "CUDA_VISIBLE_DEVICES": "3"
         //     },
         //     "args": [
-        //         "dataset_folder=/media/raid/cloth/New_turntable_Sep15/BRDF_recon/masks/masked_images_debayered",
+        //         "dataset_folder=/media/raid/cloth/New_turntable_Sep15/Lower_exposure_BRDF_recon/masks/masked_images_debayered",
         //         "renderer=realcapture_area_emitter",
         //         "material=mipmap_learnablesvpbr",
         //         "experiment_name=height_map_debug",
