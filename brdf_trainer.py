@@ -80,6 +80,19 @@ class BRDFTrainer(pl.LightningModule):
 
         return torch.where(x_lin <= _K0, low, high).clamp(0.0, 1.0)
 
+    def tone_mapping(self, x):
+        """
+        Apply tone mapping to convert HDR image to LDR.
+        
+        Args:
+            x (torch.Tensor): HDR image with values in range [0, 1]
+            
+        Returns:
+            torch.Tensor: LDR image with tone mapping applied
+        """
+        # Simple Reinhard tone mapping: x / (1 + x)
+        return x / (1 + x)
+    
     def configure_optimizers(self):  
         params_to_optimize = self.parameters()
         
@@ -188,6 +201,13 @@ class BRDFTrainer(pl.LightningModule):
                 os.path.join(output_dir, f'pbr_normal_map_{batch_idx}_{b}.png')
             )
             
+            # save height map
+            pbr_height_map = pbr_texture_data[:, :, 13:14]
+            torchvision.utils.save_image(
+                pbr_height_map.permute(2, 0, 1),
+                os.path.join(output_dir, f'pbr_height_map_{batch_idx}_{b}.png')
+            )
+            
             # Save roughness map (channel 7)
             pbr_roughness_map = pbr_texture_data[:, :, 7:8]
             torchvision.utils.save_image(
@@ -221,6 +241,13 @@ class BRDFTrainer(pl.LightningModule):
                         os.path.join(output_dir, f'mipmap_normal_level_{level}_{batch_idx}_{b}.png')
                     )
                     
+                    # Save height mipmap
+                    mipmap_height = texture_data[:, :, 13:14]
+                    torchvision.utils.save_image(
+                        mipmap_height.permute(2, 0, 1),
+                        os.path.join(output_dir, f'mipmap_height_map_level_{level}_{batch_idx}_{b}.png')
+                    )
+                    
                     # Save roughness mipmap
                     mipmap_roughness = texture_data[:, :, 7:8]
                     torchvision.utils.save_image(
@@ -234,7 +261,41 @@ class BRDFTrainer(pl.LightningModule):
                         mipmap_metallic.permute(2, 0, 1),
                         os.path.join(output_dir, f'mipmap_metallic_level_{level}_{batch_idx}_{b}.png')
                     )
-                    
+
+    def loss_function(self, rgbs, rgbs_gt, vis, weighted_pdf=None):
+        # Calculate per-pixel loss
+        if self.hparams.model.loss.recon_loss.name == "l1":
+            per_pix = torch.abs(rgbs[vis] - rgbs_gt.squeeze(0)[vis]).mean(dim=-1)
+        elif self.hparams.model.loss.recon_loss.name == "l2":  # "l2"
+            per_pix = torch.pow(rgbs[vis] - rgbs_gt.squeeze(0)[vis], 2).mean(dim=-1)
+        else:
+            r_ref   = getattr(self.hparams.model.loss.recon_loss.log_space, "logrel_ref", 0.5)      # uniform reference in [0,1]
+            alpha   = getattr(self.hparams.model.loss.recon_loss.log_space, "logrel_alpha", 1e-3)   # epsilon as fraction of r
+            r = torch.as_tensor(r_ref, dtype=rgbs.dtype, device=rgbs.device)
+            eps = alpha * (r + 1e-12)
+
+            def logrel(x):
+                # log(1 + (x+eps)/(r+eps)) applied per channel
+                return torch.log1p((x + eps) / (r + eps))
+
+            per_pix_log = (logrel(rgbs) - logrel(rgbs_gt.squeeze(0))).abs().mean(dim=-1)  # [N]
+            per_pix = per_pix_log
+
+        
+        # Calculate importance weights
+        if self.hparams.data.importance_sampling and weighted_pdf is not None:
+            weights = 1.0 / weighted_pdf.clamp(min=1e-5)
+        else:
+            weights = 1.0
+        
+        # Calculate reconstruction loss
+        recon_loss = (per_pix * weights).mean()
+        
+        # Add regularizer
+        loss = recon_loss
+        
+        return loss
+    
     def training_step(self, batch, batch_idx):
         """
         with importance sampling
@@ -249,21 +310,8 @@ class BRDFTrainer(pl.LightningModule):
         # forward renders
         rgbs, vis, ray_params = self.renderer.render(self.emitter, rays, emitter_ids, self.cfg.renderer.spp.train,
                                         None, None)                       # f(r)
-        if self.hparams.model.loss.recon_loss.name == "l1":
-            per_pix = torch.abs(rgbs[vis] - rgbs_gt.squeeze(0)[vis]).mean(dim=-1)        # (S,)
-        else:  # "l2"
-            per_pix = torch.pow(rgbs[vis] - rgbs_gt.squeeze(0)[vis], 2).mean(dim=-1)     # (S,)
 
-        if self.hparams.data.importance_sampling:
-            weights    = 1.0 / weighted_pdf.clamp(min=1e-5)                              # importance weights
-        else:
-            weights    = 1.0               # importance weights
-        recon_loss = (per_pix * weights).mean()  
-
-        # ------------------------------------------------------------------
-        # 6.  Add regulariser + compute PSNR
-        # ------------------------------------------------------------------
-        loss       = recon_loss + prior*self.hparams.model.loss.refiner_prior_loss.weight
+        loss = self.loss_function(rgbs, rgbs_gt, vis, weighted_pdf)
 
         psnr_loss  = torch.nn.functional.mse_loss(self.gamma(rgbs[vis]),
                                                 self.gamma(rgbs_gt.squeeze(0)[vis]),
@@ -274,8 +322,7 @@ class BRDFTrainer(pl.LightningModule):
         # 7.  Logging  (now includes diagnostics)
         # ------------------------------------------------------------------
         self.log_dict({
-            'train/recon_loss':   recon_loss,
-            'train/refiner_prior':   prior,
+            'train/recon_loss':   loss,
             'train/total_loss':   loss,
             'train/psnr':         psnr,
         }, prog_bar=True, batch_size=rays.shape[0])
@@ -296,11 +343,7 @@ class BRDFTrainer(pl.LightningModule):
         psnr = 10.0 * torch.log10((1.0 ** 2) / psnr_loss.clamp_min(1e-5))
         emitter_radiance = self.emitter.light_radiance.detach().cpu().numpy()
         
-        if self.hparams.model.loss.recon_loss.name == "l1":
-            recon_loss = NF.l1_loss(rgbs[vis], rgbs_gt.squeeze(0)[vis])
-        elif self.hparams.model.loss.recon_loss.name == "l2":
-            recon_loss = NF.mse_loss(rgbs[vis], rgbs_gt.squeeze(0)[vis])
-        loss = recon_loss + prior*self.hparams.model.loss.refiner_prior_loss.weight
+        loss = self.loss_function(rgbs, rgbs_gt, vis)
         
         # Handle batch of images
         batch_size = 1
@@ -318,34 +361,29 @@ class BRDFTrainer(pl.LightningModule):
             )
             os.makedirs(output_dir, exist_ok=True)
             
-            # # Save ground truth and result images
-            # torchvision.utils.save_image(
-            #     self.gamma(sample_rgbs_gt.permute(2, 0, 1)),
-            #     os.path.join(output_dir, f'gt_view_{batch_idx}_{b}.png')
-            # )
-            # Save non-gamma-corrected result image
+            # Save the tone-mapped ground truth and result images
             torchvision.utils.save_image(
-                sample_rgbs_gt.permute(2, 0, 1),
-                os.path.join(output_dir, f'gt_view_linear_{batch_idx}_{b}.png')
+                self.tone_mapping(sample_rgbs_gt.permute(2, 0, 1)),
+                os.path.join(output_dir, f'gt_view_{batch_idx}_{b}.png')
             )
             torchvision.utils.save_image(
-                # self.gamma(sample_rgbs.permute(2, 0, 1)),
-                sample_rgbs.permute(2, 0, 1),
+                self.tone_mapping(sample_rgbs.permute(2, 0, 1)),
                 os.path.join(output_dir, f'result_view_{batch_idx}_{b}.png')
             )
+            # # Save non-gamma-corrected result image
+            # torchvision.utils.save_image(
+            #     sample_rgbs_gt.permute(2, 0, 1),
+            #     os.path.join(output_dir, f'gt_view_linear_{batch_idx}_{b}.png')
+            # )
+            # torchvision.utils.save_image(
+            #     # self.gamma(sample_rgbs.permute(2, 0, 1)),
+            #     sample_rgbs.permute(2, 0, 1),
+            #     os.path.join(output_dir, f'result_view_{batch_idx}_{b}.png')
+            # )
             
-        # Save pose refinement parameters if available
-        # if hasattr(self, 'handeye_refiner') and self.handeye_refiner is not None:
-        #     refine_params = {
-        #         'xi': self.handeye_refiner.xi.detach().cpu().numpy().tolist(),
-        #         'rotation_delta': self.handeye_refiner.xi[:3].detach().cpu().numpy().tolist(),
-        #         'translation_delta': self.handeye_refiner.xi[3:].detach().cpu().numpy().tolist(),
-        #         'step': self.global_step
-        #     }
+        os.makedirs(os.path.join(self.cfg.exp_output_root_path, f'pbr_map_images'), exist_ok=True)
+        self.save_pbr_texture(os.path.join(self.cfg.exp_output_root_path, f'pbr_map_images'), batch_idx, b)
             
-        #     refine_output_path = os.path.join(output_dir, f'pose_refinement_{batch_idx}.json')
-        #     with open(refine_output_path, 'w') as f:
-        #         json.dump(refine_params, f, indent=2)
         self.log('val/loss', loss)
         self.log('val/emitter_radiance', emitter_radiance.mean())
         self.log('val/psnr', psnr)        

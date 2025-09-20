@@ -80,7 +80,7 @@ from omegaconf import DictConfig
 
 @hydra.main(version_base=None, config_path="../../config", config_name="config")
 def main(cfg: DictConfig):
-    delete_purple_images(os.path.join(cfg.exp_folder, "BRDF_recon/masks", "filtered_purple_ldr"))
+    delete_purple_images(os.path.join(cfg.exp_folder, "Lower_exposure_BRDF_recon/masks", "filtered_purple_ldr"))
 
 if __name__ == "__main__":
     main()

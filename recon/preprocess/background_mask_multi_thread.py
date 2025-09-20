@@ -497,9 +497,9 @@ from omegaconf import DictConfig
 
 @hydra.main(version_base=None, config_path="../../config", config_name="config")
 def main(cfg: DictConfig):
-    image_folder = os.path.join(cfg.exp_folder, "BRDF_recon", "", "images")
-    output_folder = os.path.join(cfg.exp_folder, "BRDF_recon", "masks")
-    json_path = os.path.join(cfg.exp_folder, "BRDF_recon", "scan_log_0915_reindexed.json")
+    image_folder = os.path.join(cfg.exp_folder, "Lower_exposure_BRDF_recon", "images")
+    output_folder = os.path.join(cfg.exp_folder, "Lower_exposure_BRDF_recon", "masks")
+    json_path = os.path.join(cfg.exp_folder, "Lower_exposure_BRDF_recon", "scan_log_0918_reindexed.json")
 
     # threads only
     num_workers = min(NUM_WORKERS, os.cpu_count() or NUM_WORKERS)

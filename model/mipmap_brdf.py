@@ -120,7 +120,38 @@ def sample_texture(params, uv):
 
     return sampled_texture
 
-def sample_texture_trilinear(params, uv, mipmap_level):
+
+def sample_texture_with_offset(params, uv, wi, normal, dp_du, dp_dv):
+    B, H, W, C = params.shape
+    
+    # UV coordinates adjustment for grid_sample
+    uv_grid = uv.unsqueeze(0).unsqueeze(2) * 2 - 1  # [1,N,1,2]
+    height_map = params[:, :, :, 13:14]
+    height_map_sampled = torch.nn.functional.grid_sample(
+        height_map.permute(0, 3, 1, 2), uv_grid, mode='bilinear', align_corners=True
+    ).squeeze(-1).squeeze(-1).squeeze(0)  # [N,1]
+    
+    tangent = (wi - (wi * normal).sum(-1, keepdim=True) * normal)
+    tangent = NF.normalize(tangent, dim=-1)
+
+    # 2. Offset along tangent direction
+    offset = height_map_sampled * tangent
+
+    # 3. Build Jacobian of uv mapping
+    J = torch.stack([dp_du, dp_dv], dim=-1)  # [N,3,2]
+
+    # 4. Convert offset to (du,dv)
+    dudv = torch.linalg.lstsq(J, offset.unsqueeze(-1)).solution.squeeze(-1)
+    uv_grid = uv_grid + dudv.unsqueeze(0).unsqueeze(2) * 2  # rescale to [-1,1]
+    
+    # Sample the entire texture (all channels)
+    sampled_texture = torch.nn.functional.grid_sample(
+        params.permute(0, 3, 1, 2), uv_grid, mode='bilinear', align_corners=True
+    ).squeeze(-1).permute(0, 2, 1).squeeze(0)  # [N,C]
+
+    return sampled_texture
+
+def sample_texture_trilinear(params, uv, mipmap_level, wi, normal, dp_du, dp_dv, height_map=False):
     """
     params: list of length L, each tensor of shape [B, H, W, C]
     uv:     [N, 2] in [0, 1] (per-ray UVs)
@@ -152,13 +183,29 @@ def sample_texture_trilinear(params, uv, mipmap_level):
         return g
 
     # Helper to bilinear sample a single level for a subset of rays
-    def sample_level(level_idx, uv_subset):
+    def sample_level(level_idx, uv_subset, wi, normal, dp_du, dp_dv, height_map=False):
         # Take batch 0 (common in texture-parameter setups)
+        if height_map:
+            uv_subset_grid = uv_to_grid(uv_subset).unsqueeze(0).unsqueeze(2)  # [1, M, 1, 2]
+            height_map = params[level_idx][:, :, :, 13:14]
+            height_map_sampled = torch.nn.functional.grid_sample(
+                height_map.permute(0, 3, 1, 2), uv_subset_grid, mode='bilinear', align_corners=True
+            ).squeeze(-1).permute(0, 2, 1).squeeze(0) # [M,1]
+            
+            tangent = (wi - (wi * normal).sum(-1, keepdim=True) * normal)
+            tangent = NF.normalize(tangent, dim=-1)
+            offset = height_map_sampled * tangent
+            J = torch.stack([dp_du, dp_dv], dim=-1)  # [N,3,2]
+            dudv = torch.linalg.lstsq(J, offset.unsqueeze(-1)).solution.squeeze(-1)
+            uv_subset_grid = uv_subset_grid + dudv.unsqueeze(0).unsqueeze(2) * 2  # rescale to [-1,1]
+        else:
+            uv_subset_grid = uv_to_grid(uv_subset).unsqueeze(0).unsqueeze(2)  # [1, M, 1, 2]
+            
         tex = params[level_idx][0]  # [H, W, C]
         H, W, C_ = tex.shape
         assert C_ == C
         tex = tex.permute(2, 0, 1).unsqueeze(0).contiguous()  # [1, C, H, W]
-        grid = uv_to_grid(uv_subset).unsqueeze(0).unsqueeze(2)  # [1, M, 1, 2]
+        grid = uv_subset_grid  # [1, M, 1, 2]
         sampled = NF.grid_sample(tex, grid, mode='bilinear', padding_mode='border', align_corners=True)
         # sampled: [1, C, M, 1] -> [M, C]
         return sampled.squeeze(0).squeeze(-1).permute(1, 0).contiguous()
@@ -172,15 +219,19 @@ def sample_texture_trilinear(params, uv, mipmap_level):
 
         idx = torch.nonzero(mask, as_tuple=False).squeeze(1)
         uv_subset = uv[idx]  # [M, 2]
+        wi_subset = wi[idx]
+        normal_subset = normal[idx]
+        dp_du_subset = dp_du[idx]
+        dp_dv_subset = dp_dv[idx]
         a_subset = alpha[idx]  # [M]
 
         # base level sample
-        s0 = sample_level(level, uv_subset)  # [M, C]
+        s0 = sample_level(level, uv_subset, wi_subset, normal_subset, dp_du_subset, dp_dv_subset, height_map)  # [M, C]
 
         # upper level (could be same as base when at the top mip)
         level_up = min(level + 1, L - 1)
         if level_up != level:
-            s1 = sample_level(level_up, uv_subset)  # [M, C]
+            s1 = sample_level(level_up, uv_subset, wi_subset, normal_subset, dp_du_subset, dp_dv_subset, height_map)  # [M, C]
             # blend with alpha
             out[idx] = (1.0 - a_subset.unsqueeze(1)) * s0 + a_subset.unsqueeze(1) * s1
         else:
@@ -227,7 +278,7 @@ class MipmapLearnableSvPBRBRDF(nn.Module):
         self.prefliter = cfg.prefliter 
         self.texture_res = cfg.texture_res
         self.base_footprint = cfg.base_footprint
-        
+        self.height_map = cfg.use_height_map
         if self.prefliter:
             texture_init = torch.randn(1, self.texture_res, self.texture_res, 21) * self.init_std
             
@@ -235,6 +286,7 @@ class MipmapLearnableSvPBRBRDF(nn.Module):
             texture_init[0, :, :, 10] = 0.0  # x component
             texture_init[0, :, :, 11] = 0.0  # y component  
             texture_init[0, :, :, 12] = 1.0  # z component
+            texture_init[0, :, :, 13] = 0.0  # height
             
             self.pbr_texture = nn.Parameter(texture_init)
         else:
@@ -252,7 +304,7 @@ class MipmapLearnableSvPBRBRDF(nn.Module):
                 texture_init[0, :, :, 10] = 0.0  # x component
                 texture_init[0, :, :, 11] = 0.0  # y component  
                 texture_init[0, :, :, 12] = 1.0  # z component
-                
+                texture_init[0, :, :, 13] = 0.0  # height
                 # Create parameter for this mipmap level
                 mipmap_param = nn.Parameter(texture_init)
                 self.mipmap_textures.append(mipmap_param)
@@ -382,7 +434,7 @@ class MipmapLearnableSvPBRBRDF(nn.Module):
         return brdf, pdf
 
 
-    def eval_brdf(self, params, pos, wi, wo, normal,uv, TBN, latent=None, batch_mask=None, footprint=None):
+    def eval_brdf(self, params, pos, wi, wo, normal,uv, TBN, latent=None, batch_mask=None, footprint=None, dp_du=None, dp_dv=None):
         """ wi is light direction, wo is view direction """
         TBN=TBN.permute(2,0,1)
         #print("TBN",TBN.shape)
@@ -400,7 +452,7 @@ class MipmapLearnableSvPBRBRDF(nn.Module):
         else:
             mipmaps = self.mipmap_textures
             
-        sampled_texture = sample_texture_trilinear(mipmaps, uv, mipmap_level)
+        sampled_texture = sample_texture_trilinear(mipmaps, uv, mipmap_level, wi, normal, dp_du, dp_dv, self.height_map)
             
         if self.anisotropic:
             # Extract anisotropic texture maps
