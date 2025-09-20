@@ -11,7 +11,7 @@ from pathlib import Path
 from torch.utils.data import IterableDataset
 from tqdm import tqdm
 import matplotlib.pyplot as plt
-from utils.io import load_camera_light_metadata, load_camera_metadata
+from utils.io import load_camera_turntable_light_metadata, load_camera_metadata
 
 def build_4x4(R, t):
     T = np.eye(4, dtype=float)
@@ -60,6 +60,7 @@ def get_rays(directions, c2w, focal=None):
     """
     R = c2w[:,:3]
     rays_d = directions @ R.T
+    
     rays_o = c2w[:, 3].expand(rays_d.shape) # (H, W, 3)
 
     rays_d = rays_d.view(-1, 3)
@@ -147,18 +148,41 @@ class RealImageDataset(IterableDataset):
         # Load metadata from JSON file
         metadata_path = cfg.data.metadata_path
         camera_metadata_path = cfg.data.camera_metadata_path
-        metadata, _, _= load_camera_light_metadata(metadata_path)
+        metadata, _, _= load_camera_turntable_light_metadata(metadata_path)
+        
         camera_metadata = load_camera_metadata(camera_metadata_path)
         
-        # Filter out metadata entries with non-existent image files
+        # Filter out metadata entries with non-existent image files and filtered_puple_ids
         valid_metadata = []
+        filtered_purple_ids = getattr(cfg.data, 'filtered_purple_ids', [])
+        
         for item in metadata:
+            # Add "masked_" prefix to filename
+            file_name = item["filename"]
+            if not file_name.startswith("masked_"):
+                file_name = "masked_" + file_name
+                item["filename"] = file_name
             file_name = item["filename"]
             img_path = os.path.join(gt_folder, file_name)
-            if os.path.exists(img_path):
-                valid_metadata.append(item)
-            else:
+            overall_id = item.get("overall_id")
+            
+            # Skip if image file doesn't exist or is 0 bytes
+            if not os.path.exists(img_path):
                 print(f"Warning: Image file {img_path} does not exist, skipping from metadata...")
+                continue
+            
+            # Skip if image file is 0 bytes
+            if os.path.getsize(img_path) == 0:
+                print(f"Warning: Image file {img_path} is 0 bytes, skipping from metadata...")
+                continue
+                
+            # Skip if overall_id is in filtered_puple_ids
+            
+            if int(overall_id) in filtered_purple_ids:
+                print(f"Warning: overall_id {overall_id} is in filtered_puple_ids, skipping from metadata...")
+                continue
+                
+            valid_metadata.append(item)
         
         metadata = valid_metadata
         print(f"Loaded {len(metadata)} valid images out of {len(metadata) + len([item for item in metadata if not os.path.exists(os.path.join(gt_folder, item['filename']))])} total metadata entries")
@@ -172,7 +196,7 @@ class RealImageDataset(IterableDataset):
         
         # Use 80% for training
         if self.debug:
-            self.metadata = metadata[:self.debug_num]
+            self.metadata = metadata[575:575+self.debug_num]
         else:
             split_idx = int(0.8 * self.total_images)
             selected_indices = indices[:split_idx]
@@ -191,8 +215,7 @@ class RealImageDataset(IterableDataset):
         all_camera_ids = []
         for img_data in tqdm(self.metadata, desc="Loading images and rays"):
             # Get camera info using camera_id
-            overall_id = img_data["overall_id"]
-            camera_info = self.camera_metadata[str(overall_id)]
+            camera_info = self.camera_metadata[str(int(img_data["camera_id"]))]
             camera_dict = {
                 "position": camera_info["position"],
                 "rotation_matrix": camera_info["rotation_matrix"],
@@ -201,7 +224,8 @@ class RealImageDataset(IterableDataset):
             # Generate rays for this camera
             # c2w = get_c2w_from_robot_pose(camera_dict, self.R_c2g, self.t_c2g)
             c2w = torch.from_numpy(build_4x4(camera_dict["rotation_matrix"], camera_dict["position"])).float()
-            c2w = _cv_to_gl(c2w)[:3, :4]
+            # c2w = _cv_to_gl(c2w)[:3, :4]
+            c2w = c2w[:3, :4]
             rays_o, rays_d, dxdu, dydv = get_rays(self.directions, c2w, focal=self.intrinsics['focal_length'])
             rays = torch.cat([rays_o, rays_d, dxdu, dydv], dim=-1)
             # Load original RGB image (without gamma correction)
@@ -238,7 +262,7 @@ class RealImageDataset(IterableDataset):
             # Get emitter ID directly from metadata
             emitter_id = img_data["emitter_id"]
             emitter_ids = torch.full((rays.shape[0],), emitter_id, dtype=torch.long)
-            camera_ids = torch.full((rays.shape[0],), int(overall_id), dtype=torch.long)
+            camera_ids = torch.full((rays.shape[0],), int(img_data["camera_id"]), dtype=torch.long)
             # Filter out low luminance rays
             luminance = (0.2126 * img_flat[..., 0] +
                         0.7152 * img_flat[..., 1] +
@@ -444,24 +468,51 @@ class RealValDataset(Dataset):
         # Load metadata from JSON file
         metadata_path = cfg.data.metadata_path
         camera_metadata_path = cfg.data.camera_metadata_path
-        metadata, _, _ = load_camera_light_metadata(metadata_path)
+        metadata, _, _= load_camera_turntable_light_metadata(metadata_path)
+        
         camera_metadata = load_camera_metadata(camera_metadata_path)
-        # Filter out metadata entries with non-existent image files
+        
+        # Filter out metadata entries with non-existent image files and filtered_puple_ids
         valid_metadata = []
+        filtered_puple_ids = getattr(cfg.data, 'filtered_puple_ids', [])
+        
         for item in metadata:
+            # Add "masked_" prefix to filename
+            file_name = item["filename"]
+            if not file_name.startswith("masked_"):
+                file_name = "masked_" + file_name
+                item["filename"] = file_name
             file_name = item["filename"]
             img_path = os.path.join(gt_folder, file_name)
-            if os.path.exists(img_path):
-                valid_metadata.append(item)
-            else:
+            overall_id = item.get("overall_id")
+            
+            # Skip if image file doesn't exist or is 0 bytes
+            if not os.path.exists(img_path):
                 print(f"Warning: Image file {img_path} does not exist, skipping from metadata...")
+                continue
+            
+            # Skip if image file is 0 bytes
+            if os.path.getsize(img_path) == 0:
+                print(f"Warning: Image file {img_path} is 0 bytes, skipping from metadata...")
+                continue
+                
+            # Skip if overall_id is in filtered_puple_ids
+            
+            if int(overall_id) in filtered_puple_ids:
+                print(f"Warning: overall_id {overall_id} is in filtered_puple_ids, skipping from metadata...")
+                continue
+                
+            valid_metadata.append(item)
+        
         metadata = valid_metadata
-        self.camera_metadata = camera_metadata    
-        self.total_images = len(metadata)
+        print(f"Loaded {len(metadata)} valid images out of {len(metadata) + len([item for item in metadata if not os.path.exists(os.path.join(gt_folder, item['filename']))])} total metadata entries")
+        self.camera_metadata = camera_metadata
+        
+        self.total_images = len(metadata)   
         
         # Split metadata into training and validation sets with fixed random seed
         if self.debug:
-            self.metadata = metadata[:self.debug_num]
+            self.metadata = metadata[575:575+self.debug_num]
         else:
             torch.manual_seed(42)  # Fixed seed for reproducible splits
             indices = torch.randperm(self.total_images)
@@ -480,9 +531,9 @@ class RealValDataset(Dataset):
         img_data = self.metadata[idx]
         
         # Get camera info using camera_id
-        overall_id = img_data["overall_id"]
+        camera_id = img_data["camera_id"]
         # overall_id = 0 # debug with the first camera
-        camera_info = self.camera_metadata[str(overall_id)]
+        camera_info = self.camera_metadata[str(int(camera_id))]
         camera_dict = {
             "position": camera_info["position"],
             "rotation_matrix": camera_info["rotation_matrix"],
@@ -491,7 +542,8 @@ class RealValDataset(Dataset):
         # Generate rays for this camera
         # c2w = get_c2w_from_robot_pose(camera_dict, self.R_c2g, self.t_c2g)
         c2w = torch.from_numpy(build_4x4(camera_dict["rotation_matrix"], camera_dict["position"])).float()
-        c2w = _cv_to_gl(c2w)[:3, :4]
+        # c2w = _cv_to_gl(c2w)[:3, :4]
+        c2w = c2w[:3, :4]
         rays_o, rays_d, dxdu, dydv = get_rays(self.directions, c2w, focal=self.focal)
         rays = torch.cat([rays_o, rays_d, dxdu, dydv], dim=-1)
         
@@ -515,7 +567,7 @@ class RealValDataset(Dataset):
         emitter_ids = torch.full((rays.shape[0],), img_data["emitter_id"], dtype=torch.long)
         # emitter_ids = torch.full((rays.shape[0],), idx, dtype=torch.long)
         
-        camera_ids = torch.full((rays.shape[0],), int(overall_id), dtype=torch.long)
+        camera_ids = torch.full((rays.shape[0],), int(camera_id), dtype=torch.long)
         return {
             'rays': rays,
             'rgbs': img_flat,

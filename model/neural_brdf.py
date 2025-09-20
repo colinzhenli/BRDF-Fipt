@@ -88,6 +88,36 @@ def sample_texture(params, uv):
 
     return sampled_texture
 
+def sample_texture_with_offset(params, uv, wi, normal, dp_du, dp_dv):
+    B, H, W, C = params.shape
+    
+    # UV coordinates adjustment for grid_sample
+    uv_grid = uv.unsqueeze(0).unsqueeze(2) * 2 - 1  # [1,N,1,2]
+    height_map = params[:, :, :, 13:14]
+    height_map_sampled = torch.nn.functional.grid_sample(
+        height_map.permute(0, 3, 1, 2), uv_grid, mode='bilinear', align_corners=True
+    ).squeeze(-1).squeeze(-1).squeeze(0)  # [N,1]
+    
+    tangent = (wi - (wi * normal).sum(-1, keepdim=True) * normal)
+    tangent = NF.normalize(tangent, dim=-1)
+
+    # 2. Offset along tangent direction
+    offset = height_map_sampled * tangent
+
+    # 3. Build Jacobian of uv mapping
+    J = torch.stack([dp_du, dp_dv], dim=-1)  # [N,3,2]
+
+    # 4. Convert offset to (du,dv)
+    dudv = torch.linalg.lstsq(J, offset.unsqueeze(-1)).solution.squeeze(-1)
+    uv_grid = uv_grid + dudv.unsqueeze(0).unsqueeze(2) * 2  # rescale to [-1,1]
+    
+    # Sample the entire texture (all channels)
+    sampled_texture = torch.nn.functional.grid_sample(
+        params.permute(0, 3, 1, 2), uv_grid, mode='bilinear', align_corners=True
+    ).squeeze(-1).permute(0, 2, 1).squeeze(0)  # [N,C]
+
+    return sampled_texture
+
 def local_to_world_normal(sampled_normal, T, B, N):
     # Adjust normal map from [0,1] to [-1,1]
     sampled_normal = sampled_normal * 2 - 1
@@ -135,7 +165,7 @@ class LearnableSvPBRBRDF(nn.Module):
         texture_init[0, :, :, 10] = 0.0  # x component
         texture_init[0, :, :, 11] = 0.0  # y component  
         texture_init[0, :, :, 12] = 1.0  # z component
-        
+        texture_init[0, :, :, 13] = 0.0  # height
         self.pbr_texture = nn.Parameter(texture_init)
 
     
@@ -263,7 +293,7 @@ class LearnableSvPBRBRDF(nn.Module):
         return brdf, pdf
 
 
-    def eval_brdf(self, params, pos, wi, wo, normal,uv, TBN, latent=None, batch_mask=None, footprint_vis=None):
+    def eval_brdf(self, params, pos, wi, wo, normal,uv, TBN, latent=None, batch_mask=None, footprint_vis=None, dp_du=None, dp_dv=None):
         """ wi is light direction, wo is view direction """
         TBN=TBN.permute(2,0,1)
         #print("TBN",TBN.shape)
@@ -274,17 +304,13 @@ class LearnableSvPBRBRDF(nn.Module):
         
         if not valid_geometry.any():
             return torch.zeros_like(wi), torch.zeros(wi.shape[0], 1, device=wi.device)
-        radius = 0.2
-        factor = self.scale_factor
         params = self.pbr_texture
         H, W = params.shape[1], params.shape[2]
-        crop_h = int((H - H * factor) // 2)
-        crop_w = int((W - W * factor) // 2)
-        new_h = int(H * factor)
-        new_w = int(W * factor)
-        params = params[:, crop_h:crop_h+new_h, crop_w:crop_w+new_w, :]
         # Step 2: Texture sampling
-        sampled_texture = sample_texture(params, uv)
+        if self.height_map:
+            sampled_texture = sample_texture_with_offset(params, uv, wi, normal, dp_du, dp_dv)
+        else:
+            sampled_texture = sample_texture(params, uv)
         if self.anisotropic:
             # Extract anisotropic texture maps
             diffuse = sampled_texture[:, 0:3]                    # Color channels
@@ -345,6 +371,7 @@ class LearnableSvPBRBRDF(nn.Module):
             arm = sampled_texture[:, 6:9]      # ARM channels
             color = sampled_texture[:, 0:3]    # Color channels
             normal_local = sampled_texture[:, 10:13]  # Normal channels
+
             albedo, roughness, metallic = arm[:, 0:1], arm[:, 1:2], arm[:, 2:3]
             if self.soft_constraint:
                 albedo = torch.sigmoid(color)
