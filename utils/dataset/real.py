@@ -152,7 +152,7 @@ class RealImageDataset(IterableDataset):
         
         camera_metadata = load_camera_metadata(camera_metadata_path)
         
-        # Filter out metadata entries with non-existent image files and filtered_puple_ids
+        # Filter out metadata entries with non-existent image files and filtered_purple_ids
         valid_metadata = []
         filtered_purple_ids = getattr(cfg.data, 'filtered_purple_ids', [])
         
@@ -176,10 +176,10 @@ class RealImageDataset(IterableDataset):
                 print(f"Warning: Image file {img_path} is 0 bytes, skipping from metadata...")
                 continue
                 
-            # Skip if overall_id is in filtered_puple_ids
+            # Skip if overall_id is in filtered_purple_ids
             
             if int(overall_id) in filtered_purple_ids:
-                print(f"Warning: overall_id {overall_id} is in filtered_puple_ids, skipping from metadata...")
+                print(f"Warning: overall_id {overall_id} is in filtered_purple_ids, skipping from metadata...")
                 continue
                 
             valid_metadata.append(item)
@@ -472,9 +472,9 @@ class RealValDataset(Dataset):
         
         camera_metadata = load_camera_metadata(camera_metadata_path)
         
-        # Filter out metadata entries with non-existent image files and filtered_puple_ids
+        # Filter out metadata entries with non-existent image files and filtered_purple_ids
         valid_metadata = []
-        filtered_puple_ids = getattr(cfg.data, 'filtered_puple_ids', [])
+        filtered_purple_ids = getattr(cfg.data, 'filtered_purple_ids', [])
         
         for item in metadata:
             # Add "masked_" prefix to filename
@@ -496,10 +496,10 @@ class RealValDataset(Dataset):
                 print(f"Warning: Image file {img_path} is 0 bytes, skipping from metadata...")
                 continue
                 
-            # Skip if overall_id is in filtered_puple_ids
+            # Skip if overall_id is in filtered_purple_ids
             
-            if int(overall_id) in filtered_puple_ids:
-                print(f"Warning: overall_id {overall_id} is in filtered_puple_ids, skipping from metadata...")
+            if int(overall_id) in filtered_purple_ids:
+                print(f"Warning: overall_id {overall_id} is in filtered_purple_ids, skipping from metadata...")
                 continue
                 
             valid_metadata.append(item)
