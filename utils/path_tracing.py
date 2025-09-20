@@ -646,6 +646,8 @@ def batched_path_tracing_tbn_real_area_emitter(scene,emitter_net,material_net,ra
 
     normal = normal[vis]
     uv=uv[vis]
+    dp_du = dp_du[vis]
+    dp_dv = dp_dv[vis]
 
     wo = -wi[vis]
     light_id = light_id[vis]
@@ -659,7 +661,7 @@ def batched_path_tracing_tbn_real_area_emitter(scene,emitter_net,material_net,ra
         G = (-wi*emitter_normal).sum(-1).abs() / (emit_position-position).pow(2).sum(-1).clamp_min(1e-6) # B, 1
         emit_weight = emit_weight*G[...,None]/emit_pdf.clamp_min(1e-6)
         # emit brdf
-        emit_brdf,brdf_pdf = material_net.eval_brdf(None, position, wi,wo,normal,uv, TBN, latent, batch_mask, footprint_vis) # gt_params will not be used in neural brdf model
+        emit_brdf,brdf_pdf = material_net.eval_brdf(None, position, wi,wo,normal,uv, TBN, latent, batch_mask, footprint_vis, dp_du, dp_dv) # gt_params will not be used in neural brdf model
         w_mis = torch.where((emit_pdf>0)&(~brdf_pdf.isinf()),emit_pdf*emit_pdf/(emit_pdf*emit_pdf+brdf_pdf*brdf_pdf),0)
         w_mis[emit_pdf.isinf()|(brdf_pdf==0)] = 1
         L[vis] += emit_brdf*emit_weight
@@ -672,7 +674,9 @@ def batched_path_tracing_tbn_real_area_emitter(scene,emitter_net,material_net,ra
             torch.rand(len(normal),2,device=device),
             wo,normal,
             latent,
-            batch_mask
+            batch_mask,
+            dp_du,
+            dp_dv
         ) # ground truth roughness will be used in brdf sampling
     
         # Evaluate Le

@@ -4,9 +4,13 @@ import argparse
 import os
 
 # Global bounding box limits (x_min, y_min, z_min, x_max, y_max, z_max)
-global_bbox = [0.0, -0.15, -0.12, 0.3, 0.15, 0.05-0.12]  # Example values in meters
+# Bounding box around the rectangle from config: center=[0.14511, -0.2228, -0.055], width=0.17, length=0.25
+# x_min = center_x - width/2, x_max = center_x + width/2
+# y_min = center_y - length/2, y_max = center_y + length/2
+# z values kept from original
+global_bbox = [0.14511 - 0.17/2, -0.2228 - 0.25/2, -0.06, 0.14511 + 0.17/2, -0.2228 + 0.25/2, -0.045]
 # percentage cutting on the local bbox
-percentage_bbox = [0.12, 0.05, 0.7, 0.1, 0.05, 0.0]  # Example values in percentage
+percentage_bbox = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]  # Example values in percentage
 
 def transform_mesh(mesh, T_w2c):
     """Apply a 4x4 transform to mesh vertices."""

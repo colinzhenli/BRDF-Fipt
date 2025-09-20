@@ -12,6 +12,6 @@ pixel: True
 ray_diff: True
 custom_c2w: True
 
-metadata_path: /media/raid/cloth/Single_step_recon_Sep1/scan_log_0901.json
-camera_metadata_path: /media/raid/cloth/Single_step_recon_Sep1/rotated_camera.json
+metadata_path: /media/raid/cloth/New_turntable_Sep15/Lower_exposure_BRDF_recon/scan_log_0918_reindexed.json
+camera_metadata_path: /media/raid/cloth/New_turntable_Sep15/Lower_exposure_BRDF_recon/rotated_camera.json
 handeye_refiner: False # whether to learn the refiner

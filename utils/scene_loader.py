@@ -46,40 +46,21 @@ def load_uv_obj_to_mitsuba_scene(obj_path="mesh_test/cube_with_uv.obj"):
     scene = mi.load_dict(scene_dict)
     return scene
 
-# def load_and_transform_mesh(obj_path):
-#     """
-#     Load mesh from obj_path, scale it to 0.2, and move it to origin by computing
-#     the average y axis and moving it toward -y direction, then save the transformed mesh.
-    
-#     Args:
-#         obj_path (str): Path to the input OBJ file
-        
-#     Returns:
-#         str: Path to the transformed mesh file
-#     """
-#     import trimesh
-    
-#     # Load the mesh
-#     mesh = trimesh.load(obj_path)
-    
-#     # Scale the mesh to 0.2
-#     mesh.apply_scale(0.2)
-    
-#     # Compute the average y coordinate
-#     vertices = mesh.vertices
-#     avg_y = np.mean(vertices[:, 1])
-    
-#     # Move the mesh toward -y direction to center it at origin
-#     translation = np.array([0, -avg_y, 0])
-#     mesh.apply_translation(translation)
-    
-#     # Generate output path
-#     output_path = obj_path.replace('.obj', '_transformed.obj')
-    
-#     # Save the transformed mesh
-#     mesh.export(output_path)
-    
-#     return output_path
+def create_rectangle_scene(center=[0, 0, 0], width=0.4, length=0.4):
+    to_world = (
+        mi.ScalarTransform4f.translate(mi.ScalarPoint3f(*center)) @
+        mi.ScalarTransform4f.scale(mi.ScalarVector3f(width/2, length/2, 1.0))
+    )
+
+    scene_dict = {
+        "type": "scene",
+        "shape_id": {
+            "type": "rectangle",
+            "to_world": to_world,
+            "flip_normals": False,
+        }
+    }
+    return mi.load_dict(scene_dict)
 
 def load_and_transform_mesh_trimesh(obj_path):
     """

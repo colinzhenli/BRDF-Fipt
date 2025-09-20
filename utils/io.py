@@ -29,12 +29,13 @@ def load_camera_turntable_light_metadata(json_path):
     metadata = []
     
     for item in camera_light_data:
-        overall_id = item['id']
+        overall_id = item['scan_id']
         camera_id = item['camera_id']
         light_id = item['light_id']
-        phi = item['phi']
-        theta = item['theta']
-        turn_angle = item['turn_angle']
+        if 'turn_angle' in item:
+            turn_angle = item['turn_angle']
+        else:
+            turn_angle = None
         filename = item['filename']
         
         # Store camera metadata using overall_id
@@ -82,12 +83,10 @@ def load_camera_metadata(json_path):
     camera_metadata = {}
     
     for item in camera_light_data:
-        # camera_id = item['id']
-        overall_id = item['overall_id']
-        
+        camera_id = item['camera_id']
         # Store camera metadata only for non-appeared camera id
-        if str(overall_id) not in camera_metadata:
-            camera_metadata[str(overall_id)] = {
+        if str(camera_id) not in camera_metadata:
+            camera_metadata[str(camera_id)] = {
                 'position': [pos / 1000.0 for pos in item['position']],
                 'rotation_matrix': item['rotation_matrix'],
             }

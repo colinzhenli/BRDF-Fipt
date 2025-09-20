@@ -26,10 +26,10 @@ camera:
   intrinsics:
     width: 3072
     height: 2048
-    focal_length: 6708.835
+    focal_length: 6713.58
     cx: 1536
     cy: 1024
-    distortion: -0.062
+    distortion: -0.0647
   # intrinsics:
   #   width: 3080
   #   height: 2049
@@ -38,10 +38,14 @@ camera:
   #   cy: 1024.5
   #   distortion: 0.0
 
-turntable_center: [0.21056884, -0.1938618, 0.0]
+# turntable_center: [0.21056884, -0.1938618, 0.0]
 
 mesh:
-  path: /media/raid/cloth/Single_step_recon_Sep1/Meshes/fuse_pose_cut_before_transformed_transformed_uv.ply
+  path: 
+  rectangle:
+    center: [0.14511, -0.2228, -0.06]
+    width: 0.14
+    length: 0.202
 
 emitter:
   type: "realarea"
