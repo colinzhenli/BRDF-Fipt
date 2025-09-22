@@ -38,8 +38,6 @@ camera:
   #   cy: 1024.5
   #   distortion: 0.0
 
-# turntable_center: [0.21056884, -0.1938618, 0.0]
-
 mesh:
   path: 
   rectangle:
@@ -55,6 +53,9 @@ emitter:
   fwhm_deg: 115.0 # full width at half maximum angle(value for specs)
   positions: [0.0, 0.0, 0.0] # to be updated
   radiance: [80.0, 80.0, 80.0] # largest radiance at 90 degree(to be updated)
+  turntable:
+    center: [0.15054801, -0.22801754, 0.21486147]
+    axis: [-0.00553423, 0.02421833, 0.99969137]
   R_l2g: [[1.0,  0.0,  0.0],
           [0.0,  1.0,  0.0],
           [0.0,  0.0,  1.0]]

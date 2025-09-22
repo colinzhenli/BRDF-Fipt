@@ -6,22 +6,22 @@
     // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
     "version": "0.2.0",
     "configurations": [
-        {
-            "name": "Python: Current File",
-            "type": "python",
-            "request": "launch",
-            "program": "./recon/calibration/shape_matching.py",
-            "console": "integratedTerminal",
-            "justMyCode": true,
-            "env": {
-                "CUDA_VISIBLE_DEVICES": "3"
-            },
-            "args": [
-                "--scan_log_path", "/media/raid/cloth/New_turntable_Sep15/Lower_exposure_BRDF_recon/scan_log_0918_reindexed.json",
-                "--mesh_path", "None",
-                "--model_path", "/media/raid/cloth/New_turntable_Sep15/Lower_exposure_BRDF_recon/undistorted/sparse/0",
-                ]
-        },
+        // {
+        //     "name": "Python: Current File",
+        //     "type": "python",
+        //     "request": "launch",
+        //     "program": "./recon/calibration/shape_matching.py",
+        //     "console": "integratedTerminal",
+        //     "justMyCode": true,
+        //     "env": {
+        //         "CUDA_VISIBLE_DEVICES": "3"
+        //     },
+        //     "args": [
+        //         "--scan_log_path", "/media/raid/cloth/New_turntable_Sep15/Lower_exposure_BRDF_recon/scan_log_0918_reindexed.json",
+        //         "--mesh_path", "None",
+        //         "--model_path", "/media/raid/cloth/New_turntable_Sep15/Lower_exposure_BRDF_recon/undistorted/sparse/0",
+        //         ]
+        // },
 
         // {
         //     "name": "Python: Current File",
@@ -56,24 +56,24 @@
         //         // "TAG_SIZE_MM=10"
         //     ]
         // },
-        // {
-        //     "name": "Python: Current File",
-        //     "type": "python",
-        //     "request": "launch",
-        //     "program": "main.py",
-        //     "console": "integratedTerminal",
-        //     "justMyCode": true,
-        //     "env": {
-        //         "CUDA_VISIBLE_DEVICES": "3"
-        //     },
-        //     "args": [
-        //         "dataset_folder=/media/raid/cloth/New_turntable_Sep15/BRDF_recon/masks/masked_images_debayered",
-        //         "renderer=realcapture_area_emitter",
-        //         "material=mipmap_learnablesvpbr",
-        //         "experiment_name=height_map_debug",
-        //         // "model.ckpt_path=/media/raid/cloth/output/BRDF/real/All-image_Local-normal_Learnable-light_PBR-brdf_BRDF-recon_run_1/training/model_0.20_0.20/last.ckpt"
-        //     ]
-        // }
+        {
+            "name": "Python: Current File",
+            "type": "python",
+            "request": "launch",
+            "program": "main.py",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "env": {
+                "CUDA_VISIBLE_DEVICES": "3"
+            },
+            "args": [
+                "dataset_folder=/media/raid/cloth/New_turntable_Sep15/Lower_exposure_BRDF_recon/masks/masked_images_debayered",
+                "renderer=realcapture_area_emitter",
+                "material=mipmap_learnablesvpbr",
+                "experiment_name=Correct_rotation_debug",
+                // "model.ckpt_path=/media/raid/cloth/output/BRDF/real/All-image_Local-normal_Learnable-light_PBR-brdf_BRDF-recon_run_1/training/model_0.20_0.20/last.ckpt"
+            ]
+        }
 
     // {
     //     "name": "Debug Background Mask Multi Thread",

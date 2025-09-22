@@ -2,7 +2,7 @@ import json
 import os
 import glob
 import torch
-from utils.transform import build_rot_about_point, build_cw_rotz_from_deg
+from utils.transform import build_rot_about_point, build_cw_rotz_from_deg, rodrigues_axis_angle
 
 def load_camera_turntable_light_metadata(json_path):
     """
@@ -123,7 +123,7 @@ def rotation_position_to_light2world(rotation_matrix, position):
     
     return light2world
 
-def read_light_transforms(json_path):
+def read_light_transforms(json_path, turntable_center, turntable_axis):
     """
     Read light data from JSON file and return light-to-world transformation matrices.
     
@@ -158,9 +158,7 @@ def read_light_transforms(json_path):
 
             # Convert to light-to-world transformation matrix
             light2world = rotation_position_to_light2world(rotation_matrix, position)
-            ROTATION_FACTOR = 1.0405
-            turn_angle = turn_angle * ROTATION_FACTOR
-            Tw2w0 = build_rot_about_point(build_cw_rotz_from_deg(-turn_angle)) # tranform world back to 0-angle world
+            Tw2w0 = build_rot_about_point(rodrigues_axis_angle(turntable_axis, -turn_angle), turntable_center) # tranform world back to 0-angle world
             Tw2w0 = torch.from_numpy(Tw2w0).float()
             light_transforms.append(Tw2w0 @ light2world)
     
