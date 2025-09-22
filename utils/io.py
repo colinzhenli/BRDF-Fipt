@@ -123,7 +123,7 @@ def rotation_position_to_light2world(rotation_matrix, position):
     
     return light2world
 
-def read_light_transforms(json_path, turntable_center, turntable_axis):
+def read_light_transforms(json_path, turntable_center, turntable_axis, base2_to_base1):
     """
     Read light data from JSON file and return light-to-world transformation matrices.
     
@@ -158,8 +158,9 @@ def read_light_transforms(json_path, turntable_center, turntable_axis):
 
             # Convert to light-to-world transformation matrix
             light2world = rotation_position_to_light2world(rotation_matrix, position)
+            light2world = base2_to_base1 @ light2world.cuda()
             Tw2w0 = build_rot_about_point(rodrigues_axis_angle(turntable_axis, -turn_angle), turntable_center) # tranform world back to 0-angle world
-            Tw2w0 = torch.from_numpy(Tw2w0).float()
+            Tw2w0 = torch.from_numpy(Tw2w0).float().cuda()
             light_transforms.append(Tw2w0 @ light2world)
     
     return torch.stack(light_transforms).cuda()  # (N, 4, 4)

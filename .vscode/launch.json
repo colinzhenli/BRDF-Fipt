@@ -70,7 +70,7 @@
                 "dataset_folder=/media/raid/cloth/New_turntable_Sep15/Lower_exposure_BRDF_recon/masks/masked_images_debayered",
                 "renderer=realcapture_area_emitter",
                 "material=mipmap_learnablesvpbr",
-                "experiment_name=Correct_rotation_debug",
+                "experiment_name=Correct_rotation_capture1_debug",
                 // "model.ckpt_path=/media/raid/cloth/output/BRDF/real/All-image_Local-normal_Learnable-light_PBR-brdf_BRDF-recon_run_1/training/model_0.20_0.20/last.ckpt"
             ]
         }
