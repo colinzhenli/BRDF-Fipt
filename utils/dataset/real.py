@@ -196,7 +196,7 @@ class RealImageDataset(IterableDataset):
         
         # Use 80% for training
         if self.debug:
-            self.metadata = metadata[2:2+self.debug_num]
+            self.metadata = metadata[100:100+self.debug_num]
         else:
             split_idx = int(0.8 * self.total_images)
             selected_indices = indices[:split_idx]
@@ -512,7 +512,7 @@ class RealValDataset(Dataset):
         
         # Split metadata into training and validation sets with fixed random seed
         if self.debug:
-            self.metadata = metadata[2:2+self.debug_num]
+            self.metadata = metadata[100:100+self.debug_num]
         else:
             torch.manual_seed(42)  # Fixed seed for reproducible splits
             indices = torch.randperm(self.total_images)
