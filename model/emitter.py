@@ -330,8 +330,8 @@ class RealAreaEmitter(nn.Module):
         R_l2g = torch.tensor(cfg.get('R_l2g'), dtype=torch.float32, device='cuda')
         t_l2g = torch.tensor(cfg.get('t_l2g'), dtype=torch.float32, device='cuda')
         base2_to_base1 = torch.tensor(cfg.get('base2_to_base1'), dtype=torch.float32, device='cuda')
-        g2b = read_light_transforms(json_path, cfg.turntable.center, cfg.turntable.axis) # [N, 4, 4]
-        g2b0 = base2_to_base1.unsqueeze(0) @ g2b
+        g2b0 = read_light_transforms(json_path, cfg.turntable.center, cfg.turntable.axis, base2_to_base1) # [N, 4, 4]
+        # g2b0 = base2_to_base1.unsqueeze(0) @ g2b
         l2g = torch.eye(4, device='cuda')
         l2g[:3, :3] = R_l2g
         l2g[:3, 3] = t_l2g
