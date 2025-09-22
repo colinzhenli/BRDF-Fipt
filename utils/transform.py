@@ -39,6 +39,23 @@ def build_cw_rotz_from_deg(deg):
                   [0.0, 0.0, 1.0]], dtype=float)
     return Rz
 
+def rodrigues_axis_angle(n: np.ndarray, degrees: float | np.ndarray) -> np.ndarray:
+    """
+    Right-handed CCW rotation about axis n by angle_rad (rad).
+    Supports scalar or vector of angles → returns (..,3,3).
+    """
+    th = np.deg2rad(degrees)
+    n = np.asarray(n, float)
+    n = n / (np.linalg.norm(n) + 1e-15)
+    nx, ny, nz = n
+    K = np.array([[0.0, -nz,  ny],
+                  [nz,  0.0, -nx],
+                  [-ny,  nx,  0.0]], dtype=float)
+    I = np.eye(3)
+    angle = np.asarray(th, float)[..., None, None]
+    Sa = np.sin(angle); Ca = np.cos(angle)
+    return I + Sa * K + (1.0 - Ca) * (K @ K)
+
 def build_rot_about_point(R, p=TURNTABLE_CENTER):
     """
     Return a 4x4 transformation matrix that rotates by rotation matrix R about point p.

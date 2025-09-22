@@ -196,7 +196,7 @@ class RealImageDataset(IterableDataset):
         
         # Use 80% for training
         if self.debug:
-            self.metadata = metadata[575:575+self.debug_num]
+            self.metadata = metadata[2:2+self.debug_num]
         else:
             split_idx = int(0.8 * self.total_images)
             selected_indices = indices[:split_idx]
@@ -474,7 +474,7 @@ class RealValDataset(Dataset):
         
         # Filter out metadata entries with non-existent image files and filtered_puple_ids
         valid_metadata = []
-        filtered_puple_ids = getattr(cfg.data, 'filtered_puple_ids', [])
+        filtered_purple_ids = getattr(cfg.data, 'filtered_purple_ids', [])
         
         for item in metadata:
             # Add "masked_" prefix to filename
@@ -498,7 +498,7 @@ class RealValDataset(Dataset):
                 
             # Skip if overall_id is in filtered_puple_ids
             
-            if int(overall_id) in filtered_puple_ids:
+            if int(overall_id) in filtered_purple_ids:
                 print(f"Warning: overall_id {overall_id} is in filtered_puple_ids, skipping from metadata...")
                 continue
                 
@@ -512,7 +512,7 @@ class RealValDataset(Dataset):
         
         # Split metadata into training and validation sets with fixed random seed
         if self.debug:
-            self.metadata = metadata[575:575+self.debug_num]
+            self.metadata = metadata[2:2+self.debug_num]
         else:
             torch.manual_seed(42)  # Fixed seed for reproducible splits
             indices = torch.randperm(self.total_images)
