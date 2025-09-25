@@ -1,5 +1,5 @@
 type: "LatentTexturedModel"
-latent_dim: 8
+latent_dim: 16
 use_gt_normal: False
 predict_normal: True
 colorful_texture: True
@@ -7,9 +7,10 @@ leaky_relu: True
 texture_resolution: 2048
 hidden_layers: [128, 128, 64, 32, 16]
 # hidden_layers: [256, 256, 128, 64, 32, 16]
-Gaussian_blur: True
+Gaussian_blur: False
 activation: "relu"
 input_channels: 9
+prefilter: True
 
 # config 1:
 larger_latent_dim: True

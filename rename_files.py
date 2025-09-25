@@ -8,12 +8,12 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm  # pip install tqdm
 
 # ==== ONLY CHANGE THIS ====
-ROOT = Path("/media/raid/cloth/New_turntable_Sep15/Lower_exposure_BRDF_recon")  # contains scans_0915/ and scan_log_0915.json
+ROOT = Path("/media/raid/cloth/No_cable_capture_Sep22/Axis_estimation_Sep22")  # contains scans_0915/ and scan_log_0915.json
 # ==========================
 
-SCANS_DIR = ROOT / "scans_0918"
-LOG_IN = ROOT / "scan_log_0918.json"
-LOG_OUT = ROOT / "scan_log_0918_reindexed.json"
+SCANS_DIR = ROOT / "images"
+LOG_IN = ROOT / "scan_log.json"
+LOG_OUT = ROOT / "scan_log_reindexed.json"
 
 # Old filename pattern example: scan-000-0-0-phi1.204_theta0.000.exr
 # First number is scan/camera id, second is light id, third is extra

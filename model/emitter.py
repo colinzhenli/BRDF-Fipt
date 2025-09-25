@@ -576,9 +576,9 @@ class RealAreaEmitter(nn.Module):
         '''
         B = position.shape[0]
         Le=self._directional_distribution(light_dir,light_id)*self.light_radiance.repeat(B,1)*(1.0/(t*t)).unsqueeze(-1)
-        dA_dw=((position-hit_pos)*(position-hit_pos)).sum(dim=-1)/((-light_dir)*self.light_normal[light_id]).sum(dim=-1)
+        # dA_dw=((position-hit_pos)*(position-hit_pos)).sum(dim=-1)/((-light_dir)*self.light_normal[light_id]).sum(dim=-1)
         pdf=1.0/(self.light_radius.expand(B)*self.light_radius.expand(B)*torch.pi)
-        pdf=pdf.unsqueeze(-1)*dA_dw.unsqueeze(-1)
+        pdf=pdf.unsqueeze(-1)
 
         if torch.isnan(Le).any():
             print("Le is nan")
