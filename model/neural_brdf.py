@@ -1286,7 +1286,7 @@ class LatentTexturedModel(LightningModule):
 
         return torch.stack([u, v], dim=-1)     # (N,2)
 
-    def sample_latent_from_texture(self, pos, texture):
+    def sample_latent_from_texture(self, uv, texture):
         """
         Sample latent codes from 2D texture using bilinear interpolation
         Args:
@@ -1294,8 +1294,6 @@ class LatentTexturedModel(LightningModule):
         Returns:
             latent: BxD latent codes
         """
-        # Convert sphere positions to UV coordinates
-        uv = self.compute_uv(pos, 0.8, 0.8)  # Bx2
         
         # Convert UV to grid coordinates for F.grid_sample
         # grid_sample expects coordinates in [-1, 1] range
@@ -1372,7 +1370,7 @@ class LatentTexturedModel(LightningModule):
 
         return v_local
     
-    def eval_brdf(self, gt_params, pos, wi, wo, normal, uv, TBN, latent=None, batch_mask=None):
+    def eval_brdf(self, gt_params, pos, wi, wo, normal, uv, TBN, latent=None, batch_mask=None, footprint_vis=None, dp_du=None, dp_dv=None):
         """
         Evaluate BRDF and pdf after transforming world-space vectors to local space.
         Args:
@@ -1383,6 +1381,9 @@ class LatentTexturedModel(LightningModule):
             normal: Bx3 normal in world space
             latent: optional latent code
             batch_mask: optional batch mask
+            footprint_vis: optional footprint visibility mask
+            dp_du: optional dp_du
+            dp_dv: optional dp_dv
         Returns:
             brdf: Bx3 BRDF values
             pdf: Bx1 probability
@@ -1415,7 +1416,7 @@ class LatentTexturedModel(LightningModule):
             tex = self._blur_latent(self.global_step)
         else:
             tex = self.latent_texture       
-        latent = self.sample_latent_from_texture(pos, tex)
+        latent = self.sample_latent_from_texture(uv, tex)
         # if self.use_gt_normal:
         #     normal = n_world
         if self.predict_normal:
@@ -1603,16 +1604,15 @@ class AnisotropicLatentTexturedModel(LightningModule):
 
         return torch.stack([u, v], dim=-1)     # (N,2)
 
-    def sample_latent_from_texture(self, pos, texture):
+    def sample_latent_from_texture(self, uv, texture):
         """
         Sample latent codes from 2D texture using bilinear interpolation
         Args:
-            pos: Bx3 positions on sphere surface
+            uv: Bx2 UV coordinates
         Returns:
             latent: BxD latent codes
         """
         # Convert sphere positions to UV coordinates
-        uv = self.compute_uv(pos, 0.8, 0.8)  # Bx2
         
         # Convert UV to grid coordinates for F.grid_sample
         # grid_sample expects coordinates in [-1, 1] range
@@ -1681,7 +1681,7 @@ class AnisotropicLatentTexturedModel(LightningModule):
 
         return v_local
     
-    def eval_brdf(self, gt_params, pos, wi, wo, normal,uv, TBN, latent=None, batch_mask=None):
+    def eval_brdf(self, gt_params, pos, wi, wo, normal,uv, TBN, latent=None, batch_mask=None, footprint_vis=None, dp_du=None, dp_dv=None):
         """
         Evaluate BRDF and pdf after transforming world-space vectors to local space.
         Args:
@@ -1701,11 +1701,11 @@ class AnisotropicLatentTexturedModel(LightningModule):
         NoV = (wo*normal).sum(-1,keepdim=True)
 
         
-        if self.training and self.Gaussian_blur:
+        if self.Gaussian_blur:
             tex = self._blur_latent(self.global_step)
         else:
             tex = self.latent_texture       
-        latent = self.sample_latent_from_texture(pos, tex)
+        latent = self.sample_latent_from_texture(uv, tex)
         if self.gt_frame:
             """ load gt frame for reference """
             tangent = None

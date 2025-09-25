@@ -45,12 +45,12 @@ def load_camera_turntable_light_metadata(json_path):
             'euler': item['euler']
         }
         
-        # Store emitter metadata (light info)
-        if str(light_id) not in emitter_metadata:
-            emitter_metadata[str(light_id)] = {
-                'position': [pos / 1000.0 for pos in item['position_light']],
-                'rotation_matrix': item['rotation_matrix_light']
-            }
+        # # Store emitter metadata (light info)
+        # if str(light_id) not in emitter_metadata:
+        #     emitter_metadata[str(light_id)] = {
+        #         'position': [pos / 1000.0 for pos in item['position_light']],
+        #         'rotation_matrix': item['rotation_matrix_light']
+        #     }
         
         # Create metadata entry
         metadata.append({
@@ -61,7 +61,7 @@ def load_camera_turntable_light_metadata(json_path):
             'turn_angle': turn_angle
         })
     
-    return metadata, camera_metadata, emitter_metadata
+    return metadata, camera_metadata, None
 
 def load_camera_metadata(json_path):
     """

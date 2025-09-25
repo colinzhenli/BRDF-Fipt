@@ -182,85 +182,102 @@ class BRDFTrainer(pl.LightningModule):
             return torch.ones(H, W, 6)
     
     def save_pbr_texture(self, output_dir, batch_idx, b):
-        # Check if material has prefilter option
-        if self.hparams.material.prefliter:
-            # Save the finest level PBR texture when using prefilter
-            pbr_texture_data = self.material.pbr_texture.data[0]
+        if self.hparams.material.type == "AnisotropicLatentTexturedModel": # Save normal and tangent map
+            # Extract normal and tangent from latent texture (last 6 dimensions)
+            latent_texture = self.material.latent_texture.data[0]  # [latent_dim, H, W]
             
-            # Save albedo map (channels 0-3)
-            pbr_albedo_map = pbr_texture_data[:, :, 0:3]
+            # Last 6 dimensions: normal (3) and tangent (3)
+            normal_map = latent_texture[-6:-3, :, :].permute(1, 2, 0)  # [H, W, 3]
+            tangent_map = latent_texture[-3:, :, :].permute(1, 2, 0)   # [H, W, 3]
+            
             torchvision.utils.save_image(
-                pbr_albedo_map.permute(2, 0, 1),
-                os.path.join(output_dir, f'pbr_albedo_map_{batch_idx}_{b}.png')
+                normal_map.permute(2, 0, 1),
+                os.path.join(output_dir, f'normal_map_{batch_idx}_{b}.png')
             )
-            
-            # Save normal map (channels 10-13)
-            pbr_normal_map = pbr_texture_data[:, :, 10:13]
             torchvision.utils.save_image(
-                pbr_normal_map.permute(2, 0, 1),
-                os.path.join(output_dir, f'pbr_normal_map_{batch_idx}_{b}.png')
-            )
-            
-            # save height map
-            pbr_height_map = pbr_texture_data[:, :, 13:14]
-            torchvision.utils.save_image(
-                pbr_height_map.permute(2, 0, 1),
-                os.path.join(output_dir, f'pbr_height_map_{batch_idx}_{b}.png')
-            )
-            
-            # Save roughness map (channel 7)
-            pbr_roughness_map = pbr_texture_data[:, :, 7:8]
-            torchvision.utils.save_image(
-                pbr_roughness_map.permute(2, 0, 1),
-                os.path.join(output_dir, f'pbr_roughness_map_{batch_idx}_{b}.png')
-            )
-            
-            # Save metallic map (channel 8)
-            pbr_metallic_map = pbr_texture_data[:, :, 8:9]
-            torchvision.utils.save_image(
-                pbr_metallic_map.permute(2, 0, 1),
-                os.path.join(output_dir, f'pbr_metallic_map_{batch_idx}_{b}.png')
+                tangent_map.permute(2, 0, 1),
+                os.path.join(output_dir, f'tangent_map_{batch_idx}_{b}.png')
             )
         else:
-            # Save individual mipmap textures when not using prefilter
-            if hasattr(self.material, 'mipmap_textures'):
-                for level, mipmap_texture in enumerate(self.material.mipmap_textures):
-                    texture_data = mipmap_texture.data[0]
-                    
-                    # Save albedo mipmap
-                    mipmap_albedo = texture_data[:, :, 0:3]
-                    torchvision.utils.save_image(
-                        mipmap_albedo.permute(2, 0, 1),
-                        os.path.join(output_dir, f'mipmap_albedo_level_{level}_{batch_idx}_{b}.png')
-                    )
-                    
-                    # Save normal mipmap
-                    mipmap_normal = texture_data[:, :, 10:13]
-                    torchvision.utils.save_image(
-                        mipmap_normal.permute(2, 0, 1),
-                        os.path.join(output_dir, f'mipmap_normal_level_{level}_{batch_idx}_{b}.png')
-                    )
-                    
-                    # Save height mipmap
-                    mipmap_height = texture_data[:, :, 13:14]
-                    torchvision.utils.save_image(
-                        mipmap_height.permute(2, 0, 1),
-                        os.path.join(output_dir, f'mipmap_height_map_level_{level}_{batch_idx}_{b}.png')
-                    )
-                    
-                    # Save roughness mipmap
-                    mipmap_roughness = texture_data[:, :, 7:8]
-                    torchvision.utils.save_image(
-                        mipmap_roughness.permute(2, 0, 1),
-                        os.path.join(output_dir, f'mipmap_roughness_level_{level}_{batch_idx}_{b}.png')
-                    )
-                    
-                    # Save metallic mipmap
-                    mipmap_metallic = texture_data[:, :, 8:9]
-                    torchvision.utils.save_image(
-                        mipmap_metallic.permute(2, 0, 1),
-                        os.path.join(output_dir, f'mipmap_metallic_level_{level}_{batch_idx}_{b}.png')
-                    )
+            # Check if material has prefilter option
+            if self.hparams.material.prefliter:
+                # Save the finest level PBR texture when using prefilter
+                pbr_texture_data = self.material.pbr_texture.data[0]
+                
+                # Save albedo map (channels 0-3)
+                pbr_albedo_map = pbr_texture_data[:, :, 0:3]
+                torchvision.utils.save_image(
+                    pbr_albedo_map.permute(2, 0, 1),
+                    os.path.join(output_dir, f'pbr_albedo_map_{batch_idx}_{b}.png')
+                )
+                
+                # Save normal map (channels 10-13)
+                pbr_normal_map = pbr_texture_data[:, :, 10:13]
+                torchvision.utils.save_image(
+                    pbr_normal_map.permute(2, 0, 1),
+                    os.path.join(output_dir, f'pbr_normal_map_{batch_idx}_{b}.png')
+                )
+                
+                # save height map
+                pbr_height_map = pbr_texture_data[:, :, 13:14]
+                torchvision.utils.save_image(
+                    pbr_height_map.permute(2, 0, 1),
+                    os.path.join(output_dir, f'pbr_height_map_{batch_idx}_{b}.png')
+                )
+                
+                # Save roughness map (channel 7)
+                pbr_roughness_map = pbr_texture_data[:, :, 7:8]
+                torchvision.utils.save_image(
+                    pbr_roughness_map.permute(2, 0, 1),
+                    os.path.join(output_dir, f'pbr_roughness_map_{batch_idx}_{b}.png')
+                )
+                
+                # Save metallic map (channel 8)
+                pbr_metallic_map = pbr_texture_data[:, :, 8:9]
+                torchvision.utils.save_image(
+                    pbr_metallic_map.permute(2, 0, 1),
+                    os.path.join(output_dir, f'pbr_metallic_map_{batch_idx}_{b}.png')
+                )
+            else:
+                # Save individual mipmap textures when not using prefilter
+                if hasattr(self.material, 'mipmap_textures'):
+                    for level, mipmap_texture in enumerate(self.material.mipmap_textures):
+                        texture_data = mipmap_texture.data[0]
+                        
+                        # Save albedo mipmap
+                        mipmap_albedo = texture_data[:, :, 0:3]
+                        torchvision.utils.save_image(
+                            mipmap_albedo.permute(2, 0, 1),
+                            os.path.join(output_dir, f'mipmap_albedo_level_{level}_{batch_idx}_{b}.png')
+                        )
+                        
+                        # Save normal mipmap
+                        mipmap_normal = texture_data[:, :, 10:13]
+                        torchvision.utils.save_image(
+                            mipmap_normal.permute(2, 0, 1),
+                            os.path.join(output_dir, f'mipmap_normal_level_{level}_{batch_idx}_{b}.png')
+                        )
+                        
+                        # Save height mipmap
+                        mipmap_height = texture_data[:, :, 13:14]
+                        torchvision.utils.save_image(
+                            mipmap_height.permute(2, 0, 1),
+                            os.path.join(output_dir, f'mipmap_height_map_level_{level}_{batch_idx}_{b}.png')
+                        )
+                        
+                        # Save roughness mipmap
+                        mipmap_roughness = texture_data[:, :, 7:8]
+                        torchvision.utils.save_image(
+                            mipmap_roughness.permute(2, 0, 1),
+                            os.path.join(output_dir, f'mipmap_roughness_level_{level}_{batch_idx}_{b}.png')
+                        )
+                        
+                        # Save metallic mipmap
+                        mipmap_metallic = texture_data[:, :, 8:9]
+                        torchvision.utils.save_image(
+                            mipmap_metallic.permute(2, 0, 1),
+                            os.path.join(output_dir, f'mipmap_metallic_level_{level}_{batch_idx}_{b}.png')
+                        )
 
     def loss_function(self, rgbs, rgbs_gt, vis, weighted_pdf=None):
         # Calculate per-pixel loss

@@ -42,8 +42,8 @@ mesh:
   path: 
   rectangle:
     center: [0.14511, -0.2228, -0.06]
-    width: 0.14
-    length: 0.202
+    width: 0.24
+    length: 0.31
 
 emitter:
   type: "realarea"
@@ -52,22 +52,23 @@ emitter:
   radius: 0.007 # value from specs
   fwhm_deg: 115.0 # full width at half maximum angle(value for specs)
   positions: [0.0, 0.0, 0.0] # to be updated
-  radiance: [80.0, 80.0, 80.0] # largest radiance at 90 degree(to be updated)
+  radiance: [10.0, 10.0, 10.0] # largest radiance at 90 degree(to be updated)
   turntable:
-    center: [0.15054801, -0.22801754, 0.21486147]
+    # center: [0.15054801, -0.22801754, 0.21486147]
+    center: [0.1638, -0.110, -0.06]
     axis: [-0.00553423, 0.02421833, 0.99969137]
   R_l2g: [[1.0,  0.0,  0.0],
           [0.0,  1.0,  0.0],
           [0.0,  0.0,  1.0]]
-  t_l2g: [0.0, 0.102, -0.02112]
+  t_l2g: [0.0, -0.102, 0.02112]
   base2_to_base1: [[ 9.99999959e-01,  2.33227594e-04, -1.69051819e-04,  7.22042468e-03],
                   [-2.36740680e-04,  9.99777598e-01, -2.10878871e-02,  8.26339062e-03],
                   [ 1.64095944e-04,  2.10879262e-02,  9.99777611e-01,  3.93500345e-03],
                   [ 0.00000000e+00,  0.00000000e+00,  0.00000000e+00,  1.00000000e+00]]
 spp:
-  train: 32
-  val: 32
-  test: 32
-SPP_chunk: 8
+  train: 16
+  val: 16
+  test: 16
+SPP_chunk: 4
 
 resolution: [2048, 2048]
