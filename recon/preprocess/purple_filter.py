@@ -68,7 +68,7 @@ def delete_purple_images(folder_path):
             deleted_count += 1
 
     # Save filtered IDs to JSON file
-    json_path = os.path.join(folder_path, "filtered_purple_ids_2.json")
+    json_path = os.path.join(folder_path, "filtered_purple_ids.json")
     with open(json_path, 'w') as f:
         json.dump(sorted(list(set(filtered_ids))), f, indent=2)
     
@@ -80,7 +80,7 @@ from omegaconf import DictConfig
 
 @hydra.main(version_base=None, config_path="../../config", config_name="config")
 def main(cfg: DictConfig):
-    delete_purple_images(os.path.join(cfg.exp_folder, "Lower_exposure_BRDF_recon/masks", "filtered_purple_ldr"))
+    delete_purple_images(os.path.join(cfg.exp_folder, "masks", "filtered_purple_ldr"))
 
 if __name__ == "__main__":
     main()

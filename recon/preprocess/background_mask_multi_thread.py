@@ -7,8 +7,9 @@ from PIL import Image
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
 os.environ["OPENCV_IO_ENABLE_OPENEXR"] = "1"
-ROTATION_CENTER = (0.15054801, -0.22801754, 0.21486147)
-ROTATION_AXIS = (-0.00553423, 0.02421833, 0.99969137)
+NUM_WORKERS = 16
+INITIAL_ANGLE_DEG = 0.0
+
 # Project rotation center to plane z = -0.055 along the rotation axis
 def project_center_to_plane(center, axis, plane_z):
     """
@@ -37,15 +38,6 @@ def project_center_to_plane(center, axis, plane_z):
     projected_center = center + t * axis_norm
     
     return projected_center
-
-# Project the rotation center to the plane z = -0.055
-ROTATION_CENTER = project_center_to_plane(ROTATION_CENTER, ROTATION_AXIS, -0.055)
-print(f"Projected rotation center: {ROTATION_CENTER}")
-RECT_CENTER = (0.14511, -0.2228, -0.055)
-# RECT_SIZE = (0.28, 0.35) # 420x297 mm
-RECT_SIZE = (0.26, 0.33) # 420x297 mm
-INITIAL_ANGLE_DEG = -1.0
-NUM_WORKERS = 16
 
 # Add project root to Python path
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -497,9 +489,27 @@ from omegaconf import DictConfig
 
 @hydra.main(version_base=None, config_path="../../config", config_name="config")
 def main(cfg: DictConfig):
-    image_folder = os.path.join(cfg.exp_folder, "Lower_exposure_BRDF_recon", "images")
-    output_folder = os.path.join(cfg.exp_folder, "Lower_exposure_BRDF_recon", "masks")
-    json_path = os.path.join(cfg.exp_folder, "Lower_exposure_BRDF_recon", "scan_log_0918_reindexed.json")
+    global ROTATION_CENTER, ROTATION_AXIS, RECT_CENTER, RECT_SIZE, INITIAL_ANGLE_DEG, NUM_WORKERS
+    
+    # Initialize global variables from config
+    if hasattr(cfg.renderer, 'emitter') and hasattr(cfg.renderer.emitter, 'turntable'):
+        turntable_config = cfg.renderer.emitter.turntable
+        ROTATION_CENTER = tuple(turntable_config.center)
+        ROTATION_AXIS = tuple(turntable_config.axis)
+    
+    if hasattr(cfg.renderer, 'mesh') and hasattr(cfg.renderer.mesh, 'rectangle'):
+        rect_config = cfg.renderer.mesh.rectangle
+        # RECT_CENTER = tuple(rect_config.center)
+        RECT_CENTER = ROTATION_CENTER
+        RECT_SIZE = (rect_config.width, rect_config.length)
+    
+    # Project the rotation center to the plane z = RECT_CENTER[2]
+    ROTATION_CENTER = project_center_to_plane(ROTATION_CENTER, ROTATION_AXIS, RECT_CENTER[2])
+    print(f"Projected rotation center: {ROTATION_CENTER}")
+    
+    image_folder = os.path.join(cfg.exp_folder, "images")
+    output_folder = os.path.join(cfg.exp_folder, "masks")
+    json_path = os.path.join(cfg.exp_folder, "scan_log_reindexed.json")
 
     # threads only
     num_workers = min(NUM_WORKERS, os.cpu_count() or NUM_WORKERS)

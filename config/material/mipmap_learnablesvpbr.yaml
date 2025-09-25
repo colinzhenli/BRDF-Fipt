@@ -16,7 +16,7 @@ normal_map: True # whether use normal map or sphere normals
 scale_factor: 1.0 # scale factor for pbr maps
 prefliter: True
 mipmap_levels: 4
-base_footprint: 2e-5
+base_footprint: 1e-5
 use_height_map: False
 
 pbr_texture_path: '/mnt/data/colin/colin/BRDF-Fipt/fabric_pattern_07_4k/textures'
