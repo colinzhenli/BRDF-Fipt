@@ -369,7 +369,7 @@ class MipmapLearnableSvPBRBRDF(nn.Module):
 
         kd = albedo*(1-metallic)
         ks = 0.04*(1-metallic) + albedo*metallic
-
+    
         G = G_Smith(NoV,NoL,roughness)
         F = fresnelSchlick(VoH,ks)
         brdf_diff = kd/math.pi*NoL

@@ -5,21 +5,11 @@ import json
 import argparse
 import numpy as np
 from pathlib import Path
+import hydra
+from omegaconf import DictConfig
 
 # COLMAP helpers (same ones you already use)
 from read_write_model import read_model, qvec2rotmat
-
-# -------------------- constants (your values kept) --------------------
-
-ROTATION_CENTER = (0.15054801, -0.22801754, 0.21486147)
-ROTATION_AXIS = (-0.00553423, 0.02421833, 0.99969137)
-R_CAMERA2GRIPPER = np.array(
-    [[ 6.28318646e-05,  9.99760635e-01,  2.18784947e-02],
-     [-1.66959884e-04,  2.18785049e-02, -9.99760623e-01],
-     [-9.99999984e-01,  5.91639931e-05,  1.68294587e-04]], dtype=float
-)
-# meters:
-t_CAMERA2GRIPPER = np.array([3.28324263e-02, 9.41618540e-03, 2.63816395e-02], dtype=float)
 
 # -------------------- small linear-algebra helpers --------------------
 
@@ -110,6 +100,27 @@ def find_matching_entry(fname, scan_log):
             return i
     raise ValueError(f"No match for scan_id={scan_id}")
 
+def print_unmatched_scan_ids(colmap_c2w_dict, scan_log):
+    """
+    Print scan_ids that are in scan_log but not found in any COLMAP filename.
+    """
+    # Extract all scan_ids from filenames
+    matched_scan_ids = set()
+    for fname in colmap_c2w_dict.keys():
+        base = fname.replace(".png", "").replace(".jpg", "")
+        m = re.search(r'scan-(\d+)', base)
+        if m:
+            matched_scan_ids.add(int(m.group(1)))
+    
+    # Find scan_ids in scan_log that weren't matched
+    scan_log_ids = set(int(e["scan_id"]) for e in scan_log)
+    unmatched_ids = scan_log_ids - matched_scan_ids
+    
+    if unmatched_ids:
+        print(f"Scan IDs in scan_log but not in COLMAP filenames: {sorted(unmatched_ids)}")
+    else:
+        print("All scan_log IDs were matched in COLMAP filenames.")
+
 # -------------------- rotation undo and pose building --------------------
 
 def rotated_c2w(json_entry, R_c2g, t_c2g, rotation_center, rotation_axis):
@@ -137,7 +148,7 @@ def rotated_c2w(json_entry, R_c2g, t_c2g, rotation_center, rotation_axis):
 
 # -------------------- your matching function (unchanged) --------------------
 
-def load_robot_poses_c2w0(scan_log_path, images):
+def load_robot_poses_c2w0(scan_log_path, images, R_c2g, t_c2g, rotation_center, rotation_axis):
     """
     Load robot poses and match to COLMAP poses from images.txt via φ/θ in the filename.
     (Matching uses your scan-(light)-(camera) scheme; not θ.)
@@ -159,25 +170,25 @@ def load_robot_poses_c2w0(scan_log_path, images):
 
         # Robot camera pose in 0-angle world (using current TURNTABLE_CENTER)
         entry = scan_log[idx]
-        T = rotated_c2w(entry, R_CAMERA2GRIPPER, t_CAMERA2GRIPPER, ROTATION_CENTER, ROTATION_AXIS)
+        T = rotated_c2w(entry, R_c2g, t_c2g, rotation_center, rotation_axis)
         robot_poses.append(T)
         scan_id.append(idx)
 
+    print_unmatched_scan_ids(colmap_c2w_dict, scan_log)
+    
     print(f"Matched {len(robot_poses)}/{len(colmap_c2w_dict)} frames.")
     return robot_poses, cam_c2w, scan_id
 
 
 # -------------------- world->base estimation (your pipeline kept) --------------------
 
-def estimate_world2base(scan_log_path, images, solve_center_xy=True):
+def estimate_world2base(scan_log_path, images, R_c2g, t_c2g, rotation_center, rotation_axis, solve_center_xy=True):
     """
     Returns T_BW: world->base Sim3 mapping COLMAP world to robot base.
     If solve_center_xy=True, first refines ROTATION_CENTER[0:2] from data.
     """
-    global ROTATION_CENTER
-
     # Now build your matched robot & colmap poses using the (possibly) updated center
-    robot_T, cam_c2w, scan_id = load_robot_poses_c2w0(scan_log_path, images)
+    robot_T, cam_c2w, scan_id = load_robot_poses_c2w0(scan_log_path, images, R_c2g, t_c2g, rotation_center, rotation_axis)
 
     # collect centres
     cam_centres_base, cam_centres_world = [], []
@@ -238,23 +249,30 @@ def save_camera_log_from_colmap(camera_c2w, T_BW, scan_id, output_path):
 
 # -------------------- main --------------------
 
-def main(scan_log_path, images, mesh_path, camera_log_path):
-    T_BW, cam_c2w, scan_id = estimate_world2base(scan_log_path, images)
+def main_process(scan_log_path, images, mesh_path, camera_log_path, cfg):
+    # Extract parameters from config
+    R_c2g = np.array(cfg.camera.R_c2g)
+    t_c2g = np.array(cfg.camera.t_c2g)
+    rotation_center = np.array(cfg.emitter.turntable.center)
+    rotation_axis = np.array(cfg.emitter.turntable.axis)
+    
+    T_BW, cam_c2w, scan_id = estimate_world2base(scan_log_path, images, R_c2g, t_c2g, rotation_center, rotation_axis)
     if mesh_path is not None:
         transform_mesh_to_base(mesh_path, T_BW, output_path=str(Path(mesh_path).with_name(Path(mesh_path).stem + "_transformed.ply")))
     save_camera_log_from_colmap(cam_c2w, T_BW, scan_id, camera_log_path)
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Transform COLMAP world to robot base; optional center solve.")
-    parser.add_argument("--scan_log_path", type=str, required=True, help="Path to robot scan log JSON")
-    parser.add_argument("--mesh_path", type=str, required=False, help="Path to input mesh (.ply)")
-    parser.add_argument("--model_path", type=str, required=True, help="Path to COLMAP sparse model dir")
-    args = parser.parse_args()
-
-    scan_log_path = args.scan_log_path
-    mesh_path     = None if args.mesh_path == "None" else args.mesh_path
+@hydra.main(version_base=None, config_path="../../config/renderer", config_name="realcapture_area_emitter")
+def main(cfg: DictConfig) -> None:
+    # Hard-coded arguments from launch.json
+    scan_log_path = "/media/raid/cloth/No_cable_capture_Sep22/BRDF_recon_Sep30/scan_log.json"
+    mesh_path = None  # "None" from launch.json
+    model_path = "/media/raid/cloth/No_cable_capture_Sep22/BRDF_recon_Sep30/Controlled_light/ldr/sparse"
+    
     camera_log_path = str(Path(scan_log_path).parent / "rotated_camera.json")
 
-    cameras, images = read_model(args.model_path, ext=".bin")
+    cameras, images = read_model(model_path, ext=".bin")
 
-    main(scan_log_path, images, mesh_path, camera_log_path)
+    main_process(scan_log_path, images, mesh_path, camera_log_path, cfg)
+
+if __name__ == "__main__":
+    main()
