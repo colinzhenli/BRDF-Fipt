@@ -1493,12 +1493,21 @@ class AnisotropicLatentTexturedModel(LightningModule):
         self.predict_frame = cfg.predict_frame
         self.gt_frame = cfg.gt_frame
         self.anisotropic = True
+        self.neural_geometry = cfg.neural_geometry.enable
+        self.geometry_latent_dim = cfg.neural_geometry.latent_dim
+        self.local_wi_wo = cfg.neural_geometry.local_wi_wo
+        self.neural_geometry_pos_enc = cfg.neural_geometry.positional_encoding
+        self.recompute_frame = cfg.neural_geometry.recompute_frame
         if self.colorful_texture and self.larger_latent_dim:
             total_latent_dim = self.latent_dim * 3
         else:
             total_latent_dim = self.latent_dim
         if self.predict_frame:
             total_latent_dim = total_latent_dim + 6
+            
+        if self.neural_geometry:
+            total_latent_dim = total_latent_dim + self.geometry_latent_dim # 8 for neural geometry latent
+
         # self.pbr_texture = load_pbr_texture('/mnt/data/colin/colin/BRDF-Fipt/denim_fabric_03_4k/textures').unsqueeze(0).cuda()
         
         
@@ -1564,6 +1573,20 @@ class AnisotropicLatentTexturedModel(LightningModule):
             
             self.mlp = nn.Sequential(*layers)
 
+        # Build geometry decoder if neural geometry is enabled
+        if self.neural_geometry:
+            layers = []
+            prev_dim = encoded_input_dim + self.geometry_latent_dim if cfg.neural_geometry.positional_encoding else 6 + self.geometry_latent_dim
+            for hidden_dim in cfg.neural_geometry.hidden_layers:
+                layers.append(nn.Linear(prev_dim, hidden_dim))
+                if cfg.activation.lower() == "relu":
+                    layers.append(nn.ReLU())
+                prev_dim = hidden_dim
+                
+            layers.append(nn.Linear(prev_dim, cfg.neural_geometry.output_channels))
+            layers.append(nn.LeakyReLU(0.2))
+            
+            self.geometry_decoder = nn.Sequential(*layers)
         # Initialize proxy BRDF for importance sampling
         self.proxy_brdf = ProxyPBRBRDF()  # Default roughness
 
@@ -1777,8 +1800,7 @@ class AnisotropicLatentTexturedModel(LightningModule):
         if self.predict_frame:
             # Extract predicted normal and tangent from latent
             predicted_normal = latent[..., -6:-3]  # Last 6-3 dimensions for normal
-            predicted_tangent = latent[..., -3:]   # Last 3 dimensions for tangent
-            
+            predicted_tangent = latent[..., -3:]   # Last 3 dimensions for tangent       
             # Normalize predicted vectors
             predicted_normal = torch.nn.functional.normalize(predicted_normal, dim=-1)
             predicted_tangent = torch.nn.functional.normalize(predicted_tangent, dim=-1)
@@ -1792,7 +1814,36 @@ class AnisotropicLatentTexturedModel(LightningModule):
         wo_local = self.world_to_local(wo, predicted_normal, predicted_tangent)
         local_normal = torch.zeros_like(wi_local)
         local_normal[..., 2] = 1.0  # Normal is always (0,0,1) in local space
-
+        if self.neural_geometry:
+            geometry_latent = latent[..., -6-self.geometry_latent_dim:-6]
+            if self.local_wi_wo:
+                if self.neural_geometry_pos_enc:
+                    wi_local_enc = self.sh_encoder(wi_local)
+                    wo_local_enc = self.sh_encoder(wo_local)
+                    uv_offset = self.geometry_decoder(torch.cat([wi_local_enc, wo_local_enc], dim=-1))
+                else:
+                    uv_offset = self.geometry_decoder(torch.cat([geometry_latent, wi_local, wo_local], dim=-1))
+            else:
+                if self.neural_geometry_pos_enc:
+                    wi_enc = self.sh_encoder(wi)
+                    wo_enc = self.sh_encoder(wo)
+                    uv_offset = self.geometry_decoder(torch.cat([wi_enc, wo_enc], dim=-1))
+                else:
+                    uv_offset = self.geometry_decoder(torch.cat([geometry_latent, wi, wo], dim=-1))
+            uv = uv + uv_offset
+            latent = self.sample_latent_from_texture(uv, tex)
+            
+            if self.recompute_frame: # recompute frame use new uv
+                predicted_normal = latent[..., -6:-3]  # Last 6-3 dimensions for normal
+                predicted_tangent = latent[..., -3:]   # Last 3 dimensions for tangent       
+                predicted_normal = torch.nn.functional.normalize(predicted_normal, dim=-1)
+                predicted_tangent = torch.nn.functional.normalize(predicted_tangent, dim=-1)
+                predicted_tangent = predicted_tangent - torch.sum(predicted_tangent * predicted_normal, dim=-1, keepdim=True) * predicted_normal
+                predicted_tangent = torch.nn.functional.normalize(predicted_tangent, dim=-1)   
+                wi_local = self.world_to_local(wi, predicted_normal, predicted_tangent)
+                wo_local = self.world_to_local(wo, predicted_normal, predicted_tangent)
+                local_normal = torch.zeros_like(wi_local)
+                local_normal[..., 2] = 1.0  # Normal is always (0,0,1) in local space
         # Split latent into three parts for RGB channels
         if self.colorful_texture:
             if self.larger_latent_dim:

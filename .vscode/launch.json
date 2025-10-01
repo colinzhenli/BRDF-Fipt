@@ -17,9 +17,6 @@
         //         "CUDA_VISIBLE_DEVICES": "3"
         //     },
         //     "args": [
-        //         "--scan_log_path", "/media/raid/cloth/New_turntable_Sep15/Lower_exposure_BRDF_recon/scan_log_0918_reindexed.json",
-        //         "--mesh_path", "None",
-        //         "--model_path", "/media/raid/cloth/New_turntable_Sep15/Lower_exposure_BRDF_recon/undistorted/sparse/0",
         //         ]
         // },
 
@@ -34,7 +31,6 @@
         //         "CUDA_VISIBLE_DEVICES": "3"
         //     },
         //     "args": [
-        //         "--model_path", "/media/raid/cloth/New_turntable_Sep15/Axis_est_Sep14/sparse/0",
         //         ]
         // },
 
@@ -57,24 +53,24 @@
         //     ]
         // },
 
-        // {
-        //     "name": "Python: Current File",
-        //     "type": "python",
-        //     "request": "launch",
-        //     "program": "main.py",
-        //     "console": "integratedTerminal",
-        //     "justMyCode": true,
-        //     "env": {
-        //         "CUDA_VISIBLE_DEVICES": "3"
-        //     },
-        //     "args": [
-        //         "dataset_folder=/media/raid/cloth/New_turntable_Sep15/Lower_exposure_BRDF_recon/masks/masked_images_debayered",
-        //         "renderer=realcapture_area_emitter",
-        //         "material=mipmap_learnablesvpbr",
-        //         "experiment_name=Single_image_overfit_debug_1",
-        //         // "model.ckpt_path=/media/raid/cloth/output/BRDF/real/All-image_Local-normal_Learnable-light_PBR-brdf_BRDF-recon_run_1/training/model_0.20_0.20/last.ckpt"
-        //     ]
-        // }
+        {
+            "name": "Python: Current File",
+            "type": "python",
+            "request": "launch",
+            "program": "main.py",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "env": {
+                "CUDA_VISIBLE_DEVICES": "3"
+            },
+            "args": [
+                "dataset_folder=/media/raid/cloth/No_cable_capture_Sep22/BRDF_recon_Sep30/Controlled_light/hdr",
+                "renderer=realcapture_area_emitter",
+                "material=ani_latent_texture_model",
+                "experiment_name=Checkerboard_recon_debug_Single_image_Correct-camera_Neural-geometry_debug_2",
+                // "model.ckpt_path=/media/raid/cloth/output/BRDF/real/All-image_Local-normal_Learnable-light_PBR-brdf_BRDF-recon_run_1/training/model_0.20_0.20/last.ckpt"
+            ]
+        }
 
         // {
         //     "name": "Python: Current File",
@@ -104,29 +100,29 @@
     //     ]
     // },
 
-    {
-        "name": "Debug Debayering Multi Thread",
-        "type": "python",
-        "request": "launch",
-        "program": "./recon/preprocess/debayering_mutli_thread.py",
-        "console": "integratedTerminal",
-        "justMyCode": true,
-        "env": {
-            "CUDA_VISIBLE_DEVICES": "0"
-        },
-        "args": [
-            "--input",
-            "/media/raid/cloth/No_cable_capture_Sep22/Axis_estimation_Sep22/masks/masked_images",
-            "--output",
-            "/media/raid/cloth/No_cable_capture_Sep22/Axis_estimation_Sep22/masks/masked_images_debayered",
-            "--pattern",
-            "RGGB",
-            "--jobs",
-            "16",
-            "--format",
-            "png"
-        ]
-    },
+    // {
+    //     "name": "Debug Debayering Multi Thread",
+    //     "type": "python",
+    //     "request": "launch",
+    //     "program": "./recon/preprocess/debayering_mutli_thread.py",
+    //     "console": "integratedTerminal",
+    //     "justMyCode": true,
+    //     "env": {
+    //         "CUDA_VISIBLE_DEVICES": "0"
+    //     },
+    //     "args": [
+    //         "--input",
+    //         "/media/raid/cloth/No_cable_capture_Sep22/Axis_estimation_Sep22/masks/masked_images",
+    //         "--output",
+    //         "/media/raid/cloth/No_cable_capture_Sep22/Axis_estimation_Sep22/masks/masked_images_debayered",
+    //         "--pattern",
+    //         "RGGB",
+    //         "--jobs",
+    //         "16",
+    //         "--format",
+    //         "png"
+    //     ]
+    // },
     ]
 
 }
