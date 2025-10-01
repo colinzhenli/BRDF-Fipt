@@ -244,6 +244,13 @@ def _process_one_image_task(task):
     try:
         # Build per-frame extrinsics
         c2w = get_c2w_from_robot_pose(camera_info, R_c2g, t_c2g)
+        # Debug: Use hardcoded c2w matrix
+        # c2w = np.array([
+        #     [-0.02085261,  0.36318968,  0.93148184,  0.80234801660],
+        #     [-0.99967522,  0.00607778, -0.02474899, -0.10792496141],
+        #     [-0.01464992, -0.93169540,  0.36294499,  0.19784899404],
+        #     [ 0.00000000,  0.00000000,  0.00000000,    1.00000000]
+        # ], dtype=np.float64)
         w2c = np.linalg.inv(c2w)
         # Convert from OpenGL to OpenCV coordinate system
         # OpenGL: +Y up, -Z forward, +X right
@@ -261,7 +268,6 @@ def _process_one_image_task(task):
 
         # Paths & ext
         image_path = os.path.join(image_folder, filename)
-        ext = os.path.splitext(filename)[1].lower()
 
         # ---- Read image (use OpenCV for EXR as requested) ----
         image = cv2.imread(image_path, cv2.IMREAD_UNCHANGED)
@@ -278,43 +284,31 @@ def _process_one_image_task(task):
             turn_angle
         ).astype(np.uint8)
 
-        # ---- Apply mask ----
-        if image.ndim == 2:
-            # grayscale
-            if ext == ".exr":
-                masked = image.astype(np.float32) * mask.astype(np.float32)
-            else:
-                masked = np.where(mask == 1, image, 0)
-        else:
-            # color
-            if ext == ".exr":
-                masked = image.astype(np.float32) * mask[..., None].astype(np.float32)
-            else:
-                masked = np.where(mask[..., None] == 1, image, 0)
+        masked = np.where(mask[..., None] == 1, image, 0)
 
         # ---- Project rectangle center and rotation center to image coordinates ----
         # Rectangle center (rotated)
-        th = np.deg2rad(turn_angle)
-        c, s = np.cos(th), np.sin(th)
-        Rz = np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]], dtype=np.float64)
+        # th = np.deg2rad(turn_angle)
+        # c, s = np.cos(th), np.sin(th)
+        # Rz = np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]], dtype=np.float64)
         
-        # Rotate rectangle center about rotation center
-        rect_center_vec = np.array(RECT_CENTER) - np.array(ROTATION_CENTER)
-        rotated_rect_center_vec = Rz @ rect_center_vec
-        rotated_rect_center = np.array(ROTATION_CENTER) + rotated_rect_center_vec
+        # # Rotate rectangle center about rotation center
+        # rect_center_vec = np.array(RECT_CENTER) - np.array(ROTATION_CENTER)
+        # rotated_rect_center_vec = Rz @ rect_center_vec
+        # rotated_rect_center = np.array(ROTATION_CENTER) + rotated_rect_center_vec
         
-        # Project to image coordinates
-        rect_center_h = np.array([rotated_rect_center[0], rotated_rect_center[1], rotated_rect_center[2], 1.0])
-        rotation_center_h = np.array([ROTATION_CENTER[0], ROTATION_CENTER[1], ROTATION_CENTER[2], 1.0])
+        # # Project to image coordinates
+        # rect_center_h = np.array([rotated_rect_center[0], rotated_rect_center[1], rotated_rect_center[2], 1.0])
+        # rotation_center_h = np.array([ROTATION_CENTER[0], ROTATION_CENTER[1], ROTATION_CENTER[2], 1.0])
         
-        rect_center_cam = w2c @ rect_center_h
-        rotation_center_cam = w2c @ rotation_center_h
+        # rect_center_cam = w2c @ rect_center_h
+        # rotation_center_cam = w2c @ rotation_center_h
         
-        rect_center_img = K @ rect_center_cam[:3]
-        rotation_center_img = K @ rotation_center_cam[:3]
+        # rect_center_img = K @ rect_center_cam[:3]
+        # rotation_center_img = K @ rotation_center_cam[:3]
         
-        rect_center_px = (int(rect_center_img[0] / rect_center_img[2]), int(rect_center_img[1] / rect_center_img[2]))
-        rotation_center_px = (int(rotation_center_img[0] / rotation_center_img[2]), int(rotation_center_img[1] / rotation_center_img[2]))
+        # rect_center_px = (int(rect_center_img[0] / rect_center_img[2]), int(rect_center_img[1] / rect_center_img[2]))
+        # rotation_center_px = (int(rotation_center_img[0] / rotation_center_img[2]), int(rotation_center_img[1] / rotation_center_img[2]))
 
         # ---- Save mask PNG (0/255) ----
         mask_filename = f"mask_{os.path.splitext(filename)[0]}.png"
@@ -324,61 +318,9 @@ def _process_one_image_task(task):
         # ---- Save masked image per simple policy ----
         masked_filename = f"masked_{filename}"
         masked_out_path = os.path.join(masked_images_dir, masked_filename)
-        if ext == ".exr":
-            # Normalize by 65535.0
-            max_val = 65535.0
-            if max_val > 0:
-                masked_norm = (masked / max_val).astype(np.float32)
-            else:
-                masked_norm = np.zeros_like(masked, dtype=np.float32)
-            ok = cv2.imwrite(masked_out_path, masked_norm)
-            if not ok:
-                return {'original': filename, 'error': 'EXR write failed'}
-            
-            # Save PNG version for visualization with circles
-            png_filename = f"masked_{os.path.splitext(filename)[0]}.png"
-            png_out_path = os.path.join(masked_images_dir, png_filename)
-            # Convert to 8-bit for PNG visualization (clamp to [0,1] then scale to [0,255])
-            masked_vis = np.clip(masked_norm, 0, 1) * 255.0
-            masked_vis = masked_vis.astype(np.uint8)
-            
-            # Draw circles on visualization image
-            if masked_vis.ndim == 2:
-                masked_vis = cv2.cvtColor(masked_vis, cv2.COLOR_GRAY2BGR)
-            # cv2.circle(masked_vis, rect_center_px, 10, (0, 255, 0), 2)  # Red circle for rectangle center
-            # cv2.circle(masked_vis, rotation_center_px, 5, (0, 255, 0), 2)  # Green circle for rotation center
-            
-            cv2.imwrite(png_out_path, masked_vis)
-        elif ext == ".png":
-            # Keep PNG values as-is (no normalization), preserve original dtype
-            masked_vis = masked.copy()
-            # if masked_vis.ndim == 2:
-            #     masked_vis = cv2.cvtColor(masked_vis.astype(np.uint8), cv2.COLOR_GRAY2BGR)
-            # else:
-            #     masked_vis = masked_vis.astype(np.uint8)
-            
-            # Draw circles on visualization image
-            # cv2.circle(masked_vis, rect_center_px, 5, (0, 0, 255), 2)  # Red circle for rectangle center
-            # cv2.circle(masked_vis, rotation_center_px, 10, (0, 255, 0), 2)  # Green circle for rotation center
-            
-            ok = cv2.imwrite(masked_out_path, masked_vis)
-            if not ok:
-                return {'original': filename, 'error': 'PNG write failed'}
-        else:
-            # Fallback: behave like PNG (keep as-is)
-            masked_vis = masked.copy()
-            if masked_vis.ndim == 2:
-                masked_vis = cv2.cvtColor(masked_vis.astype(np.uint8), cv2.COLOR_GRAY2BGR)
-            else:
-                masked_vis = masked_vis.astype(np.uint8)
-            
-            # Draw circles on visualization image
-            cv2.circle(masked_vis, rect_center_px, 5, (0, 0, 255), 2)  # Red circle for rectangle center
-            cv2.circle(masked_vis, rotation_center_px, 5, (0, 255, 0), 2)  # Green circle for rotation center
-            
-            ok = cv2.imwrite(masked_out_path, masked_vis)
-            if not ok:
-                return {'original': filename, 'error': f'Write failed for {ext}'}
+        ok = cv2.imwrite(masked_out_path, masked)
+        if not ok:
+            return {'original': filename, 'error': 'Write failed for masked image'}
 
         return {'original': filename, 'mask': mask_filename, 'masked': masked_filename}
 
@@ -500,16 +442,17 @@ def main(cfg: DictConfig):
     if hasattr(cfg.renderer, 'mesh') and hasattr(cfg.renderer.mesh, 'rectangle'):
         rect_config = cfg.renderer.mesh.rectangle
         # RECT_CENTER = tuple(rect_config.center)
-        RECT_CENTER = ROTATION_CENTER
+        RECT_CENTER = tuple(rect_config.center)
         RECT_SIZE = (rect_config.width, rect_config.length)
     
     # Project the rotation center to the plane z = RECT_CENTER[2]
     ROTATION_CENTER = project_center_to_plane(ROTATION_CENTER, ROTATION_AXIS, RECT_CENTER[2])
     print(f"Projected rotation center: {ROTATION_CENTER}")
     
-    image_folder = os.path.join(cfg.exp_folder, "images")
+    # image_folder = os.path.join(cfg.exp_folder, "ldr")
+    image_folder = "/media/raid/cloth/capture_data/BRDF_recon_Sep30_non_flat/ldr"
     output_folder = os.path.join(cfg.exp_folder, "masks")
-    json_path = os.path.join(cfg.exp_folder, "scan_log_reindexed.json")
+    json_path = os.path.join(cfg.exp_folder, "scan_log.json")
 
     # threads only
     num_workers = min(NUM_WORKERS, os.cpu_count() or NUM_WORKERS)

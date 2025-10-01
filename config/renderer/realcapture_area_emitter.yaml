@@ -23,13 +23,21 @@ camera:
           [-4.42126179e-03,  2.11268680e-02, -9.99767027e-01],
           [-9.99989969e-01, -8.10922726e-04,  4.40511146e-03]]
   t_c2g: [3.26272696e-02, -1.61560433e-02, 2.80920856e-02]
+  # intrinsics:
+  #   width: 3072
+  #   height: 2048
+  #   focal_length: 6713.58
+  #   cx: 1536
+  #   cy: 1024
+  #   distortion: -0.0647
   intrinsics:
     width: 3072
     height: 2048
-    focal_length: 6713.58
+    focal_length: 6699.9749607678123
     cx: 1536
     cy: 1024
-    distortion: -0.0647
+    distortion: -0.057534771756603202
+
   # intrinsics:
   #   width: 3080
   #   height: 2049
@@ -41,9 +49,11 @@ camera:
 mesh:
   path: 
   rectangle:
-    center: [0.14511, -0.2228, -0.06]
-    width: 0.24
-    length: 0.31
+    center: [0.16, -0.11, -0.06]
+    # width: 0.24 # board_size
+    # length: 0.31
+    width: 0.16 # sample_size
+    length: 0.20 # sample_size
 
 emitter:
   type: "realarea"
@@ -53,10 +63,15 @@ emitter:
   fwhm_deg: 115.0 # full width at half maximum angle(value for specs)
   positions: [0.0, 0.0, 0.0] # to be updated
   radiance: [10.0, 10.0, 10.0] # largest radiance at 90 degree(to be updated)
+  # turntable:
+  #   # center: [0.15054801, -0.22801754, 0.21486147]
+  #   center: [0.1638, -0.110, -0.06]
+  #   axis: [-0.00553423, 0.02421833, 0.99969137]
   turntable:
-    # center: [0.15054801, -0.22801754, 0.21486147]
-    center: [0.1638, -0.110, -0.06]
-    axis: [-0.00553423, 0.02421833, 0.99969137]
+    # center: [0.16071283, -0.11032075, -0.00566432] # before projection
+    center: [0.16084722, -0.11011424, -0.021]
+    axis: [-0.00876202, -0.01346449, 0.99987096]
+
   R_l2g: [[1.0,  0.0,  0.0],
           [0.0,  1.0,  0.0],
           [0.0,  0.0,  1.0]]

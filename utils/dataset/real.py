@@ -120,6 +120,65 @@ def get_c2w_from_robot_pose(camera_info, R_c2g, t_c2g):
     c2w = g2w @ c2g
     return torch.from_numpy(c2w[:3, :4]).float()
 
+def load_metadata(metadata_path, camera_metadata_path, gt_folder, cfg, debug, debug_num, split):
+    metadata, _, _= load_camera_turntable_light_metadata(metadata_path)
+    
+    camera_metadata = load_camera_metadata(camera_metadata_path)
+    
+    # Filter out metadata entries with non-existent image files and filtered_puple_ids
+    valid_metadata = []
+    filtered_purple_ids = getattr(cfg.data, 'filtered_purple_ids', [])
+    
+    for item in metadata:
+        # Add "masked_" prefix to filename
+        file_name = item["filename"]
+        # if not file_name.startswith("masked_"):
+        #     file_name = "masked_" + file_name
+        #     item["filename"] = file_name
+        # file_name = item["filename"]
+        img_path = os.path.join(gt_folder, file_name)
+        overall_id = item.get("overall_id")
+        
+        # Skip if image file doesn't exist or is 0 bytes
+        if not os.path.exists(img_path):
+            print(f"Warning: Image file {img_path} does not exist, skipping from metadata...")
+            continue
+        
+        # Skip if image file is 0 bytes
+        if os.path.getsize(img_path) == 0:
+            print(f"Warning: Image file {img_path} is 0 bytes, skipping from metadata...")
+            continue
+            
+        # Skip if overall_id is in filtered_puple_ids
+        
+        if int(overall_id) in filtered_purple_ids:
+            print(f"Warning: overall_id {overall_id} is in filtered_puple_ids, skipping from metadata...")
+            continue
+            
+        valid_metadata.append(item)
+    
+    metadata = valid_metadata
+    print(f"Loaded {len(metadata)} valid images out of {len(metadata) + len([item for item in metadata if not os.path.exists(os.path.join(gt_folder, item['filename']))])} total metadata entries")
+    
+    total_images = len(metadata)
+    
+    # Split metadata into training and validation sets with fixed random seed
+    torch.manual_seed(42)  # Fixed seed for reproducible splits
+    indices = torch.randperm(total_images)
+    
+    # Use 80% for training
+    if debug:
+        selected_metadata = metadata[0:0+debug_num]
+    else:
+        split_idx = int(0.8 * total_images)
+        if split == 'train':
+            selected_indices = indices[:split_idx]
+        else:
+            selected_indices = indices[split_idx:]
+            selected_metadata = [metadata[i] for i in selected_indices] 
+        
+    return selected_metadata, camera_metadata
+
 class RealImageDataset(IterableDataset):
     """ training dataset that loads images from metadata, returns sampled rays with emitter IDs"""
     def __init__(self, cfg, gt_folder, split):
@@ -141,6 +200,9 @@ class RealImageDataset(IterableDataset):
         self.focal = self.intrinsics['focal_length']
         self.img_hw = (self.intrinsics['height'], self.intrinsics['width'])
         
+        self.chunk_size = cfg.data.chunk_size
+        self.reload_data = True
+        self.switch_iters = cfg.data.switch_iters
         # get R_c2g and t_c2g from cfg
         self.R_c2g = cfg.renderer.camera.R_c2g
         self.t_c2g = cfg.renderer.camera.t_c2g
@@ -148,66 +210,14 @@ class RealImageDataset(IterableDataset):
         # Load metadata from JSON file
         metadata_path = cfg.data.metadata_path
         camera_metadata_path = cfg.data.camera_metadata_path
-        metadata, _, _= load_camera_turntable_light_metadata(metadata_path)
-        
-        camera_metadata = load_camera_metadata(camera_metadata_path)
-        
-        # Filter out metadata entries with non-existent image files and filtered_puple_ids
-        valid_metadata = []
-        filtered_purple_ids = getattr(cfg.data, 'filtered_purple_ids', [])
-        
-        for item in metadata:
-            # Add "masked_" prefix to filename
-            file_name = item["filename"]
-            if not file_name.startswith("masked_"):
-                file_name = "masked_" + file_name
-                item["filename"] = file_name
-            file_name = item["filename"]
-            img_path = os.path.join(gt_folder, file_name)
-            overall_id = item.get("overall_id")
-            
-            # Skip if image file doesn't exist or is 0 bytes
-            if not os.path.exists(img_path):
-                print(f"Warning: Image file {img_path} does not exist, skipping from metadata...")
-                continue
-            
-            # Skip if image file is 0 bytes
-            if os.path.getsize(img_path) == 0:
-                print(f"Warning: Image file {img_path} is 0 bytes, skipping from metadata...")
-                continue
-                
-            # Skip if overall_id is in filtered_puple_ids
-            
-            if int(overall_id) in filtered_purple_ids:
-                print(f"Warning: overall_id {overall_id} is in filtered_puple_ids, skipping from metadata...")
-                continue
-                
-            valid_metadata.append(item)
-        
-        metadata = valid_metadata
-        print(f"Loaded {len(metadata)} valid images out of {len(metadata) + len([item for item in metadata if not os.path.exists(os.path.join(gt_folder, item['filename']))])} total metadata entries")
-        self.camera_metadata = camera_metadata
-        
-        self.total_images = len(metadata)
-        
-        # Split metadata into training and validation sets with fixed random seed
-        torch.manual_seed(42)  # Fixed seed for reproducible splits
-        indices = torch.randperm(self.total_images)
-        
-        # Use 80% for training
-        if self.debug:
-            self.metadata = metadata[2:2+self.debug_num]
-        else:
-            split_idx = int(0.8 * self.total_images)
-            selected_indices = indices[:split_idx]
-            
-            # Filter metadata based on split
-            self.metadata = [metadata[i] for i in selected_indices] 
-        #self.metadata = [item for idx, item in enumerate(self.metadata) if idx % 10 == 0]#temporal modification
+        self.all_metadata, self.camera_metadata = load_metadata(metadata_path, camera_metadata_path, gt_folder, cfg, self.debug, self.debug_num, 'train')
+
         self.set_step(0)
         # self.directions = get_ray_directions(self.img_hw[0], self.img_hw[1], self.focal, self.cx, self.cy, self.distortion)
-        # self.all_rays, self.all_rgbs, self.all_emitter_ids, self.all_pdf = self.preload_rays_and_rgbs(downsample_scale=1)   
-        
+        # self.all_rays, self.all_rgbs, self.all_emitter_ids, self.all_pdf = self.preload_rays_and_rgbs(downsample_scale=1)           
+
+
+
     def preload_rays_and_rgbs(self, downsample_scale=1):
         all_rays = []
         all_rgbs = []
@@ -215,7 +225,7 @@ class RealImageDataset(IterableDataset):
         all_camera_ids = []
         for img_data in tqdm(self.metadata, desc="Loading images and rays"):
             # Get camera info using camera_id
-            camera_info = self.camera_metadata[str(int(img_data["camera_id"]))]
+            camera_info = self.camera_metadata[str(img_data["camera_id"])]
             camera_dict = {
                 "position": camera_info["position"],
                 "rotation_matrix": camera_info["rotation_matrix"],
@@ -300,6 +310,41 @@ class RealImageDataset(IterableDataset):
         emitter_ids = emitter_ids[perm_indices]
         camera_ids = camera_ids[perm_indices]
         return (rays, rgbs, camera_ids, emitter_ids, pdf)
+
+    def _switch_chunk(self, chunk_size):
+        """Switch to a different chunk of images for training
+        
+        Args:
+            chunk_size: Number of images to include in each chunk
+        """
+        # Initialize chunk tracking if not exists
+        if not hasattr(self, '_chunk_index'):
+            self._chunk_index = 0
+            self._shuffled_indices = None
+        
+        # Shuffle indices if starting fresh or completed all chunks
+        total_images = len(self.all_metadata)
+        total_chunks = (total_images + chunk_size - 1) // chunk_size  # Ceiling division
+        
+        if self._shuffled_indices is None or self._chunk_index >= total_chunks:
+            # Randomly shuffle all image indices
+            self._shuffled_indices = torch.randperm(total_images).tolist()
+            self._chunk_index = 0
+        
+        # Calculate chunk boundaries
+        start_idx = self._chunk_index * chunk_size
+        end_idx = min(start_idx + chunk_size, total_images)
+        
+        # Get indices for current chunk
+        chunk_indices = self._shuffled_indices[start_idx:end_idx]
+        
+        # Update metadata to only include current chunk
+        self.metadata = [self.all_metadata[i] for i in chunk_indices]
+        
+        # Move to next chunk for next call
+        self._chunk_index += 1
+        
+        print(f"Switched to chunk {self._chunk_index}/{total_chunks} with {len(self.metadata)} images")
 
     def sampler(self, rgbs_gt):
         """Set the importance sampler to use for ray sampling"""
@@ -389,6 +434,16 @@ class RealImageDataset(IterableDataset):
             return sample_idx, pdf
 
     def set_step(self, step):
+        self.step = step
+        
+        # Switch data chunk every few steps
+        if self.chunk_size > 0 and step % self.switch_iters == 0:
+            self._switch_chunk(chunk_size=self.chunk_size)
+            self.reload_data = True
+        else:
+            self.reload_data = False
+            self.metadata = self.all_metadata
+
         a, b = self.downsample_iter[0], self.downsample_iter[1]
         
         # Determine downsample scale based on thresholds
@@ -400,7 +455,7 @@ class RealImageDataset(IterableDataset):
             downsample_scale = 1  # Use scale 1 after both thresholds
         
         # Reload data if downsample scale changed
-        if not hasattr(self, '_current_downsample_scale') or self._current_downsample_scale != downsample_scale:
+        if not hasattr(self, '_current_downsample_scale') or self._current_downsample_scale != downsample_scale or self.reload_data:
             self._current_downsample_scale = downsample_scale
             # Clear GPU memory if attributes exist
             if hasattr(self, 'directions'):
@@ -419,7 +474,8 @@ class RealImageDataset(IterableDataset):
             h_down, w_down = h // downsample_scale, w // downsample_scale
             self.directions = get_ray_directions(h_down, w_down, self.focal, self.cx, self.cy, self.distortion) 
             self.all_rays, self.all_rgbs, self.all_camera_ids, self.all_emitter_ids, self.all_pdf = self.preload_rays_and_rgbs(downsample_scale=downsample_scale)
-
+            self.reload_data = False
+            
     def __iter__(self):
         while True:
             if self.sampler is not None:
@@ -468,60 +524,7 @@ class RealValDataset(Dataset):
         # Load metadata from JSON file
         metadata_path = cfg.data.metadata_path
         camera_metadata_path = cfg.data.camera_metadata_path
-        metadata, _, _= load_camera_turntable_light_metadata(metadata_path)
-        
-        camera_metadata = load_camera_metadata(camera_metadata_path)
-        
-        # Filter out metadata entries with non-existent image files and filtered_puple_ids
-        valid_metadata = []
-        filtered_purple_ids = getattr(cfg.data, 'filtered_purple_ids', [])
-        
-        for item in metadata:
-            # Add "masked_" prefix to filename
-            file_name = item["filename"]
-            if not file_name.startswith("masked_"):
-                file_name = "masked_" + file_name
-                item["filename"] = file_name
-            file_name = item["filename"]
-            img_path = os.path.join(gt_folder, file_name)
-            overall_id = item.get("overall_id")
-            
-            # Skip if image file doesn't exist or is 0 bytes
-            if not os.path.exists(img_path):
-                print(f"Warning: Image file {img_path} does not exist, skipping from metadata...")
-                continue
-            
-            # Skip if image file is 0 bytes
-            if os.path.getsize(img_path) == 0:
-                print(f"Warning: Image file {img_path} is 0 bytes, skipping from metadata...")
-                continue
-                
-            # Skip if overall_id is in filtered_puple_ids
-            
-            if int(overall_id) in filtered_purple_ids:
-                print(f"Warning: overall_id {overall_id} is in filtered_puple_ids, skipping from metadata...")
-                continue
-                
-            valid_metadata.append(item)
-        
-        metadata = valid_metadata
-        print(f"Loaded {len(metadata)} valid images out of {len(metadata) + len([item for item in metadata if not os.path.exists(os.path.join(gt_folder, item['filename']))])} total metadata entries")
-        self.camera_metadata = camera_metadata
-        
-        self.total_images = len(metadata)   
-        
-        # Split metadata into training and validation sets with fixed random seed
-        if self.debug:
-            self.metadata = metadata[2:2+self.debug_num]
-        else:
-            torch.manual_seed(42)  # Fixed seed for reproducible splits
-            indices = torch.randperm(self.total_images)
-            # Use 20% for validation
-            split_idx = int(0.8 * self.total_images)
-            selected_indices = indices[split_idx:]
-        
-            # Filter metadata based on split
-            self.metadata = [metadata[i] for i in selected_indices]   
+        self.metadata, self.camera_metadata = load_metadata(metadata_path, camera_metadata_path, gt_folder, cfg, self.debug, self.debug_num, 'val')
         self.directions = get_ray_directions(self.img_hw[0], self.img_hw[1], self.focal, self.cx, self.cy, self.distortion)
 
     def __len__(self):
@@ -533,7 +536,7 @@ class RealValDataset(Dataset):
         # Get camera info using camera_id
         camera_id = img_data["camera_id"]
         # overall_id = 0 # debug with the first camera
-        camera_info = self.camera_metadata[str(int(camera_id))]
+        camera_info = self.camera_metadata[str(camera_id)]
         camera_dict = {
             "position": camera_info["position"],
             "rotation_matrix": camera_info["rotation_matrix"],
