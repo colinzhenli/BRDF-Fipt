@@ -13,8 +13,8 @@ filtered_purple_ids: [0, 9, 45, 109, 189, 675, 684, 850, 1012, 1013, 1014, 1039,
 
 
 #load images chunk to memory
-chunk_size: 4 # 0 means no chunking
-switch_iters: 10 # switch chunk every 10000 steps
+chunk_size: 400 # 0 means no chunking
+switch_iters: 5000 # switch chunk every 10000 steps
 
 importance_sampling: False
 use_single_chunk_sampling: False
