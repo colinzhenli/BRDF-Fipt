@@ -175,7 +175,8 @@ def load_metadata(metadata_path, camera_metadata_path, gt_folder, cfg, debug, de
             selected_indices = indices[:split_idx]
         else:
             selected_indices = indices[split_idx:]
-            selected_metadata = [metadata[i] for i in selected_indices] 
+            
+        selected_metadata = [metadata[i] for i in selected_indices] 
         
     return selected_metadata, camera_metadata
 

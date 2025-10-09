@@ -69,6 +69,15 @@ def main(cfg):
     )  # Ground truth uses pbr config
     print("before trainer init")
     model = BRDFTrainer(cfg, material, gt_material, roughness, metallic)
+    if cfg.model.ckpt_path is not None and os.path.isfile(cfg.model.ckpt_path):
+        print(f"=> loading model checkpoint '{cfg.model.ckpt_path}'")
+        checkpoint = torch.load(cfg.model.ckpt_path, map_location='cuda' if torch.cuda.is_available() else 'cpu', weights_only=False)
+        # Load parameters that exist in the checkpoint, keep new parameters as initialized
+        model_dict = model.state_dict()
+        pretrained_dict = {k: v for k, v in checkpoint['state_dict'].items() if k in model_dict}
+        model_dict.update(pretrained_dict)
+        model.load_state_dict(model_dict)
+        print(f"=> loaded checkpoint successfully. {len(pretrained_dict)}/{len(model_dict)} parameters loaded.")
     print("after trainer init")
     print("==> initializing data ...")          
     train_dataset = RealImageDataset(cfg, gt_folder=cfg.gt_folder, split="train")
@@ -105,11 +114,11 @@ def main(cfg):
     trainer = pl.Trainer(
         callbacks=[checkpoint_callback, lr_monitor], logger=logger, **cfg.model.trainer
     )
-    # tracer = VizTracer()
-    # tracer.start()
+    tracer = VizTracer()
+    tracer.start()
     trainer.fit(model, train_loader, val_loader)
-    # tracer.stop()
-    # tracer.save(f"is_all-pixels_tracer.json")
+    tracer.stop()
+    tracer.save(f"is_all-pixels_tracer.json")
     """  Skipping testing for now """
     # test_results = trainer.test(model, dataloaders=test_loader)
 
