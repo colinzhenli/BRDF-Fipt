@@ -1,6 +1,6 @@
 import torch
 from utils.path_tracing import path_tracing_envmap_emitter, batched_path_tracing_dynamic_emitter, batched_path_tracing_preset_emitter, batched_path_tracing_tbn_preset_emitter, batched_path_tracing_tbn_real_area_emitter
-from utils.scene_loader import load_uv_obj_to_mitsuba_scene, create_rectangle_scene
+from utils.scene_loader import load_uv_obj_to_mitsuba_scene, create_rectangle_scene, create_rectangle_scene_params  
 from mitsuba import load_dict
 import mitsuba as mi
 from model.emitter import EnvMapEmitter, DynamicPointEmitter
@@ -23,8 +23,14 @@ class ForwardRenderer:
         '''
         if cfg.renderer.mesh.path is not None:
             self.scene=load_uv_obj_to_mitsuba_scene(cfg.renderer.mesh.path)
-        else:
+        elif cfg.renderer.mesh.mitsuba_scene:
             self.scene = create_rectangle_scene(
+                center=cfg.renderer.mesh.rectangle.center,
+                width=cfg.renderer.mesh.rectangle.width,
+                length=cfg.renderer.mesh.rectangle.length
+            )
+        else:
+            self.scene = create_rectangle_scene_params(
                 center=cfg.renderer.mesh.rectangle.center,
                 width=cfg.renderer.mesh.rectangle.width,
                 length=cfg.renderer.mesh.rectangle.length

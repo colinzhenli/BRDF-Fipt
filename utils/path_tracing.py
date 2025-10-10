@@ -40,6 +40,119 @@ def ray_intersect(scene,xs,ds):
     normals = double_sided(-ds,normals)
     return positions,normals,ret.uv.torch(),idx,valid
 
+# def ray_sphere_intersect(self, ray_o, ray_d):
+#     """ Ray-sphere intersection test
+#     Args:
+#         ray_o: Bx3 ray origins
+#         ray_d: Bx3 ray directions (normalized)
+#     Returns:
+#         hit_pos: Bx3 intersection points
+#         normals: Bx3 surface normals
+#         valid: B whether ray hits sphere
+#     """
+#     # Solve quadratic equation for ray-sphere intersection
+#     oc = ray_o - self.position
+#     a = (ray_d * ray_d).sum(-1)
+#     b = 2.0 * (oc * ray_d).sum(-1)
+#     c = (oc * oc).sum(-1) - self.radius * self.radius
+#     disc = b * b - 4 * a * c
+    
+#     valid = disc > 0
+#     t = torch.zeros_like(disc)
+#     t[valid] = (-b[valid] - torch.sqrt(disc[valid])) / (2.0 * a[valid])
+#     valid = valid & (t > 0)
+
+#     # Compute intersection points and normals
+#     hit_pos = ray_o + ray_d * t.unsqueeze(-1)
+#     normals = NF.normalize(hit_pos - self.position, dim=-1)
+    
+#     return hit_pos, normals, valid
+
+def ray_rectangle_intersect_TBN(xs, ds, center=[0, 0, 0], width=0.4, length=0.4):
+    """
+    Ray-rectangle intersection using mathematical computation.
+    Rectangle is defined by center, width (x), length (y), with normal along z-axis.
+    
+    Args:
+        xs: (N, 3) ray origins
+        ds: (N, 3) ray directions (normalized)
+        center: [x, y, z] center of rectangle
+        width: width along x-axis
+        length: length along y-axis
+    
+    Returns:
+        positions: (N, 3) intersection points
+        normals: (N, 3) surface normals (along z-axis)
+        uv: (N, 2) texture coordinates [0,1]
+        dp_du: (N, 3) surface partial derivative wrt u
+        dp_dv: (N, 3) surface partial derivative wrt v
+        idx: (N,) primitive index (-1 for invalid)
+        valid: (N,) boolean mask for valid intersections
+        TBN: (N, 3, 3) tangent-bitangent-normal frame
+    """
+    device = xs.device
+    N = xs.shape[0]
+    
+    # Rectangle plane: normal is [0, 0, 1] in local space
+    center_pt = torch.tensor(center, dtype=xs.dtype, device=device)
+    plane_normal = torch.tensor([0.0, 0.0, 1.0], dtype=xs.dtype, device=device)
+    
+    # Ray-plane intersection: t = (center - xs) · n / (ds · n)
+    numerator = ((center_pt - xs) * plane_normal).sum(-1)
+    denominator = (ds * plane_normal).sum(-1)
+    
+    # Check if ray is parallel to plane
+    valid = denominator.abs() > 1e-8
+    t = torch.zeros(N, dtype=xs.dtype, device=device)
+    t[valid] = numerator[valid] / denominator[valid]
+    
+    # Check if intersection is in front of ray
+    valid = valid & (t > 1e-6)
+    
+    # Compute intersection points
+    positions = xs + ds * t.unsqueeze(-1)
+    
+    # Check if intersection is within rectangle bounds
+    local_pos = positions - center_pt
+    half_width = width / 2.0
+    half_length = length / 2.0
+    
+    in_bounds = (local_pos[..., 0].abs() <= half_width) & \
+                (local_pos[..., 1].abs() <= half_length)
+    valid = valid & in_bounds
+    
+    # Compute UV coordinates [0, 1]
+    uv = torch.zeros(N, 2, dtype=xs.dtype, device=device)
+    uv[:, 0] = (local_pos[:, 0] / width) + 0.5  # u: [0, 1]
+    uv[:, 1] = (local_pos[:, 1] / length) + 0.5  # v: [0, 1]
+    
+    # Surface partials: dp/du and dp/dv
+    # u maps to x-axis, v maps to y-axis
+    dp_du = torch.zeros(N, 3, dtype=xs.dtype, device=device)
+    dp_dv = torch.zeros(N, 3, dtype=xs.dtype, device=device)
+    dp_du[:, 0] = width   # ∂p/∂u = width along x
+    dp_dv[:, 1] = length  # ∂p/∂v = length along y
+    
+    # Normals (all pointing along z-axis)
+    normals = plane_normal.unsqueeze(0).expand(N, 3).clone()
+    normals = double_sided(-ds, normals)
+    
+    # TBN frame: tangent (u-direction), bitangent (v-direction), normal (z)
+    tangent = torch.zeros(N, 3, dtype=xs.dtype, device=device)
+    tangent[:, 0] = 1.0  # tangent along x (u-direction)
+    
+    bitangent = torch.zeros(N, 3, dtype=xs.dtype, device=device)
+    bitangent[:, 1] = 1.0  # bitangent along y (v-direction)
+    
+    TBN = torch.stack([tangent, bitangent, normals], dim=-1)  # [N, 3, 3]
+    
+    # Primitive index (0 for valid hits, -1 for invalid)
+    idx = torch.zeros(N, dtype=torch.long, device=device)
+    idx[~valid] = -1
+    
+    return positions, normals, uv, dp_du, dp_dv, idx, valid, TBN
+
+
 def ray_intersect_with_tbn(scene, xs, ds):
     xs_mi = mitsuba.Point3f(xs[...,0], xs[...,1], xs[...,2])
     ds_mi = mitsuba.Vector3f(ds[...,0], ds[...,1], ds[...,2])
@@ -630,8 +743,18 @@ def batched_path_tracing_tbn_real_area_emitter(scene,emitter_net,material_net,ra
     light_id = light_id.repeat_interleave(spp,0)
     
     # compute first intersection
-    position,normal,uv, dp_du, dp_dv, _, vis, TBN = ray_intersect_with_tbn(scene,position,wi)
-    
+    # Check if scene is a dictionary (scene parameters) or a Mitsuba scene object
+    if isinstance(scene, dict):
+        # Use mathematical ray-rectangle intersection
+        position, normal, uv, dp_du, dp_dv, _, vis, TBN = ray_rectangle_intersect_TBN(
+            position, wi, 
+            center=scene.get('center', [0, 0, 0]),
+            width=scene.get('width', 0.4),
+            length=scene.get('length', 0.4)
+        )
+    else:
+        # Use Mitsuba scene intersection
+        position, normal, uv, dp_du, dp_dv, _, vis, TBN = ray_intersect_with_tbn(scene, position, wi)
     footprint_vis = uv_footprint_simple(rays_o.repeat_interleave(spp,0)[vis], wi[vis], position[vis], normal[vis], dp_du[vis], dp_dv[vis], dx_du.repeat_interleave(spp,0)[vis], dy_dv.repeat_interleave(spp,0)[vis])
     
     # position, normal, vis = ray_sphere_intersect(scene,position,wi)
@@ -664,14 +787,19 @@ def batched_path_tracing_tbn_real_area_emitter(scene,emitter_net,material_net,ra
         emit_brdf,brdf_pdf = material_net.eval_brdf(None, position, wi,wo,normal,uv, TBN, latent, batch_mask, footprint_vis, dp_du, dp_dv) # gt_params will not be used in neural brdf model
         w_mis = torch.where((emit_pdf>0)&(~brdf_pdf.isinf()),emit_pdf*emit_pdf/(emit_pdf*emit_pdf+brdf_pdf*brdf_pdf),0)
         w_mis[emit_pdf.isinf()|(brdf_pdf==0)] = 1
-        L[vis] += emit_brdf*emit_weight
+        # Avoid in-place indexed operation for cleaner autograd graph
+        # contribution = emit_brdf * emit_weight
+        # L_update = torch.zeros_like(L)
+        # L_update[vis] = contribution
+        # L = L + L_update
+        L[vis] += emit_weight * emit_brdf
     # sample brdf
     if brdf_sampling:
         wi,brdf_pdf,brdf_weight = material_net.sample_brdf(
             gt_params,
             position,
             torch.rand(len(normal),device=device),
-            torch.rand(len(normal),2,device=device),
+            torch.rand(len(normal),2,devicsae=device),
             wo,normal,
             latent,
             batch_mask,
@@ -687,7 +815,11 @@ def batched_path_tracing_tbn_real_area_emitter(scene,emitter_net,material_net,ra
         w_mis = torch.where((brdf_pdf>0)&(~emit_pdf.isinf()),brdf_pdf*brdf_pdf/(emit_pdf*emit_pdf+brdf_pdf*brdf_pdf),0)
         w_mis[brdf_pdf.isinf()|(emit_pdf==0)] = 1
         w_mis[w_mis.isnan()] = 0
-        L[vis] += brdf_weight*Le * w_mis
+        # Avoid in-place indexed operation for cleaner autograd graph
+        contribution = brdf_weight * Le * w_mis
+        L_update = torch.zeros_like(L)
+        L_update[vis] = contribution
+        L = L + L_update
     ray_params = torch.cat([position, wi, wo], dim=-1)
     L = L.reshape(N,spp,3).mean(1)
     # Merge visibility across multiple spp - if any ray is visible, vis is true

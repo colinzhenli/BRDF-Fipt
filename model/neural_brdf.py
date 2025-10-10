@@ -716,11 +716,21 @@ class LatentModel(nn.Module):
         # Add SH positional encoding module
         self.degree = 3
         self.pos_enc = True
+        self.use_nerfstudio_sh = getattr(cfg, 'use_nerfstudio_sh', False)  # Option to use nerfstudio's SHEncoding
+        
         if self.pos_enc:
-            self.sh_encoder = lambda x: components_from_spherical_harmonics(self.degree, x)
+            if self.use_nerfstudio_sh:
+                # Use nerfstudio's SHEncoding
+                # Note: nerfstudio uses 'levels' parameter, where levels=degree+1
+                # For degree=3, we need levels=4, which gives (levels)^2 = 16 bases
+                self.sh_encoder = encoding.SHEncoding(levels=self.degree + 1)
+                sh_dim = (self.degree + 1) ** 2  # nerfstudio: (levels)^2
+            else:
+                # Use custom implementation from utils/ops.py
+                self.sh_encoder = lambda x: components_from_spherical_harmonics(self.degree, x)
+                sh_dim = num_sh_bases(self.degree)  # custom: (degree+1)^2
             
         # Calculate input dimension after SH encoding
-        sh_dim = num_sh_bases(self.degree)
         encoded_input_dim = sh_dim * 3  # wi, wo, normal each encoded by SH
         
         # Add latent dimension to input
@@ -977,11 +987,21 @@ class SvLatentModel(LightningModule):
         # Add SH positional encoding module
         self.degree = 3
         self.pos_enc = True
+        self.use_nerfstudio_sh = getattr(cfg, 'use_nerfstudio_sh', False)  # Option to use nerfstudio's SHEncoding
+        
         if self.pos_enc:
-            self.sh_encoder = lambda x: components_from_spherical_harmonics(self.degree, x)
+            if self.use_nerfstudio_sh:
+                # Use nerfstudio's SHEncoding
+                # Note: nerfstudio uses 'levels' parameter, where levels=degree+1
+                # For degree=3, we need levels=4, which gives (levels)^2 = 16 bases
+                self.sh_encoder = encoding.SHEncoding(levels=self.degree + 1)
+                sh_dim = (self.degree + 1) ** 2  # nerfstudio: (levels)^2
+            else:
+                # Use custom implementation from utils/ops.py
+                self.sh_encoder = lambda x: components_from_spherical_harmonics(self.degree, x)
+                sh_dim = num_sh_bases(self.degree)  # custom: (degree+1)^2
             
         # Calculate input dimension after SH encoding
-        sh_dim = num_sh_bases(self.degree)
         encoded_input_dim = sh_dim * 3  # wi, wo, normal each encoded by SH
         
         # Add latent dimension to input
@@ -1182,11 +1202,21 @@ class LatentTexturedModel(LightningModule):
         # Add SH positional encoding module
         self.degree = 3
         self.pos_enc = True
+        self.use_nerfstudio_sh = getattr(cfg, 'use_nerfstudio_sh', False)  # Option to use nerfstudio's SHEncoding
+        
         if self.pos_enc:
-            self.sh_encoder = lambda x: components_from_spherical_harmonics(self.degree, x)
+            if self.use_nerfstudio_sh:
+                # Use nerfstudio's SHEncoding
+                # Note: nerfstudio uses 'levels' parameter, where levels=degree+1
+                # For degree=3, we need levels=4, which gives (levels)^2 = 16 bases
+                self.sh_encoder = encoding.SHEncoding(levels=self.degree + 1)
+                sh_dim = (self.degree + 1) ** 2  # nerfstudio: (levels)^2
+            else:
+                # Use custom implementation from utils/ops.py
+                self.sh_encoder = lambda x: components_from_spherical_harmonics(self.degree, x)
+                sh_dim = num_sh_bases(self.degree)  # custom: (degree+1)^2
             
         # Calculate input dimension after SH encoding
-        sh_dim = num_sh_bases(self.degree)
         encoded_input_dim = sh_dim * 3  # wi, wo, normal each encoded by SH
         
         # Add latent dimension to input
@@ -1529,11 +1559,22 @@ class AnisotropicLatentTexturedModel(LightningModule):
         # Add SH positional encoding module
         self.degree = 3
         self.pos_enc = True
+        self.use_nerfstudio_sh = getattr(cfg, 'use_nerfstudio_sh', False)  # Option to use nerfstudio's SHEncoding
+        
         if self.pos_enc:
-            self.sh_encoder = lambda x: components_from_spherical_harmonics(self.degree, x)
+            if self.use_nerfstudio_sh:
+                # Use nerfstudio's SHEncoding
+                # Note: nerfstudio uses 'levels' parameter, where levels=degree+1
+                # For degree=3, we need levels=4, which gives (levels)^2 = 16 bases
+                # But we want to match the same degree, so levels = degree + 1
+                self.sh_encoder = encoding.SHEncoding(levels=self.degree + 1)
+                sh_dim = (self.degree + 1) ** 2  # nerfstudio: (levels)^2
+            else:
+                # Use custom implementation from utils/ops.py
+                self.sh_encoder = lambda x: components_from_spherical_harmonics(self.degree, x)
+                sh_dim = num_sh_bases(self.degree)  # custom: (degree+1)^2
             
         # Calculate input dimension after SH encoding
-        sh_dim = num_sh_bases(self.degree)
         encoded_input_dim = sh_dim * 3  # wi, wo, normal each encoded by SH
         
         # Add latent dimension to input
@@ -1656,36 +1697,26 @@ class AnisotropicLatentTexturedModel(LightningModule):
         
         return latent
 
-    def forward(self, pos, wi, wo, normal, latent=None, batch_mask=None, channel=None):
+    def forward(self, enc_dir, latent=None, channel=None):
         """
         Evaluate BRDF using MLP with 2D texture latent encoding, wi,wo and normalare in local space
         Args:
-            pos: Bx3 position on sphere surface
-            wi: Bx3 incoming light direction 
-            wo: Bx3 outgoing view direction
-            normal: Bx3 normal
+            enc_dir: encoded directions, wi,wo and normal
             latent: ignored (for compatibility)
             global_step: ignored (for compatibility)
         Returns:
             brdf: Bx1 BRDF values
-        """
-        if self.pos_enc:
-            wi_enc = self.sh_encoder(wi)
-            wo_enc = self.sh_encoder(wo)
-            normal_enc = self.sh_encoder(normal)
-            x = torch.cat([wi_enc, wo_enc, normal_enc, latent], dim=-1)
-        else:
-            x = torch.cat([wi, wo, normal, latent], dim=-1)
-            
+        """   
+
         if self.different_decoder:
             if channel == 'r':
-                return self.mlp_r(x)
+                return self.mlp_r(torch.cat([enc_dir, latent], dim=-1))
             elif channel == 'g':
-                return self.mlp_g(x)
+                return self.mlp_g(torch.cat([enc_dir, latent], dim=-1))
             else:
-                return self.mlp_b(x)
+                return self.mlp_b(torch.cat([enc_dir, latent], dim=-1))
         else:
-            return self.mlp(x)
+            return self.mlp(torch.cat([enc_dir, latent], dim=-1))
 
     def world_to_local(self, v, normal, tangent):
         
@@ -1846,21 +1877,33 @@ class AnisotropicLatentTexturedModel(LightningModule):
                 local_normal[..., 2] = 1.0  # Normal is always (0,0,1) in local space
         # Split latent into three parts for RGB channels
         if self.colorful_texture:
-            if self.larger_latent_dim:
-                latent_r = latent[..., :self.latent_dim]
-                latent_g = latent[..., self.latent_dim:2*self.latent_dim]
-                latent_b = latent[..., 2*self.latent_dim:3*self.latent_dim]
-            
+            if self.different_decoder:
+                if self.larger_latent_dim:
+                    latent_r = latent[..., :self.latent_dim]
+                    latent_g = latent[..., self.latent_dim:2*self.latent_dim]
+                    latent_b = latent[..., 2*self.latent_dim:3*self.latent_dim]
+                else:
+                    latent_r = latent
+                    latent_g = latent
+                    latent_b = latent
                 # Get BRDF value for each channel
-                brdf_r = self.forward(pos, wi_local, wo_local, local_normal, latent_r, batch_mask, 'r')
-                brdf_g = self.forward(pos, wi_local, wo_local, local_normal, latent_g, batch_mask, 'g')
-                brdf_b = self.forward(pos, wi_local, wo_local, local_normal, latent_b, batch_mask, 'b')
+                if self.pos_enc:
+                    wi_enc = self.sh_encoder(wi_local)
+                    wo_enc = self.sh_encoder(wo_local)
+                    normal_enc = self.sh_encoder(local_normal)
+                    enc_dir = torch.cat([wi_enc, wo_enc, normal_enc], dim=-1)
+                else:
+                    enc_dir = torch.cat([wi_local, wo_local, local_normal], dim=-1)
+                    
+                brdf_r = self.forward(enc_dir, latent_r, 'r')
+                brdf_g = self.forward(enc_dir, latent_g, 'g')
+                brdf_b = self.forward(enc_dir, latent_b, 'b')
                 # Combine channels
                 brdf = torch.cat([brdf_r, brdf_g, brdf_b], dim=-1)
             else:
-                brdf = self.forward(pos, wi_local, wo_local, local_normal, latent, batch_mask)
+                brdf = self.forward(enc_dir, latent, None)
         else:
-            brdf = self.forward(pos, wi_local, wo_local, local_normal, latent, batch_mask)
+            brdf = self.forward(enc_dir, latent, None)
             brdf = brdf.repeat(1,3)
         # # brdf = brdf * color
         pdf = NoL / math.pi

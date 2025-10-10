@@ -48,6 +48,7 @@ camera:
 
 mesh:
   path: 
+  mitsuba_scene: False
   rectangle:
     center: [0.16, -0.11, -0.06]
     # width: 0.24 # board_size
