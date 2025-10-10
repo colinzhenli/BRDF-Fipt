@@ -1875,7 +1875,16 @@ class AnisotropicLatentTexturedModel(LightningModule):
                 wo_local = self.world_to_local(wo, predicted_normal, predicted_tangent)
                 local_normal = torch.zeros_like(wi_local)
                 local_normal[..., 2] = 1.0  # Normal is always (0,0,1) in local space
-        # Split latent into three parts for RGB channels
+    
+        # Get BRDF value for each channel
+        if self.pos_enc:
+            wi_enc = self.sh_encoder(wi_local)
+            wo_enc = self.sh_encoder(wo_local)
+            normal_enc = self.sh_encoder(local_normal)
+            enc_dir = torch.cat([wi_enc, wo_enc, normal_enc], dim=-1)
+        else:
+            enc_dir = torch.cat([wi_local, wo_local, local_normal], dim=-1)
+            
         if self.colorful_texture:
             if self.different_decoder:
                 if self.larger_latent_dim:
@@ -1883,17 +1892,9 @@ class AnisotropicLatentTexturedModel(LightningModule):
                     latent_g = latent[..., self.latent_dim:2*self.latent_dim]
                     latent_b = latent[..., 2*self.latent_dim:3*self.latent_dim]
                 else:
-                    latent_r = latent
-                    latent_g = latent
-                    latent_b = latent
-                # Get BRDF value for each channel
-                if self.pos_enc:
-                    wi_enc = self.sh_encoder(wi_local)
-                    wo_enc = self.sh_encoder(wo_local)
-                    normal_enc = self.sh_encoder(local_normal)
-                    enc_dir = torch.cat([wi_enc, wo_enc, normal_enc], dim=-1)
-                else:
-                    enc_dir = torch.cat([wi_local, wo_local, local_normal], dim=-1)
+                    latent_r = latent[...,:self.latent_dim]
+                    latent_g = latent[...,:self.latent_dim]
+                    latent_b = latent[...,:self.latent_dim]
                     
                 brdf_r = self.forward(enc_dir, latent_r, 'r')
                 brdf_g = self.forward(enc_dir, latent_g, 'g')
@@ -1901,9 +1902,9 @@ class AnisotropicLatentTexturedModel(LightningModule):
                 # Combine channels
                 brdf = torch.cat([brdf_r, brdf_g, brdf_b], dim=-1)
             else:
-                brdf = self.forward(enc_dir, latent, None)
+                brdf = self.forward(enc_dir, latent[...,:self.latent_dim], None)
         else:
-            brdf = self.forward(enc_dir, latent, None)
+            brdf = self.forward(enc_dir, latent[...,:self.latent_dim], None)
             brdf = brdf.repeat(1,3)
         # # brdf = brdf * color
         pdf = NoL / math.pi
