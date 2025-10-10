@@ -12,6 +12,10 @@ activation: "relu"
 input_channels: 9
 prefilter: True
 
+# Spherical Harmonics Encoding Options:
+# use_nerfstudio_sh: False  # Set to True to use nerfstudio's SHEncoding instead of custom implementation
+                             # Both implementations produce the same number of bases for degree=3: (degree+1)^2 = 16
+
 # config 1:
 larger_latent_dim: True
 different_decoder: True

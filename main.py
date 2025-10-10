@@ -114,13 +114,13 @@ def main(cfg):
     trainer = pl.Trainer(
         callbacks=[checkpoint_callback, lr_monitor], logger=logger, **cfg.model.trainer
     )
-    tracer = VizTracer()
-    tracer.start()
+    # tracer = VizTracer()
+    # tracer.start()
     trainer.fit(model, train_loader, val_loader)
-    tracer.stop()
-    tracer.save(f"is_all-pixels_tracer.json")
+    # tracer.stop()
+    # tracer.save(f"Remove-duplicated_SH-time-record_tracer.json")
     """  Skipping testing for now """
-    # test_results = trainer.test(model, dataloaders=test_loader)
+    # test_results = trainer.test(model, dataloaders=val_loader)
 
     # test_psnr = sum(result['test/psnr'] for result in test_results) / len(test_results)
     # print(f"PSNR for roughness {roughness:.2f}, metallic {metallic:.2f}: {test_psnr:.2f}")

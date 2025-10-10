@@ -62,6 +62,14 @@ def create_rectangle_scene(center=[0, 0, 0], width=0.4, length=0.4):
     }
     return mi.load_dict(scene_dict)
 
+def create_rectangle_scene_params(center=[0, 0, 0], width=0.4, length=0.4):
+    scene_params = {
+        "center": center,
+        "width": width,
+        "length": length
+    }
+    return scene_params
+
 def load_and_transform_mesh_trimesh(obj_path):
     """
     Load mesh from obj_path, scale and transform it to the origin,( scale it to 0.2, and computing the average y axis and moving it toward -y direction), then save the transformed mesh.

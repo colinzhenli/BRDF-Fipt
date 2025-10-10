@@ -1,6 +1,8 @@
 type: "AnisotropicLatentTexturedModel"
 latent_dim: 8
 predict_frame: True
+use_nerfstudio_sh: False
+
 gt_frame: False
 colorful_texture: True
 leaky_relu: True
