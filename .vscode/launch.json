@@ -53,25 +53,46 @@
         //     ]
         // },
 
+        // {
+        //     "name": "Python: Current File",
+        //     "type": "python",
+        //     "request": "launch",
+        //     "program": "main.py",
+        //     "console": "integratedTerminal",
+        //     "justMyCode": true,
+        //     "env": {
+        //         "CUDA_VISIBLE_DEVICES": "1"
+        //     },
+        //     "args": [
+        //         "dataset_folder=/media/raid/cloth/No_cable_capture_Sep22/BRDF_recon_Sep30/Controlled_light/hdr",
+        //         "renderer=realcapture_area_emitter",
+        //         "material=ani_latent_texture_model",
+        //         "experiment_name=Remove-duplicated_SH-time-record_1",
+        //         // "model.ckpt_path=/media/raid/cloth/output/BRDF/real/All-images_Correct-cam_Neural-geometry_Stream-training-chunk-400-iter-5000_run_1/training/model_0.20_0.20/last.ckpt"
+        //     ]
+        // }
+        
         {
-            "name": "Python: Current File",
+            "name": "Debug Color Matrix",
             "type": "python",
             "request": "launch",
-            "program": "main.py",
+            "program": "./recon/calibration/color_matrix.py",
             "console": "integratedTerminal",
             "justMyCode": true,
             "env": {
-                "CUDA_VISIBLE_DEVICES": "1"
+                "CUDA_VISIBLE_DEVICES": "0"
             },
             "args": [
-                "dataset_folder=/media/raid/cloth/No_cable_capture_Sep22/BRDF_recon_Sep30/Controlled_light/hdr",
-                "renderer=realcapture_area_emitter",
-                "material=ani_latent_texture_model",
-                "experiment_name=Remove-duplicated_SH-time-record_1",
-                // "model.ckpt_path=/media/raid/cloth/output/BRDF/real/All-images_Correct-cam_Neural-geometry_Stream-training-chunk-400-iter-5000_run_1/training/model_0.20_0.20/last.ckpt"
+                "--lab_file",
+                "ColorChecker24_After_Nov2014.txt",
+                "--images_folder",
+                "/media/raid/cloth/capture_data/BRDF_recon_Oct12_color_checker/hdr",
+                "--out_suffix",
+                "_ccorr.png"
             ]
-        }
+        },
 
+        
         // {
         //     "name": "Python: Current File",
         //     "type": "python",
