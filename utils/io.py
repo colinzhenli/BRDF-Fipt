@@ -65,13 +65,38 @@ def load_camera_turntable_light_metadata(json_path):
 
 def load_camera_metadata(json_path):
     """
-    Load only camera metadata from JSON file.
+    Load only camera metadata from JSON file. Camera is in openGL convention.
     
     Args:
         json_path (str): Path to the JSON file containing camera and light data
         
     Returns:
         dict: Dictionary mapping camera_id (str) to camera metadata
+    """
+    import json
+    
+    # Load JSON file
+    with open(json_path, 'r') as f:
+        camera_light_data = json.load(f)
+    
+    # Create camera metadata dictionary
+    camera_metadata = {}
+    
+    for item in camera_light_data:
+        camera_id = item['camera_id']
+        # Store camera metadata only for non-appeared camera id
+        if str(camera_id) not in camera_metadata:
+            camera_metadata[str(camera_id)] = {
+                'position': [pos / 1000.0 for pos in item['position']],
+                'rotation_matrix': item['rotation_matrix'],
+            }
+    
+    return camera_metadata
+
+def load_camera_metadata_from_robotic_log(json_path):
+    """
+    Camera is in openGL convention.
+    Load camera metadata from gripper JSON file.
     """
     import json
     
