@@ -788,18 +788,18 @@ def batched_path_tracing_tbn_real_area_emitter(scene,emitter_net,material_net,ra
         w_mis = torch.where((emit_pdf>0)&(~brdf_pdf.isinf()),emit_pdf*emit_pdf/(emit_pdf*emit_pdf+brdf_pdf*brdf_pdf),0)
         w_mis[emit_pdf.isinf()|(brdf_pdf==0)] = 1
         # Avoid in-place indexed operation for cleaner autograd graph
-        # contribution = emit_brdf * emit_weight
-        # L_update = torch.zeros_like(L)
-        # L_update[vis] = contribution
-        # L = L + L_update
-        L[vis] += emit_weight * emit_brdf
+        contribution = emit_brdf * emit_weight
+        L_update = torch.zeros_like(L)
+        L_update[vis] = contribution
+        L = L + L_update
+        # L[vis] += emit_weight * emit_brdf
     # sample brdf
     if brdf_sampling:
         wi,brdf_pdf,brdf_weight = material_net.sample_brdf(
             gt_params,
             position,
             torch.rand(len(normal),device=device),
-            torch.rand(len(normal),2,devicsae=device),
+            torch.rand(len(normal),2,device=device),
             wo,normal,
             latent,
             batch_mask,

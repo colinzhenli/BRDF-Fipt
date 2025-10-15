@@ -380,11 +380,11 @@ class BRDFTrainer(pl.LightningModule):
             
             # Save the tone-mapped ground truth and result images
             torchvision.utils.save_image(
-                self.tone_mapping(sample_rgbs_gt.permute(2, 0, 1)),
+                sample_rgbs_gt.permute(2, 0, 1),
                 os.path.join(output_dir, f'gt_view_{batch_idx}_{b}.png')
             )
             torchvision.utils.save_image(
-                self.tone_mapping(sample_rgbs.permute(2, 0, 1)),
+                sample_rgbs.permute(2, 0, 1),
                 os.path.join(output_dir, f'result_view_{batch_idx}_{b}.png')
             )
             # # Save non-gamma-corrected result image

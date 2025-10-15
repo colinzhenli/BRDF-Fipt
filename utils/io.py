@@ -2,7 +2,7 @@ import json
 import os
 import glob
 import torch
-from utils.transform import build_rot_about_point, build_cw_rotz_from_deg, rodrigues_axis_angle
+from utils.transform import build_rot_about_point, build_cw_rotz_from_deg, rodrigues_axis_angle, build_4x4
 
 def load_camera_turntable_light_metadata(json_path):
     """
@@ -63,15 +63,10 @@ def load_camera_turntable_light_metadata(json_path):
     
     return metadata, camera_metadata, None
 
-def load_camera_metadata(json_path):
+def load_camera_metadata_from_robotic_log(json_path, turntable_center, turntable_axis, R_c2g, t_c2g):
     """
-    Load only camera metadata from JSON file. Camera is in openGL convention.
-    
-    Args:
-        json_path (str): Path to the JSON file containing camera and light data
-        
-    Returns:
-        dict: Dictionary mapping camera_id (str) to camera metadata
+    Camera is in openGL convention.
+    Load camera metadata from gripper JSON file.
     """
     import json
     
@@ -86,17 +81,36 @@ def load_camera_metadata(json_path):
         camera_id = item['camera_id']
         # Store camera metadata only for non-appeared camera id
         if str(camera_id) not in camera_metadata:
+            # Get turn angle if available
+            turn_angle = item['turn_angle']
+            
+            # Build camera-to-world transformation
+            # First get gripper-to-world, then transform from camera-to-gripper
+            g2w = build_4x4(item['rotation_matrix'], [pos / 1000.0 for pos in item['position']])
+            c2g = build_4x4(R_c2g, t_c2g)
+            c2w = g2w @ c2g
+            
+            # Transform camera back to 0-angle world
+            Tw2w0 = build_rot_about_point(rodrigues_axis_angle(turntable_axis, -turn_angle), turntable_center)
+            c2w0 = Tw2w0 @ c2w
+            
+            # Extract position and rotation matrix from c2w0
             camera_metadata[str(camera_id)] = {
-                'position': [pos / 1000.0 for pos in item['position']],
-                'rotation_matrix': item['rotation_matrix'],
+                'position': c2w0[:3, 3].tolist(),
+                'rotation_matrix': c2w0[:3, :3].tolist(),
             }
     
     return camera_metadata
 
-def load_camera_metadata_from_robotic_log(json_path):
+def load_camera_metadata(json_path):
     """
-    Camera is in openGL convention.
-    Load camera metadata from gripper JSON file.
+    Load only camera metadata from JSON file. Camera is in openGL convention.
+    
+    Args:
+        json_path (str): Path to the JSON file containing camera and light data
+        
+    Returns:
+        dict: Dictionary mapping camera_id (str) to camera metadata
     """
     import json
     

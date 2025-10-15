@@ -114,11 +114,11 @@ def main(cfg):
     trainer = pl.Trainer(
         callbacks=[checkpoint_callback, lr_monitor], logger=logger, **cfg.model.trainer
     )
-    # tracer = VizTracer()
-    # tracer.start()
+    tracer = VizTracer()
+    tracer.start()
     trainer.fit(model, train_loader, val_loader)
-    # tracer.stop()
-    # tracer.save(f"Remove-duplicated_SH-time-record_tracer.json")
+    tracer.stop()
+    tracer.save(f"Remove-duplicated_SH-time-record_tracer_1ddda.json")
     """  Skipping testing for now """
     # test_results = trainer.test(model, dataloaders=val_loader)
 
