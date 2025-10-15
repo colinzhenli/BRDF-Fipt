@@ -11,7 +11,7 @@ from pathlib import Path
 from torch.utils.data import IterableDataset
 from tqdm import tqdm
 import matplotlib.pyplot as plt
-from utils.io import load_camera_turntable_light_metadata, load_camera_metadata
+from utils.io import load_camera_turntable_light_metadata, load_camera_metadata, load_camera_metadata_from_robotic_log
 
 def build_4x4(R, t):
     T = np.eye(4, dtype=float)
@@ -120,10 +120,13 @@ def get_c2w_from_robot_pose(camera_info, R_c2g, t_c2g):
     c2w = g2w @ c2g
     return torch.from_numpy(c2w[:3, :4]).float()
 
-def load_metadata(metadata_path, camera_metadata_path, gt_folder, cfg, debug, debug_num, split):
+def load_metadata(colmap_camera, metadata_path, camera_metadata_path, gt_folder, cfg, debug, debug_num, split, turntable_center, turntable_axis, R_c2g, t_c2g):
     metadata, _, _= load_camera_turntable_light_metadata(metadata_path)
     
-    camera_metadata = load_camera_metadata(camera_metadata_path)
+    if colmap_camera:
+        camera_metadata = load_camera_metadata(camera_metadata_path)
+    else:
+        camera_metadata = load_camera_metadata_from_robotic_log(camera_metadata_path, turntable_center, turntable_axis, R_c2g, t_c2g)
     
     # Filter out metadata entries with non-existent image files and filtered_puple_ids
     valid_metadata = []
@@ -200,18 +203,20 @@ class RealImageDataset(IterableDataset):
         self.distortion = self.intrinsics['distortion']
         self.focal = self.intrinsics['focal_length']
         self.img_hw = (self.intrinsics['height'], self.intrinsics['width'])
-        
+        self.ccm = cfg.data.ccm
         self.chunk_size = cfg.data.chunk_size
         self.reload_data = True
         self.switch_iters = cfg.data.switch_iters
         # get R_c2g and t_c2g from cfg
         self.R_c2g = cfg.renderer.camera.R_c2g
         self.t_c2g = cfg.renderer.camera.t_c2g
-        
+        self.turntable_center = cfg.renderer.emitter.turntable.center
+        self.turntable_axis = cfg.renderer.emitter.turntable.axis
+        self.colmap_camera = cfg.renderer.camera.colmap_camera # whether to use colmap camera or robotic log camera
         # Load metadata from JSON file
         metadata_path = cfg.data.metadata_path
         camera_metadata_path = cfg.data.camera_metadata_path
-        self.all_metadata, self.camera_metadata = load_metadata(metadata_path, camera_metadata_path, gt_folder, cfg, self.debug, self.debug_num, 'train')
+        self.all_metadata, self.camera_metadata = load_metadata(self.colmap_camera, metadata_path, camera_metadata_path, gt_folder, cfg, self.debug, self.debug_num, 'train', self.turntable_center, self.turntable_axis, self.R_c2g, self.t_c2g)
 
         self.set_step(0)
         # self.directions = get_ray_directions(self.img_hw[0], self.img_hw[1], self.focal, self.cx, self.cy, self.distortion)
@@ -250,6 +255,7 @@ class RealImageDataset(IterableDataset):
                     print(f"Warning: Could not load image {img_path}, skipping...")
                     continue
                 img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                img = img @ self.ccm
                 img = torch.from_numpy(img).float() / 255.0
             elif img_path.endswith('.exr'):
                 # Load EXR image (already linear)
@@ -517,15 +523,17 @@ class RealValDataset(Dataset):
         self.distortion = self.intrinsics['distortion']
         self.focal = self.intrinsics['focal_length']
         self.img_hw = (self.intrinsics['height'], self.intrinsics['width'])
-        
+        self.ccm = cfg.data.ccm
         # get R_c2g and t_c2g from cfg
         self.R_c2g = cfg.renderer.camera.R_c2g
         self.t_c2g = cfg.renderer.camera.t_c2g
-        
+        self.colmap_camera = cfg.renderer.camera.colmap_camera # whether to use colmap camera or robotic log camera
+        self.turntable_center = cfg.renderer.emitter.turntable.center
+        self.turntable_axis = cfg.renderer.emitter.turntable.axis
         # Load metadata from JSON file
         metadata_path = cfg.data.metadata_path
         camera_metadata_path = cfg.data.camera_metadata_path
-        self.metadata, self.camera_metadata = load_metadata(metadata_path, camera_metadata_path, gt_folder, cfg, self.debug, self.debug_num, 'val')
+        self.metadata, self.camera_metadata = load_metadata(self.colmap_camera, metadata_path, camera_metadata_path, gt_folder, cfg, self.debug, self.debug_num, 'val', self.turntable_center, self.turntable_axis, self.R_c2g, self.t_c2g)
         self.directions = get_ray_directions(self.img_hw[0], self.img_hw[1], self.focal, self.cx, self.cy, self.distortion)
 
     def __len__(self):
@@ -558,6 +566,7 @@ class RealValDataset(Dataset):
             # Load PNG image (original linear RGB)
             img = cv2.imread(img_path, cv2.IMREAD_COLOR)
             img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            img = img @ self.ccm
             img = torch.from_numpy(img).float() / 255.0
         elif img_path.endswith('.exr'):
             # Load EXR image (already linear)

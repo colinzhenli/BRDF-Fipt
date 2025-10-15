@@ -572,3 +572,128 @@ class MipmapLearnableSvPBRBRDF(nn.Module):
         brdf_weight[brdf_weight.isnan()] = 0
 
         return wi, pdf, brdf_weight
+
+import torch
+import torch.nn as nn
+import math
+
+class GreyPatchBRDF(nn.Module):
+    """
+    Minimal BRDF for camera-relative response using 4 ColorChecker greys.
+    - Outputs a single (spectrally-averaged) BRDF value per ray.
+    - Only valid when:   |θ_i - 45°| <= inc_thresh_deg   AND   |θ_o - 90°| <= view_thresh_deg
+      Else returns -1.
+    - Per-ray selection of which grey patch via integer patch_index ∈ {0,1,2,3}
+      mapping: 0=White 9.5, 1=Neutral 8, 2=Neutral 6.5, 3=Neutral 3.5.
+    """
+    def __init__(self, inc_thresh_deg=2.0, view_thresh_deg=2.0, device="cuda"):
+        super().__init__()
+        self.inc_thresh_deg = inc_thresh_deg
+        self.view_thresh_deg = view_thresh_deg
+        self.device = torch.device(device if torch.cuda.is_available() else "cpu")
+
+        # ─────────────────────────────────────────────────────────────────────
+        # 1) Reference wavelengths (nm) and BabelColor Avg. spectra (30 charts)
+        #    Only rows: 19 (White 9.5), 20 (Neutral 8), 21 (Neutral 6.5), 23 (Neutral 3.5)
+        # ─────────────────────────────────────────────────────────────────────
+        wl = torch.arange(380, 740, 10, dtype=torch.float32)  # 380..730 step 10 → 36 bands
+
+        white_95 = torch.tensor([
+            0.189,0.255,0.423,0.660,0.811,0.862,0.877,0.884,0.891,0.896,0.899,0.904,
+            0.907,0.909,0.911,0.910,0.911,0.914,0.913,0.916,0.915,0.916,0.914,0.915,
+            0.918,0.919,0.921,0.923,0.924,0.922,0.922,0.925,0.927,0.930,0.930,0.933
+        ], dtype=torch.float32)
+
+        neutral_8 = torch.tensor([
+            0.171,0.232,0.365,0.507,0.567,0.583,0.588,0.590,0.591,0.590,0.588,0.588,
+            0.589,0.589,0.591,0.590,0.590,0.590,0.589,0.591,0.590,0.590,0.587,0.585,
+            0.583,0.580,0.578,0.576,0.574,0.572,0.571,0.569,0.568,0.568,0.566,0.566
+        ], dtype=torch.float32)
+
+        neutral_65 = torch.tensor([
+            0.144,0.192,0.272,0.331,0.350,0.357,0.361,0.363,0.363,0.361,0.359,0.358,
+            0.358,0.359,0.360,0.360,0.361,0.361,0.360,0.362,0.362,0.361,0.359,0.358,
+            0.355,0.352,0.350,0.348,0.345,0.343,0.340,0.338,0.335,0.334,0.332,0.331
+        ], dtype=torch.float32)
+
+        neutral_35 = torch.tensor([
+            0.068,0.077,0.084,0.087,0.089,0.090,0.092,0.092,0.091,0.090,0.090,0.090,
+            0.090,0.090,0.090,0.090,0.090,0.090,0.090,0.090,0.090,0.089,0.089,0.088,
+            0.087,0.086,0.086,0.085,0.084,0.084,0.083,0.083,0.082,0.081,0.081,0.081
+        ], dtype=torch.float32)
+
+        # Stack and compute spectral averages (simple mean over 380–730 nm)
+        spectra = torch.stack([white_95, neutral_8, neutral_65, neutral_35], dim=0)  # (4,36)
+        avg_r = spectra.mean(dim=1)  # (4,)
+
+        # Camera-relative response (reflectance normalized by white patch average)
+        rel = avg_r / (avg_r[0] + 1e-8)
+
+        # Keep everything as buffers (non-trainable) and metadata for traceability
+        self.register_buffer("wavelengths_nm", wl, persistent=False)
+        self.register_buffer("spectra", spectra, persistent=False)     # shape (4,36)
+        self.register_buffer("avg_reflectance", avg_r, persistent=False)  # shape (4,)
+        self.register_buffer("relative_reflectance", rel, persistent=False)  # shape (4,)
+
+        # ─────────────────────────────────────────────────────────────────────
+        # Metadata explaining provenance & processing
+        # ─────────────────────────────────────────────────────────────────────
+        self.metadata = {
+            "source": "BabelColor Avg., 30 charts (ColorChecker Classic)",
+            "wavelengths_nm": "380..730 nm in 10 nm steps (36 bands)",
+            "patch_order": ["white 9.5 (.05D)", "neutral 8 (.23D)", "neutral 6.5 (.44D)", "neutral 3.5 (1.05D)"],
+            "processing": [
+                "Used only the 4 grey patches (unchanged standard row).",
+                "Computed simple arithmetic mean reflectance across 380–730 nm for each patch.",
+                "Converted to camera-relative response by normalizing each patch’s average by the white patch’s average.",
+                "BRDF assumed Lambertian: brdf = (ρ_rel / π), independent of direction; gating is angle-only."
+            ],
+            "avg_reflectance_per_patch": avg_r.tolist(),
+            "relative_reflectance_per_patch": rel.tolist()
+        }
+
+    @staticmethod
+    def _angle_from_normal(v, n):
+        # v,n: (...,3) unit vectors. Return polar angle θ to the normal in degrees.
+        cos_theta = torch.clamp((v * n).sum(dim=-1), -1.0, 1.0)
+        theta_rad = torch.arccos(cos_theta)
+        return theta_rad * (180.0 / math.pi)
+
+    def eval_brdf(self, wi, wo, normal, patch_index,
+                  target_inc_deg=45.0, target_view_deg=90.0):
+        """
+        Args:
+            wi          : (N,3) incident direction (pointing *toward* the surface)
+            wo          : (N,3) view direction (pointing *toward* the camera)
+            normal      : (N,3) surface normal (unit)
+            patch_index : (N,) int in {0,1,2,3}  (0=White9.5, 1=N8, 2=N6.5, 3=N3.5)
+            target_inc_deg  : nominal incident polar angle (default 45°)
+            target_view_deg : nominal view polar angle   (default 90°)
+
+        Returns:
+            brdf : (N,1) tensor. If angles out of range → −1. Otherwise ρ_rel/π.
+        """
+        wi = torch.nn.functional.normalize(wi, dim=-1)
+        wo = torch.nn.functional.normalize(wo, dim=-1)
+        normal = torch.nn.functional.normalize(normal, dim=-1)
+
+        # Per-ray angles to the normal (deg)
+        theta_i = self._angle_from_normal(wi, normal)
+        theta_o = self._angle_from_normal(wo, normal)
+
+        # In-range masks
+        inc_ok  = (theta_i - target_inc_deg).abs()  <= self.inc_thresh_deg
+        view_ok = (theta_o - target_view_deg).abs() <= self.view_thresh_deg
+        ok = inc_ok & view_ok
+
+        # Look up relative reflectance per ray
+        # clamp indices to [0,3] just in case
+        pidx = torch.clamp(patch_index.long(), 0, 3)
+        rho_rel = self.relative_reflectance[pidx]  # (N,)
+
+        # Lambertian BRDF (camera-relative): constant per patch when valid
+        brdf_val = rho_rel / math.pi  # (N,)
+        # set invalid ones to -1
+        brdf_val = torch.where(ok, brdf_val, torch.full_like(brdf_val, -1.0))
+
+        return brdf_val.unsqueeze(-1)  # (N,1)

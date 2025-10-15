@@ -4,6 +4,7 @@ emitter_sampling: True # not actually used
 indir_depth: 0
 
 camera:
+  colmap_camera: True # whether to use colmap camera or robotic log camera
   distance: 2.0
   number_of_views: 40 # used to generate reference images
   number_of_view_test: 10
