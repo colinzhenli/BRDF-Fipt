@@ -12,6 +12,8 @@ from torch.utils.data import IterableDataset
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 from utils.io import load_camera_turntable_light_metadata, load_camera_metadata, load_camera_metadata_from_robotic_log
+import threading, queue, time
+from dataclasses import dataclass
 
 def build_4x4(R, t):
     T = np.eye(4, dtype=float)
@@ -182,9 +184,81 @@ def load_metadata(colmap_camera, metadata_path, camera_metadata_path, gt_folder,
         selected_metadata = [metadata[i] for i in selected_indices] 
         
     return selected_metadata, camera_metadata
-
+        
 class RealImageDataset(IterableDataset):
-    """ training dataset that loads images from metadata, returns sampled rays with emitter IDs"""
+    """Training dataset that loads big image chunks into RAM and samples rays from the active chunk.
+       This version adds a RAM double-buffer with background prefetch, while keeping your original
+       `preload_rays_and_rgbs()` implementation *unchanged* below (comments preserved).
+    """
+
+    # ------------------------------
+    # Minimal helpers embedded here
+    # ------------------------------
+    @dataclass
+    class ChunkData:
+        rays: torch.Tensor
+        rgbs: torch.Tensor
+        camera_ids: torch.Tensor
+        emitter_ids: torch.Tensor
+        pdf: torch.Tensor
+
+    class _DoubleBuffer:
+        """Two RAM slots with a background thread that fills the inactive slot."""
+        def __init__(self, build_chunk_fn):
+            self.build_chunk_fn = build_chunk_fn           # fn(chunk_order_idx)->ChunkData
+            self.slots = [None, None]                      # 
+            self.ready = [threading.Event(), threading.Event()]
+            self.active = 0
+            self._stop = False
+            self._q = queue.Queue(maxsize=2)
+            self._t = threading.Thread(target=self._worker, daemon=True)
+            self._t.start()
+
+        def _worker(self):
+            while not self._stop:
+                try:
+                    slot_id, chunk_idx = self._q.get(timeout=0.1)
+                except queue.Empty:
+                    continue
+                data = self.build_chunk_fn(chunk_idx)      # decode images, build rays/pdf, etc.
+                self.slots[slot_id] = data
+                self.ready[slot_id].set()
+
+        def request_fill(self, slot_id, chunk_idx):
+            self.ready[slot_id].clear()
+            try:
+                self._q.put_nowait((slot_id, chunk_idx))
+            except queue.Full:
+                # drop oldest request to keep moving
+                try:
+                    _ = self._q.get_nowait()
+                except queue.Empty:
+                    pass
+                self._q.put_nowait((slot_id, chunk_idx))
+
+        def wait_initial(self):
+            self.ready[self.active].wait()
+
+        def try_swap(self):
+            nxt = 1 - self.active
+            if self.ready[nxt].is_set():
+                old = self.active
+                self.active = nxt
+                self.ready[old].clear()   # Clear old slot’s ready flag to prevent ping-pong
+                return True
+            return False
+
+        def current(self):
+            self.ready[self.active].wait()
+            return self.slots[self.active]
+
+        def stop(self):
+            self._stop = True
+            self._t.join(timeout=1.0)
+
+    # ------------------------------
+    # Original init + minimal changes
+    # ------------------------------
     def __init__(self, cfg, gt_folder, split):
         self.cfg = cfg
         self.pixel = True
@@ -205,25 +279,263 @@ class RealImageDataset(IterableDataset):
         self.img_hw = (self.intrinsics['height'], self.intrinsics['width'])
         self.ccm = cfg.data.ccm
         self.chunk_size = cfg.data.chunk_size
-        self.reload_data = True
         self.switch_iters = cfg.data.switch_iters
+        self.random_chunks = cfg.data.random_chunks
         # get R_c2g and t_c2g from cfg
         self.R_c2g = cfg.renderer.camera.R_c2g
         self.t_c2g = cfg.renderer.camera.t_c2g
         self.turntable_center = cfg.renderer.emitter.turntable.center
         self.turntable_axis = cfg.renderer.emitter.turntable.axis
-        self.colmap_camera = cfg.renderer.camera.colmap_camera # whether to use colmap camera or robotic log camera
+        self.colmap_camera = cfg.renderer.camera.colmap_camera  # whether to use colmap camera or robotic log camera
+
         # Load metadata from JSON file
         metadata_path = cfg.data.metadata_path
         camera_metadata_path = cfg.data.camera_metadata_path
-        self.all_metadata, self.camera_metadata = load_metadata(self.colmap_camera, metadata_path, camera_metadata_path, gt_folder, cfg, self.debug, self.debug_num, 'train', self.turntable_center, self.turntable_axis, self.R_c2g, self.t_c2g)
+        self.all_metadata, self.camera_metadata = load_metadata(
+            self.colmap_camera,
+            metadata_path,
+            camera_metadata_path,
+            gt_folder,
+            cfg,
+            self.debug,
+            self.debug_num,
+            split,
+            self.turntable_center,
+            self.turntable_axis,
+            self.R_c2g,
+            self.t_c2g
+        )
 
-        self.set_step(0)
-        # self.directions = get_ray_directions(self.img_hw[0], self.img_hw[1], self.focal, self.cx, self.cy, self.distortion)
-        # self.all_rays, self.all_rgbs, self.all_emitter_ids, self.all_pdf = self.preload_rays_and_rgbs(downsample_scale=1)           
+        # Internal state
+        self.step = 0
+        self.reload_data = True
+        self._shuffled_indices = torch.randperm(len(self.all_metadata)).tolist()
+        self._next_chunk_order_idx = 0  # next chunk to be built by background thread
 
+        # Start double buffer
+        self._dbuf = RealImageDataset._DoubleBuffer(self._build_chunk_fn)
+        # Prefill two chunks: slot 0 (active) and slot 1 (next)
+        self._dbuf.request_fill(0, self._next_chunk_order_idx); self._next_chunk_order_idx += 1
+        self._dbuf.request_fill(1, self._next_chunk_order_idx); self._next_chunk_order_idx += 1
+        self._dbuf.wait_initial()  # ensure first active chunk exists
 
+    # ------------------------------
+    # Step control (Lightning calls this)
+    # ------------------------------
+    def set_step(self, step: int):
+        self.step = step
+        # Request next chunk build at boundaries; swap happens lazily in __iter__
+        if self.chunk_size > 0 and step % self.switch_iters == 0:
+            next_slot = 1 - self._dbuf.active
+            print(f"[Step {step}] Requesting chunk {self._next_chunk_order_idx} to load into slot {next_slot}")
+            self._dbuf.request_fill(next_slot, self._next_chunk_order_idx)
+            self._next_chunk_order_idx += 1
 
+    # ------------------------------
+    # Iterator: sample from active chunk; swap when next is ready
+    # ------------------------------
+    def __iter__(self):
+        while True:
+            # Non-blocking swap if next slot ready
+            if self._dbuf.try_swap():
+                print(f"[Step {self.step}] ✓ Switched to slot {self._dbuf.active} (chunk ready)")
+
+            # Use current active chunk
+            chunk = self._dbuf.current()
+            if chunk is None or chunk.rays.numel() == 0:
+                time.sleep(0.01)
+                continue
+
+            # Importance or uniform sampling (no minibatch; just rays from active chunk)
+            if self.importance_sampling and chunk.pdf.numel() > 0:
+                N = self.rays_num
+                sample_idx = torch.multinomial(chunk.pdf, N, replacement=True)
+                pdf_vals = chunk.pdf[sample_idx] * len(chunk.pdf)
+            else:
+                N = min(self.rays_num, chunk.rays.shape[0])
+                sample_idx = torch.randint(0, chunk.rays.shape[0], (N,), dtype=torch.long)
+                pdf_vals = torch.ones(N)
+
+            yield {
+                'rays':        chunk.rays[sample_idx],  
+                'rgbs':        chunk.rgbs[sample_idx],
+                'emitter_ids': chunk.emitter_ids[sample_idx],
+                'camera_ids':  chunk.camera_ids[sample_idx],
+                'pdf':         pdf_vals,
+                'gt_params':   torch.zeros(1),
+            }
+
+    # ------------------------------
+    # Internal: choose metadata for a chunk
+    # ------------------------------
+    def _chunk_metadata(self, chunk_order_idx: int):
+        """Return a list of metadata entries for the given chunk order; reshuffle at wrap."""
+        if self.chunk_size <= 0:
+            return self.all_metadata  # single-chunk path
+
+        total = len(self.all_metadata)
+        
+        if self.random_chunks:
+            chunk_indices = torch.randperm(total)[:self.chunk_size].tolist()
+            return [self.all_metadata[i] for i in chunk_indices]
+        else:
+            # Original sequential behavior with shuffling at wrap
+            # Wrap + reshuffle when we reach the end
+            num_chunks = (total + self.chunk_size - 1) // self.chunk_size
+            if chunk_order_idx >= num_chunks:
+                self._shuffled_indices = torch.randperm(total).tolist()
+                chunk_order_idx = 0
+
+            start = chunk_order_idx * self.chunk_size
+            end = min(start + self.chunk_size, total)
+            return [self.all_metadata[i] for i in self._shuffled_indices[start:end]]
+
+    def _downsample_for_step(self, step: int) -> int:
+        a, b = self.downsample_iter[0], self.downsample_iter[1]
+        if a >= 0 and step < a:
+            return 4
+        elif b >= 0 and step < b:
+            return 2
+        else:
+            return 1
+
+    # ------------------------------
+    # Background builder for one chunk (uses a threadsafe variant of your preload)
+    # ------------------------------
+    def _build_chunk_fn(self, chunk_order_idx: int) -> "RealImageDataset.ChunkData":
+        # Pick metadata list for this chunk (does not mutate self.metadata)
+        meta_list = self._chunk_metadata(chunk_order_idx)
+
+        # Decide downsample based on current step snapshot
+        ds = self._downsample_for_step(self.step)
+        h, w = self.img_hw
+        h_down, w_down = h // ds, w // ds
+        directions = get_ray_directions(h_down, w_down, self.focal, self.cx, self.cy, self.distortion)
+
+        # Thread-safe preload that does NOT touch self.metadata/self.directions
+        rays, rgbs, camera_ids, emitter_ids, pdf = self._preload_given_metadata(meta_list, directions, downsample_scale=ds)
+
+        return RealImageDataset.ChunkData(
+            rays=rays, rgbs=rgbs, camera_ids=camera_ids, emitter_ids=emitter_ids, pdf=pdf
+        )
+
+    # ------------------------------------------------------------------------------------
+    # THREAD-SAFE VARIANT of your loader (same logic, parameterized by metadata/directions)
+    # ------------------------------------------------------------------------------------
+    def _preload_given_metadata(self, metadata_list, directions, downsample_scale=1):
+        # This body mirrors your original implementation, except it uses
+        # (metadata_list, directions) passed in, so it is safe for a background thread.
+        all_rays = []
+        all_rgbs = []
+        all_emitter_ids = []
+        all_camera_ids = []
+        print(f"Loading chunk with {len(metadata_list)} images...")
+        for img_data in metadata_list:
+            # Get camera info using camera_id
+            camera_info = self.camera_metadata[str(img_data["camera_id"])]
+            camera_dict = {
+                "position": camera_info["position"],
+                "rotation_matrix": camera_info["rotation_matrix"],
+            }
+
+            # Generate rays for this camera
+            # c2w = get_c2w_from_robot_pose(camera_dict, self.R_c2g, self.t_c2g)
+            c2w = torch.from_numpy(build_4x4(camera_dict["rotation_matrix"], camera_dict["position"])).float()
+            # c2w = _cv_to_gl(c2w)[:3, :4]
+            c2w = c2w[:3, :4]
+            rays_o, rays_d, dxdu, dydv = get_rays(directions, c2w, focal=self.intrinsics['focal_length'])
+            rays = torch.cat([rays_o, rays_d, dxdu, dydv], dim=-1)
+
+            # Load original RGB image (without gamma correction)
+            file_name = img_data["filename"]
+            img_path = os.path.join(self.gt_folder, file_name)
+
+            if img_path.endswith('.png'):
+                # Load PNG image (original linear RGB)
+                img = cv2.imread(img_path, cv2.IMREAD_COLOR)
+                if img is None:
+                    print(f"Warning: Could not load image {img_path}, skipping...")
+                    continue
+                img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                img = img @ self.ccm
+                img = torch.from_numpy(img).float() / 255.0
+            elif img_path.endswith('.exr'):
+                # Load EXR image (already linear)
+                img = open_exr(img_path, self.img_hw)
+            else:
+                raise ValueError(f"Unsupported image format: {img_path}")
+
+            img_flat = img.reshape(-1, 3)
+            # Downsample the image if needed
+            if downsample_scale > 1:
+                # Reshape to image format for downsampling
+                img_reshaped = img_flat.reshape(self.img_hw[0], self.img_hw[1], 3)
+                # Downsample using average pooling
+                img_downsampled = torch.nn.functional.avg_pool2d(
+                    img_reshaped.permute(2, 0, 1).unsqueeze(0),  # [1, 3, H, W]
+                    kernel_size=downsample_scale,
+                    stride=downsample_scale
+                ).squeeze(0).permute(1, 2, 0)  # [H', W', 3]
+                img_flat = img_downsampled.reshape(-1, 3)
+
+            # Get emitter ID directly from metadata
+            emitter_id = img_data["emitter_id"]
+            emitter_ids = torch.full((rays.shape[0],), emitter_id, dtype=torch.long)
+            camera_ids = torch.full((rays.shape[0],), int(img_data["camera_id"]), dtype=torch.long)
+
+            # Filter out low luminance rays
+            luminance = (0.2126 * img_flat[..., 0] +
+                         0.7152 * img_flat[..., 1] +
+                         0.0722 * img_flat[..., 2])
+            luminance_threshold = 1e-7
+            valid_mask = luminance > luminance_threshold
+
+            # Apply mask to filter out low luminance rays
+            rays = rays[valid_mask]
+            img_flat = img_flat[valid_mask]
+            emitter_ids = emitter_ids[valid_mask]
+            camera_ids = camera_ids[valid_mask]
+            all_rays.append(rays)
+            all_rgbs.append(img_flat)
+            all_emitter_ids.append(emitter_ids)
+            all_camera_ids.append(camera_ids)
+        
+        print(f"Finished loading chunk: {len(all_rays)} images processed")
+
+        # Concatenate all data
+        if len(all_rays) == 0:
+            # Empty fallback
+            rays = torch.empty(0, 12)
+            rgbs = torch.empty(0, 3)
+            emitter_ids = torch.empty(0, dtype=torch.long)
+            camera_ids = torch.empty(0, dtype=torch.long)
+            pdf = torch.empty(0)
+            return (rays, rgbs, camera_ids, emitter_ids, pdf)
+
+        rays = torch.cat(all_rays)
+        rgbs = torch.cat(all_rgbs)
+        emitter_ids = torch.cat(all_emitter_ids)
+        camera_ids = torch.cat(all_camera_ids)
+
+        # Calculate luminance for importance sampling
+        luminance = (0.2126 * rgbs[..., 0] +
+                     0.7152 * rgbs[..., 1] +
+                     0.0722 * rgbs[..., 2])         # (N_tot,)
+        luminance = torch.abs(luminance)
+        pdf = luminance.detach() / (luminance.sum() + 1e-12)  # p_i  (no grad)
+
+        # Randomly permute the data
+        perm_indices = torch.randperm(rays.shape[0])
+        rays = rays[perm_indices]
+        rgbs = rgbs[perm_indices]
+        emitter_ids = emitter_ids[perm_indices]
+        camera_ids = camera_ids[perm_indices]
+        pdf = pdf[perm_indices]
+        return (rays, rgbs, camera_ids, emitter_ids, pdf)
+
+    # ----------------------------------------------------------------------------------------------------
+    # YOUR ORIGINAL IMPLEMENTATION (unchanged; preserved for reference and possible synchronous use)
+    # ----------------------------------------------------------------------------------------------------
     def preload_rays_and_rgbs(self, downsample_scale=1):
         all_rays = []
         all_rgbs = []
@@ -318,197 +630,6 @@ class RealImageDataset(IterableDataset):
         camera_ids = camera_ids[perm_indices]
         return (rays, rgbs, camera_ids, emitter_ids, pdf)
 
-    def _switch_chunk(self, chunk_size):
-        """Switch to a different chunk of images for training
-        
-        Args:
-            chunk_size: Number of images to include in each chunk
-        """
-        # Initialize chunk tracking if not exists
-        if not hasattr(self, '_chunk_index'):
-            self._chunk_index = 0
-            self._shuffled_indices = None
-        
-        # Shuffle indices if starting fresh or completed all chunks
-        total_images = len(self.all_metadata)
-        total_chunks = (total_images + chunk_size - 1) // chunk_size  # Ceiling division
-        
-        if self._shuffled_indices is None or self._chunk_index >= total_chunks:
-            # Randomly shuffle all image indices
-            self._shuffled_indices = torch.randperm(total_images).tolist()
-            self._chunk_index = 0
-        
-        # Calculate chunk boundaries
-        start_idx = self._chunk_index * chunk_size
-        end_idx = min(start_idx + chunk_size, total_images)
-        
-        # Get indices for current chunk
-        chunk_indices = self._shuffled_indices[start_idx:end_idx]
-        
-        # Update metadata to only include current chunk
-        self.metadata = [self.all_metadata[i] for i in chunk_indices]
-        
-        # Move to next chunk for next call
-        self._chunk_index += 1
-        
-        print(f"Switched to chunk {self._chunk_index}/{total_chunks} with {len(self.metadata)} images")
-
-    def sampler(self, rgbs_gt):
-        """Set the importance sampler to use for ray sampling"""
-        if self.importance_sampling:
-            # --------------------------------------------------------------
-            # 5-A  Build luminance-pdf and draw importance samples
-            # --------------------------------------------------------------
-            # pdf = luminance.detach()
-            pdf = self.all_pdf
-            if not torch.isfinite(pdf).all():                               # all-black fallback
-                pdf = torch.full_like(pdf, 1.0 / pdf.numel())
-
-            N_sample = self.rays_num
-            # Use chunked sampling to avoid memory issues with large datasets
-            chunk_size = min(15000000, len(pdf))  # Process in chunks of 10M or less
-            sample_idx = []
-            
-            if len(pdf) <= chunk_size:
-                # Small enough to sample directly
-                sample_idx = torch.multinomial(pdf, N_sample, replacement=True)
-            else:
-                # Option 1: Sample from all chunks (original behavior)
-                # Option 2: Sample from one random chunk only (to reduce cost)
-                use_single_chunk = getattr(self, 'use_single_chunk_sampling', False)
-                
-                if use_single_chunk:
-                    # Randomly select one chunk and sample all rays from it
-                    num_chunks = (len(pdf) + chunk_size - 1) // chunk_size  # Ceiling division
-                    selected_chunk_idx = torch.randint(0, num_chunks, (1,)).item()
-                    
-                    start_idx = selected_chunk_idx * chunk_size
-                    end_idx = min(start_idx + chunk_size, len(pdf))
-                    chunk_pdf = pdf[start_idx:end_idx]
-                    
-                    # Skip if chunk has all zero pdf values
-                    if chunk_pdf.sum() == 0:
-                        # Fallback to uniform sampling from this chunk
-                        chunk_indices = torch.randint(0, len(chunk_pdf), (N_sample,))
-                    else:
-                        chunk_indices = torch.multinomial(chunk_pdf, N_sample, replacement=True)
-                    
-                    # Adjust indices to global indexing
-                    sample_idx = chunk_indices + start_idx
-                else:
-                    # Original behavior: sample from all chunks
-                    num_chunks = (len(pdf) + chunk_size - 1) // chunk_size  # Ceiling division
-                    samples_per_chunk = N_sample // num_chunks
-                    remaining_samples = N_sample % num_chunks  # Extra samples for last chunk
-                    
-                    # Loop over each chunk
-                    for chunk_idx in range(num_chunks):
-                        start_idx = chunk_idx * chunk_size
-                        end_idx = min(start_idx + chunk_size, len(pdf))
-                        chunk_pdf = pdf[start_idx:end_idx]
-                        
-                        # Skip chunks where all pdf values are 0
-                        if chunk_pdf.sum() == 0:
-                            continue
-                        
-                        # Determine number of samples for this chunk
-                        if chunk_idx == num_chunks - 1:
-                            # Last chunk gets remaining samples
-                            chunk_samples = samples_per_chunk + remaining_samples
-                        else:
-                            chunk_samples = samples_per_chunk
-                        
-                        if chunk_samples > 0:
-                            chunk_indices = torch.multinomial(chunk_pdf, chunk_samples, replacement=True)
-                            # Adjust indices to global indexing
-                            global_indices = chunk_indices + start_idx
-                            sample_idx.append(global_indices)
-                    
-                    sample_idx = torch.cat(sample_idx) if sample_idx else torch.empty(0, dtype=torch.long)
-                    
-                    # If we still need more samples, fill remaining with uniform sampling
-                    if len(sample_idx) < N_sample:
-                        remaining = N_sample - len(sample_idx)
-                        uniform_indices = torch.randint(0, len(pdf), (remaining,))
-                        sample_idx = torch.cat([sample_idx, uniform_indices])
-            
-            return sample_idx, pdf[sample_idx] * len(pdf)
-        else:
-            # Uniform random sampling
-            N_sample = self.rays_num
-            sample_idx = torch.randint(0, len(rgbs_gt), (N_sample,), dtype=torch.long)
-            pdf = torch.full((N_sample,), 1.0)
-            return sample_idx, pdf
-
-    def set_step(self, step):
-        self.step = step
-        
-        # Switch data chunk every few steps
-        if self.chunk_size > 0 and step % self.switch_iters == 0:
-            self._switch_chunk(chunk_size=self.chunk_size)
-            self.reload_data = True
-        else:
-            self.reload_data = False
-            self.metadata = self.all_metadata
-
-        a, b = self.downsample_iter[0], self.downsample_iter[1]
-        
-        # Determine downsample scale based on thresholds
-        if a >= 0 and step < a:
-            downsample_scale = 4  # Use scale 4 before threshold a
-        elif b >= 0 and step < b:
-            downsample_scale = 2  # Use scale 2 before threshold b
-        else:
-            downsample_scale = 1  # Use scale 1 after both thresholds
-        
-        # Reload data if downsample scale changed
-        if not hasattr(self, '_current_downsample_scale') or self._current_downsample_scale != downsample_scale or self.reload_data:
-            self._current_downsample_scale = downsample_scale
-            # Clear GPU memory if attributes exist
-            if hasattr(self, 'directions'):
-                del self.directions
-            if hasattr(self, 'all_rays'):
-                del self.all_rays
-            if hasattr(self, 'all_rgbs'):
-                del self.all_rgbs
-            if hasattr(self, 'all_emitter_ids'):
-                del self.all_emitter_ids
-            if hasattr(self, 'all_pdf'):
-                del self.all_pdf
-            # Update directions with proper downsampling
-            print(f"Loading rays with downsample scale {downsample_scale}...")
-            h, w = self.img_hw
-            h_down, w_down = h // downsample_scale, w // downsample_scale
-            self.directions = get_ray_directions(h_down, w_down, self.focal, self.cx, self.cy, self.distortion) 
-            self.all_rays, self.all_rgbs, self.all_camera_ids, self.all_emitter_ids, self.all_pdf = self.preload_rays_and_rgbs(downsample_scale=downsample_scale)
-            self.reload_data = False
-            
-    def __iter__(self):
-        while True:
-            if self.sampler is not None:
-            #if False:
-                # Use importance sampler
-                ray_indices, pdf = self.sampler(self.all_rgbs)
-            else:
-                # Fallback to uniform sampling
-                ray_indices = torch.randint(0, len(self.all_rays), (self.rays_num,))
-                pdf = torch.ones(self.rays_num) / len(self.all_rays)
-
-            rays = self.all_rays[ray_indices]
-            rgbs = self.all_rgbs[ray_indices]
-            emitter_ids = self.all_emitter_ids[ray_indices]
-            camera_ids = self.all_camera_ids[ray_indices]
-
-            yield {
-                'rays': rays,
-                'rgbs': rgbs,
-                'emitter_ids': emitter_ids,
-                'pdf': pdf,
-                'gt_params': torch.zeros(1),
-                'camera_ids': camera_ids,
-            }
-
-
 class RealValDataset(Dataset):
     """ validation dataset that loads images from metadata, returns complete images """
     def __init__(self, cfg, gt_folder):
@@ -530,10 +651,13 @@ class RealValDataset(Dataset):
         self.colmap_camera = cfg.renderer.camera.colmap_camera # whether to use colmap camera or robotic log camera
         self.turntable_center = cfg.renderer.emitter.turntable.center
         self.turntable_axis = cfg.renderer.emitter.turntable.axis
+        self.valid_num = cfg.data.valid_num
         # Load metadata from JSON file
         metadata_path = cfg.data.metadata_path
         camera_metadata_path = cfg.data.camera_metadata_path
         self.metadata, self.camera_metadata = load_metadata(self.colmap_camera, metadata_path, camera_metadata_path, gt_folder, cfg, self.debug, self.debug_num, 'val', self.turntable_center, self.turntable_axis, self.R_c2g, self.t_c2g)
+        if self.valid_num > 0:
+            self.metadata = self.metadata[:self.valid_num]
         self.directions = get_ray_directions(self.img_hw[0], self.img_hw[1], self.focal, self.cx, self.cy, self.distortion)
 
     def __len__(self):
@@ -541,6 +665,16 @@ class RealValDataset(Dataset):
 
     def __getitem__(self, idx):
         img_data = self.metadata[idx]
+        if idx == 59:
+            print(f"Camera ID: {img_data['camera_id']}")
+            print(f"Emitter ID: {img_data['emitter_id']}")
+            print(f"Filename: {img_data['filename']}")
+            print(f"Position: {camera_info['position']}")
+            print(f"Rotation Matrix: {camera_info['rotation_matrix']}")
+            print(f"C2W: {c2w}")
+            print(f"Rays: {rays}")
+            print(f"Img Flat: {img_flat}")
+            print(f"Emitter IDs: {emitter_ids}")
         
         # Get camera info using camera_id
         camera_id = img_data["camera_id"]

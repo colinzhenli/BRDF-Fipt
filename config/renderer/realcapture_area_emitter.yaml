@@ -51,7 +51,7 @@ mesh:
   path: 
   mitsuba_scene: False
   rectangle:
-    center: [0.16, -0.11, -0.06]
+    center: [0.16, -0.11, -0.06] 
     # width: 0.24 # board_size
     # length: 0.31
     width: 0.16 # sample_size
@@ -64,7 +64,7 @@ emitter:
   radius: 0.007 # value from specs
   fwhm_deg: 115.0 # full width at half maximum angle(value for specs)
   positions: [0.0, 0.0, 0.0] # to be updated
-  radiance: [10.0, 10.0, 10.0] # largest radiance at 90 degree(to be updated)
+  radiance: [1000.0, 1000.0, 1000.0] # largest radiance at 90 degree(to be updated)
   # turntable:
   #   # center: [0.15054801, -0.22801754, 0.21486147]
   #   center: [0.1638, -0.110, -0.06]

@@ -85,6 +85,7 @@ def main(cfg):
         train_dataset,
         batch_size=cfg.data.batch_size,
         num_workers=cfg.data.num_workers,
+        pin_memory=True,
     )
 
     val_dataset = RealValDataset(cfg, gt_folder=cfg.gt_folder)
@@ -114,11 +115,11 @@ def main(cfg):
     trainer = pl.Trainer(
         callbacks=[checkpoint_callback, lr_monitor], logger=logger, **cfg.model.trainer
     )
-    tracer = VizTracer()
-    tracer.start()
+    # tracer = VizTracer()
+    # tracer.start()
     trainer.fit(model, train_loader, val_loader)
-    tracer.stop()
-    tracer.save(f"Remove-duplicated_SH-time-record_tracer_1ddda.json")
+    # tracer.stop()
+    # tracer.save(f"Ray-rect-intersection_tracer.json")
     """  Skipping testing for now """
     # test_results = trainer.test(model, dataloaders=val_loader)
 
