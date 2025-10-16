@@ -20,8 +20,9 @@ ccm: [
 ] #
 
 #load images chunk to memory
-chunk_size: -1 # 0 means no chunking
-switch_iters: 5000 # switch chunk every 10000 steps
+chunk_size: 200 # 0 means no chunking
+switch_iters: 4000 # switch chunk every 10000 steps
+random_chunks: True # whether to sample chunks randomly or sequentially with shuffling at wrap
 
 importance_sampling: False
 use_single_chunk_sampling: False
@@ -32,5 +33,6 @@ batch_size: 1 # equal to train_num
 multi_resolution: False
 downsample_iter: [-1, -1]
 
-debug: True
+debug: False
 debug_num: 10
+valid_num: 100 # -1 to use all data for validation
