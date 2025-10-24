@@ -7,6 +7,8 @@ import torchvision
 from torchviz import make_dot
 import json
 from viztracer import VizTracer
+import cv2
+import numpy as np
 from tqdm import tqdm
 import math
 from model.emitter import DynamicPointEmitter, PresetPointEmitter, RealAreaEmitter
@@ -22,6 +24,8 @@ class BRDFTrainer(pl.LightningModule):
         self.material = material
         self.gt_material = gt_material
         self.gt_folder = cfg.gt_folder
+        # Dictionary to store pairs of (radiance, camera RGB value) for calibration
+        self.radiance_rgb_pairs = {}
         
         #self.latent_dim = cfg.material.latent_dim
         # Create a mapping from roughness-metallic pairs to train latent indices
@@ -354,7 +358,20 @@ class BRDFTrainer(pl.LightningModule):
             rays, prior = self.handeye_refiner.apply_handeye_delta_to_rays(rays, batch['camera_ids'])
 
         # forward renders
-        rgbs, vis, ray_params = self.renderer.render(self.emitter, rays, emitter_ids, self.cfg.renderer.spp.train, None, None)    
+        rgbs, vis, ray_params, gray_patch_idx, pixel_all_ok = self.renderer.render(self.emitter, rays, emitter_ids, self.cfg.renderer.spp.train, None, None)    
+        mask = rgbs > 0
+        # rgbs_gt = rgbs_gt / 10
+        rgbs_gt.squeeze(0)[~mask] = 0 # mask out the zero brdf region for debugging
+        
+        # Store radiance-camera RGB pairs for later plotting
+        non_zero = (rgbs[vis].sum(dim=-1) > 0) & pixel_all_ok[vis]
+        rad = rgbs[vis][non_zero].mean(dim=-1).detach().cpu().numpy()
+        cam = rgbs_gt.squeeze(0)[vis][non_zero].mean(dim=-1).detach().cpu().numpy()
+         
+        # Accumulate pairs in dictionary
+        self.radiance_rgb_pairs[batch_idx] = {'radiance': rad, 'camera': cam}
+        
+        loss = self.loss_function(rgbs, rgbs_gt, vis)
 
         psnr_loss = torch.nn.functional.mse_loss(self.gamma(rgbs[vis]), self.gamma(rgbs_gt.squeeze(0)[vis]), reduction='mean')
         psnr = 10.0 * torch.log10((1.0 ** 2) / psnr_loss.clamp_min(1e-5))
@@ -377,16 +394,29 @@ class BRDFTrainer(pl.LightningModule):
                 f'images'
             )
             os.makedirs(output_dir, exist_ok=True)
-            
-            # Save the tone-mapped ground truth and result images
-            torchvision.utils.save_image(
-                sample_rgbs_gt.permute(2, 0, 1),
-                os.path.join(output_dir, f'gt_view_{batch_idx}_{b}.png')
+
+            # Convert float32 (0-65535) to uint16 (0-65535)
+            sample_rgbs_gt_16bit = np.clip(sample_rgbs_gt.cpu().numpy(), 0, 65535).astype(np.uint16)
+            sample_rgbs_16bit = np.clip(sample_rgbs.cpu().numpy(), 0, 65535).astype(np.uint16)
+
+            # Save as 16-bit PNG (OpenCV expects BGR)
+            cv2.imwrite(
+                os.path.join(output_dir, f'gt_view_{batch_idx}_{b}.png'),
+                cv2.cvtColor(sample_rgbs_gt_16bit, cv2.COLOR_RGB2BGR)
             )
-            torchvision.utils.save_image(
-                sample_rgbs.permute(2, 0, 1),
-                os.path.join(output_dir, f'result_view_{batch_idx}_{b}.png')
-            )
+            cv2.imwrite(
+                os.path.join(output_dir, f'result_view_{batch_idx}_{b}.png'),
+                cv2.cvtColor(sample_rgbs_16bit, cv2.COLOR_RGB2BGR)
+            )          
+            # # Save the tone-mapped ground truth and result images
+            # torchvision.utils.save_image(
+            #     sample_rgbs_gt.permute(2, 0, 1),
+            #     os.path.join(output_dir, f'gt_view_{batch_idx}_{b}.png')
+            # )
+            # torchvision.utils.save_image(
+            #     sample_rgbs.permute(2, 0, 1),
+            #     os.path.join(output_dir, f'result_view_{batch_idx}_{b}.png')
+            # )
             # # Save non-gamma-corrected result image
             # torchvision.utils.save_image(
             #     sample_rgbs_gt.permute(2, 0, 1),
@@ -406,6 +436,122 @@ class BRDFTrainer(pl.LightningModule):
         self.log('val/psnr', psnr)        
         return
 
+    def fit_radiance_camera_linear_model(self, all_rad, all_cam):
+        """
+        Fit linear model cam = a * rad (passing through origin) using RANSAC to remove outliers.
+        
+        Args:
+            all_rad (np.ndarray): Radiance values
+            all_cam (np.ndarray): Camera RGB values
+            
+        Returns:
+            dict: {'a', 'r2', 'inlier_mask', 'outlier_mask', 'mean_error', 'median_error'}
+        """
+        from sklearn.linear_model import RANSACRegressor, LinearRegression
+        from sklearn.metrics import r2_score
+        
+        X = all_rad.reshape(-1, 1)
+        # Force the model to pass through the origin by setting fit_intercept=False
+        ransac = RANSACRegressor(
+            estimator=LinearRegression(fit_intercept=False),
+            random_state=42, 
+            residual_threshold=None
+        )
+        ransac.fit(X, all_cam)
+        
+        a = ransac.estimator_.coef_[0]
+        inlier_mask = ransac.inlier_mask_
+        
+        # Calculate R² score on inliers
+        y_pred_inliers = ransac.predict(X[inlier_mask])
+        r2 = r2_score(all_cam[inlier_mask], y_pred_inliers)
+        
+        # Calculate fitting errors (residuals) for inliers
+        residuals = np.abs(all_cam[inlier_mask] - y_pred_inliers)
+        mean_error = np.mean(residuals)
+        median_error = np.median(residuals)
+        
+        return {
+            'a': a, 
+            'r2': r2, 
+            'inlier_mask': inlier_mask, 
+            'outlier_mask': ~inlier_mask,
+            'mean_error': mean_error,
+            'median_error': median_error
+        }
+    
+    def on_validation_epoch_end(self):
+        """Plot accumulated radiance-RGB pairs at the end of validation."""
+        if not self.radiance_rgb_pairs:
+            return
+        
+        import matplotlib
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as plt
+        from matplotlib import cm
+        
+        # Concatenate all data
+        all_rad = np.concatenate([pairs['radiance'] for pairs in self.radiance_rgb_pairs.values()])
+        all_cam = np.concatenate([pairs['camera'] for pairs in self.radiance_rgb_pairs.values()])
+        
+        # Fit linear model using RANSAC
+        fit_res = self.fit_radiance_camera_linear_model(all_rad, all_cam)
+        a, r2 = fit_res['a'], fit_res['r2']
+        inlier_mask, outlier_mask = fit_res['inlier_mask'], fit_res['outlier_mask']
+        mean_error, median_error = fit_res['mean_error'], fit_res['median_error']
+        
+        # Print and save fitting results
+        print(f"\n{'='*60}")
+        print(f"Linear Fitting Results (Epoch {self.current_epoch}):")
+        print(f"  Equation: cam = {a:.6f} * rad")
+        print(f"  R² score (inliers): {r2:.6f}")
+        print(f"  Mean absolute error: {mean_error:.6f}")
+        print(f"  Median absolute error: {median_error:.6f}")
+        print(f"  Inliers: {inlier_mask.sum()} / {len(inlier_mask)} ({100*inlier_mask.sum()/len(inlier_mask):.2f}%)")
+        print(f"  Outliers: {outlier_mask.sum()}")
+        print(f"{'='*60}\n")
+        
+        results_path = os.path.join(self.cfg.exp_output_root_path, f'fitting_results_epoch_{self.current_epoch}.txt')
+        with open(results_path, 'w') as f:
+            f.write(f"Linear Fitting Results (Epoch {self.current_epoch}):\n")
+            f.write(f"Equation: cam = {a:.6f} * rad\n")
+            f.write(f"R² score (inliers): {r2:.6f}\n")
+            f.write(f"Mean absolute error: {mean_error:.6f}\n")
+            f.write(f"Median absolute error: {median_error:.6f}\n")
+            f.write(f"Inliers: {inlier_mask.sum()} / {len(inlier_mask)} ({100*inlier_mask.sum()/len(inlier_mask):.2f}%)\n")
+            f.write(f"Outliers: {outlier_mask.sum()}\n")
+        
+        # Create plot
+        fig = plt.figure(figsize=(12, 8))
+        
+        # Plot data points
+        for idx, (batch_idx, pairs) in enumerate(sorted(self.radiance_rgb_pairs.items())):
+            rad, cam = pairs['radiance'], pairs['camera']
+            plt.scatter(rad, cam, alpha=0.5, s=1, color='blue')
+        
+        # Plot fitted line and reference
+        max_rad, max_cam = all_rad.max(), all_cam.max()
+        rad_range = np.linspace(0, max_rad, 100)
+        plt.plot(rad_range, a * rad_range, 'g-', linewidth=2, 
+                label=f'Fitted: cam = {a:.4f}*rad\nR² = {r2:.4f}')
+        plt.plot([0, max(max_rad, max_cam)], [0, max(max_rad, max_cam)], 
+                'r--', linewidth=2, label='y=x (ideal)')
+        
+        max_rad, max_cam = all_rad.max(), all_cam.max()
+        plt.xlim([0, max_rad])
+        plt.ylim([0, max_cam])
+        plt.xlabel('Predicted Radiance', fontsize=12)
+        plt.ylabel('Camera RGB', fontsize=12)
+        plt.title(f'Radiance vs Camera RGB (Epoch {self.current_epoch})', fontsize=14)
+        plt.legend(loc='upper left', fontsize=10)
+        plt.grid(True, alpha=0.3)
+        
+        save_path = os.path.join(self.cfg.exp_output_root_path, f'radiance_rgb_epoch_{self.current_epoch}.png')
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        plt.close(fig)
+        
+        self.radiance_rgb_pairs.clear()
+    
     def on_train_batch_start(self, batch, batch_idx):
         step = self.global_step
         self.trainer.train_dataloader.dataset.datasets.set_step(step)

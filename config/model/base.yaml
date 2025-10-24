@@ -10,10 +10,10 @@ trainer:
   accelerator: gpu
   devices: 1
   num_nodes: 1
-  max_epochs: 1000          # ← will be respected
-  check_val_every_n_epoch: 50
-  limit_train_batches: 512    # ← e.g., 200 iterations per epoch
-  num_sanity_val_steps: 2    # ← number of validation batches before training starts (default is 2)
+  max_epochs: 2          # ← will be respected
+  check_val_every_n_epoch: 1
+  limit_train_batches: 1    # ← e.g., 200 iterations per epoch
+  num_sanity_val_steps: 1    # ← number of validation batches before training starts (default is 2)
 
 # https://pytorch-lightning.readthedocs.io/en/stable/api/pytorch_lightning.callbacks.ModelCheckpoint.html
 checkpoint_monitor:
@@ -42,6 +42,10 @@ loss:
       logrel_alpha: 1e-3
   refiner_prior_loss:
     weight: 0.01
+
+# Linear fitting options for radiance-camera calibration
+linear_fitting:
+  skip_ransac: false  # Set to true to skip RANSAC and use simple linear regression
 
 lr_decay: # for Adam
   decay_start_epoch: 20

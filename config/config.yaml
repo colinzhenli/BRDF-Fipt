@@ -5,7 +5,7 @@ defaults:
   - material: svlatent_model
 
 experiment_name: test
-exp_folder: /media/raid/cloth/No_cable_capture_Sep22/BRDF_recon_Sep30/Controlled_light/hdr
+# exp_folder: /media/raid/cloth/No_cable_capture_Sep22/BRDF_recon_Sep30/Controlled_light/hdr
 dataset_folder: /media/raid/cloth/No_cable_capture_Sep22/BRDF_recon_Sep30/
 output_folder: /media/raid/cloth/output/BRDF
 exp_output_root_path: ${output_folder}/${data.dataset_name}/${experiment_name}

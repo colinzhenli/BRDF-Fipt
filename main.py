@@ -13,6 +13,7 @@ from model.neural_brdf import SvLatentModel, LatentTexturedModel, AnisotropicLat
 from model.mipmap_brdf import MipmapLearnableSvPBRBRDF
 from torch.utils.data import DataLoader
 from utils.dataset import RealImageDataset, RealValDataset
+from model.brdf import GreyPatchBRDF
 import hydra
 from omegaconf import DictConfig
 from pytorch_lightning.strategies import DDPStrategy
@@ -61,6 +62,8 @@ def main(cfg):
         material = LearnableSvPBRBRDF(cfg.material)  # MLP model uses mlp_pbr config
     elif cfg.material.type == "MipmapLearnableSvPBRBRDF":
         material = MipmapLearnableSvPBRBRDF(cfg.material)  # MLP model uses mlp_pbr config
+    elif cfg.material.type == "GreyPatchBRDF":
+        material = GreyPatchBRDF(cfg.material)  # MLP model uses mlp_pbr config
     else:
         raise ValueError(f"Invalid material type: {cfg.material.type}")
     gt_material = SvPBRBRDF(
@@ -117,7 +120,8 @@ def main(cfg):
     )
     # tracer = VizTracer()
     # tracer.start()
-    trainer.fit(model, train_loader, val_loader)
+    # trainer.fit(model, train_loader, val_loader)
+    trainer.validate(model, val_loader)
     # tracer.stop()
     # tracer.save(f"Ray-rect-intersection_tracer.json")
     """  Skipping testing for now """

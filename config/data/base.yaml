@@ -6,10 +6,9 @@ num_workers: 0
 # rays_num: 32768  # pixels per batch
 rays_num: 65536 # 4 times more rays 
 
-# filtered_purple_ids: [39, 45, 86, 160, 189, 460, 560, 575, 778, 940]
-# filtered_purple_ids: [3, 11, 127, 266, 365, 458, 656, 669, 699, 899, 1021, 1036, 1056]
-# Filtered IDs for problematic scans
-filtered_purple_ids: [0, 9, 45, 109, 189, 675, 684, 850, 1012, 1013, 1014, 1039, 1051, 1052, 1053, 1054, 1064, 1065, 1066, 1077, 1078, 1079, 1080, 1082, 1103, 1104, 1105, 1106, 1117, 1118, 1130, 1131, 1139, 1143, 1144, 1145, 1146, 1155, 1156, 1157, 1168, 1169, 1170, 1181, 1182, 1183, 1196, 1209]
+
+# filtered_purple_ids: [0, 9, 45, 109, 189, 675, 684, 850, 1012, 1013, 1014, 1039, 1051, 1052, 1053, 1054, 1064, 1065, 1066, 1077, 1078, 1079, 1080, 1082, 1103, 1104, 1105, 1106, 1117, 1118, 1130, 1131, 1139, 1143, 1144, 1145, 1146, 1155, 1156, 1157, 1168, 1169, 1170, 1181, 1182, 1183, 1196, 1209]
+filtered_purple_ids: []
 
 # Color correction matrix (CCM) for camera calibration
 # Applied to linear RGB values: corrected_rgb = raw_rgb @ CCM
@@ -18,10 +17,16 @@ ccm: [
   [-0.44629176, 2.96095854, -1.17898539],
   [-0.47909694, -0.39991418, 2.10705124]
 ] #
+# ccm: [
+#   [1.0, 0.0, 0.0],
+#   [0.0, 1.0, 0.0],
+#   [0.0, 0.0, 1.0]
+# ]
+
 
 #load images chunk to memory
-chunk_size: 200 # 0 means no chunking
-switch_iters: 4000 # switch chunk every 10000 steps
+chunk_size: -1 # 0 means no chunking
+switch_iters: 5000 # switch chunk every 10000 steps
 random_chunks: True # whether to sample chunks randomly or sequentially with shuffling at wrap
 
 importance_sampling: False
@@ -33,6 +38,7 @@ batch_size: 1 # equal to train_num
 multi_resolution: False
 downsample_iter: [-1, -1]
 
-debug: False
-debug_num: 10
-valid_num: 100 # -1 to use all data for validation
+debug: True # no random permutation when debugging
+debug_num: 500
+start_idx: 100
+valid_num: -1 # -1 to use all data for validation

@@ -61,13 +61,15 @@
             "console": "integratedTerminal",
             "justMyCode": true,
             "env": {
-                "CUDA_VISIBLE_DEVICES": "3"
+                "CUDA_VISIBLE_DEVICES": "0"
             },
             "args": [
-                "dataset_folder=/media/raid/cloth/No_cable_capture_Sep22/BRDF_recon_Sep30/Controlled_light/hdr",
+                "dataset_folder=/media/raid/cloth/capture_data/BRDF_recon_Oct20_white_test/hdr",
+                // "dataset_folder=/media/raid/cloth/capture_data/BRDF_recon_Oct21_color_checker_5_distance_grey_center/hdr",
+                // "dataset_folder=/media/raid/cloth/No_cable_capture_Sep22/BRDF_recon_Sep30/Controlled_light/hdr",
                 "renderer=realcapture_area_emitter",
-                "material=ani_latent_texture_model",
-                "experiment_name=Double-buffer_debug_1",
+                "material=graypatch",
+                "experiment_name=Radiometry-calibration_Cosine_debug_1",
                 // "model.ckpt_path=/media/raid/cloth/output/BRDF/real/All-images_Correct-cam_Neural-geometry_Stream-training-chunk-400-iter-5000_run_1/training/model_0.20_0.20/last.ckpt"
             ]
         }
