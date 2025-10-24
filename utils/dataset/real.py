@@ -122,13 +122,13 @@ def get_c2w_from_robot_pose(camera_info, R_c2g, t_c2g):
     c2w = g2w @ c2g
     return torch.from_numpy(c2w[:3, :4]).float()
 
-def load_metadata(colmap_camera, metadata_path, camera_metadata_path, gt_folder, cfg, debug, debug_num, split, turntable_center, turntable_axis, R_c2g, t_c2g):
+def load_metadata(colmap_camera, metadata_path, camera_metadata_path, gt_folder, cfg, debug, debug_num, split, turntable_center, turntable_axis, R_c2g, t_c2g, start_idx):
     metadata, _, _= load_camera_turntable_light_metadata(metadata_path)
     
     if colmap_camera:
         camera_metadata = load_camera_metadata(camera_metadata_path)
     else:
-        camera_metadata = load_camera_metadata_from_robotic_log(camera_metadata_path, turntable_center, turntable_axis, R_c2g, t_c2g)
+        camera_metadata = load_camera_metadata_from_robotic_log(metadata_path, turntable_center, turntable_axis, R_c2g, t_c2g)
     
     # Filter out metadata entries with non-existent image files and filtered_puple_ids
     valid_metadata = []
@@ -163,7 +163,10 @@ def load_metadata(colmap_camera, metadata_path, camera_metadata_path, gt_folder,
         valid_metadata.append(item)
     
     metadata = valid_metadata
-    print(f"Loaded {len(metadata)} valid images out of {len(metadata) + len([item for item in metadata if not os.path.exists(os.path.join(gt_folder, item['filename']))])} total metadata entries")
+    # # Filter out images with overall_id >= 1000
+    # metadata = [item for item in metadata if int(item.get("overall_id", 0)) < 1000]
+    # print(f"After filtering overall_id >= 1000: {len(metadata)} images remaining")
+    # print(f"Loaded {len(metadata)} valid images out of {len(metadata) + len([item for item in metadata if not os.path.exists(os.path.join(gt_folder, item['filename']))])} total metadata entries")
     
     total_images = len(metadata)
     
@@ -173,7 +176,7 @@ def load_metadata(colmap_camera, metadata_path, camera_metadata_path, gt_folder,
     
     # Use 80% for training
     if debug:
-        selected_metadata = metadata[0:0+debug_num]
+        selected_metadata = metadata[start_idx:start_idx+debug_num]
     else:
         split_idx = int(0.8 * total_images)
         if split == 'train':
@@ -277,7 +280,8 @@ class RealImageDataset(IterableDataset):
         self.distortion = self.intrinsics['distortion']
         self.focal = self.intrinsics['focal_length']
         self.img_hw = (self.intrinsics['height'], self.intrinsics['width'])
-        self.ccm = cfg.data.ccm
+        self.ccm = np.array(cfg.data.ccm) 
+        # self.ccm = self.ccm / np.abs(self.ccm).sum() # ensure ccm not exceed float 16 range
         self.chunk_size = cfg.data.chunk_size
         self.switch_iters = cfg.data.switch_iters
         self.random_chunks = cfg.data.random_chunks
@@ -287,7 +291,7 @@ class RealImageDataset(IterableDataset):
         self.turntable_center = cfg.renderer.emitter.turntable.center
         self.turntable_axis = cfg.renderer.emitter.turntable.axis
         self.colmap_camera = cfg.renderer.camera.colmap_camera  # whether to use colmap camera or robotic log camera
-
+        self.start_idx = cfg.data.start_idx
         # Load metadata from JSON file
         metadata_path = cfg.data.metadata_path
         camera_metadata_path = cfg.data.camera_metadata_path
@@ -303,7 +307,8 @@ class RealImageDataset(IterableDataset):
             self.turntable_center,
             self.turntable_axis,
             self.R_c2g,
-            self.t_c2g
+            self.t_c2g,
+            self.start_idx
         )
 
         # Internal state
@@ -452,13 +457,13 @@ class RealImageDataset(IterableDataset):
 
             if img_path.endswith('.png'):
                 # Load PNG image (original linear RGB)
-                img = cv2.imread(img_path, cv2.IMREAD_COLOR)
+                img = cv2.imread(img_path, cv2.IMREAD_UNCHANGED)
                 if img is None:
                     print(f"Warning: Could not load image {img_path}, skipping...")
                     continue
                 img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
                 img = img @ self.ccm
-                img = torch.from_numpy(img).float() / 255.0
+                img = torch.from_numpy(img).float()
             elif img_path.endswith('.exr'):
                 # Load EXR image (already linear)
                 img = open_exr(img_path, self.img_hw)
@@ -562,13 +567,13 @@ class RealImageDataset(IterableDataset):
             
             if img_path.endswith('.png'):
                 # Load PNG image (original linear RGB)
-                img = cv2.imread(img_path, cv2.IMREAD_COLOR)
+                img = cv2.imread(img_path, cv2.IMREAD_UNCHANGED)
                 if img is None:
                     print(f"Warning: Could not load image {img_path}, skipping...")
                     continue
                 img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
                 img = img @ self.ccm
-                img = torch.from_numpy(img).float() / 255.0
+                img = torch.from_numpy(img).float()
             elif img_path.endswith('.exr'):
                 # Load EXR image (already linear)
                 img = open_exr(img_path, self.img_hw)
@@ -638,13 +643,17 @@ class RealValDataset(Dataset):
         self.gt_folder = gt_folder
         self.debug = cfg.data.debug
         self.debug_num = cfg.data.debug_num
+        self.start_idx = cfg.data.start_idx
         self.intrinsics = cfg.renderer.camera.intrinsics
         self.cx = self.intrinsics['cx']
         self.cy = self.intrinsics['cy']
         self.distortion = self.intrinsics['distortion']
         self.focal = self.intrinsics['focal_length']
         self.img_hw = (self.intrinsics['height'], self.intrinsics['width'])
-        self.ccm = cfg.data.ccm
+        # self.ccm = cfg.data.ccm
+        self.ccm = np.array(cfg.data.ccm) 
+        # self.ccm = self.ccm / np.abs(self.ccm).sum()
+        
         # get R_c2g and t_c2g from cfg
         self.R_c2g = cfg.renderer.camera.R_c2g
         self.t_c2g = cfg.renderer.camera.t_c2g
@@ -655,7 +664,7 @@ class RealValDataset(Dataset):
         # Load metadata from JSON file
         metadata_path = cfg.data.metadata_path
         camera_metadata_path = cfg.data.camera_metadata_path
-        self.metadata, self.camera_metadata = load_metadata(self.colmap_camera, metadata_path, camera_metadata_path, gt_folder, cfg, self.debug, self.debug_num, 'val', self.turntable_center, self.turntable_axis, self.R_c2g, self.t_c2g)
+        self.metadata, self.camera_metadata = load_metadata(self.colmap_camera, metadata_path, camera_metadata_path, gt_folder, cfg, self.debug, self.debug_num, 'val', self.turntable_center, self.turntable_axis, self.R_c2g, self.t_c2g, self.start_idx)
         if self.valid_num > 0:
             self.metadata = self.metadata[:self.valid_num]
         self.directions = get_ray_directions(self.img_hw[0], self.img_hw[1], self.focal, self.cx, self.cy, self.distortion)
@@ -665,16 +674,16 @@ class RealValDataset(Dataset):
 
     def __getitem__(self, idx):
         img_data = self.metadata[idx]
-        if idx == 59:
-            print(f"Camera ID: {img_data['camera_id']}")
-            print(f"Emitter ID: {img_data['emitter_id']}")
-            print(f"Filename: {img_data['filename']}")
-            print(f"Position: {camera_info['position']}")
-            print(f"Rotation Matrix: {camera_info['rotation_matrix']}")
-            print(f"C2W: {c2w}")
-            print(f"Rays: {rays}")
-            print(f"Img Flat: {img_flat}")
-            print(f"Emitter IDs: {emitter_ids}")
+        # if idx == 59:
+        #     print(f"Camera ID: {img_data['camera_id']}")
+        #     print(f"Emitter ID: {img_data['emitter_id']}")
+        #     print(f"Filename: {img_data['filename']}")
+        #     print(f"Position: {camera_info['position']}")
+        #     print(f"Rotation Matrix: {camera_info['rotation_matrix']}")
+        #     print(f"C2W: {c2w}")
+        #     print(f"Rays: {rays}")
+        #     print(f"Img Flat: {img_flat}")
+        #     print(f"Emitter IDs: {emitter_ids}")
         
         # Get camera info using camera_id
         camera_id = img_data["camera_id"]
@@ -698,10 +707,11 @@ class RealValDataset(Dataset):
                 
         if img_path.endswith('.png'):
             # Load PNG image (original linear RGB)
-            img = cv2.imread(img_path, cv2.IMREAD_COLOR)
+            img = cv2.imread(img_path, cv2.IMREAD_UNCHANGED)
             img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            img = img.astype(np.float64)
             img = img @ self.ccm
-            img = torch.from_numpy(img).float() / 255.0
+            img = torch.from_numpy(img).float()
         elif img_path.endswith('.exr'):
             # Load EXR image (already linear)
             img = open_exr(img_path, self.img_hw)

@@ -737,7 +737,8 @@ def batched_path_tracing_tbn_real_area_emitter(scene,emitter_net,material_net,ra
     # sample camera ray
     du,dv = torch.rand(2,len(rays_o),spp,1,device=device)-0.5
     wi = NF.normalize(rays_d[:,None]+dx_du[:,None]*du+dy_dv[:,None]*dv,dim=-1).reshape(-1,3)
-    # wi = rays_d
+    
+    # wi = rays_d.repeat_interleave(spp, 0)
     # Add mask for wi z component
     position = rays_o.repeat_interleave(spp,0)
     light_id = light_id.repeat_interleave(spp,0)
@@ -776,15 +777,24 @@ def batched_path_tracing_tbn_real_area_emitter(scene,emitter_net,material_net,ra
     light_id = light_id[vis]
     TBN = TBN[vis]
     
+    angle_ok_all = torch.zeros(N*spp, dtype=torch.bool, device=device)
+    gray_patch_idx = torch.zeros(N*spp, dtype=torch.long, device=device)
+    
     # deterministic sampling
     if emitter_sampling:
         wi, emit_pdf, emit_position, emitter_normal= emitter_net.sample_emitter(torch.rand_like(position[..., :2]), position, light_id)
         # visibility test
         emit_weight,emit_pdf, _ = emitter_net.eval_emitter(position, wi, light_id)
-        G = (-wi*emitter_normal).sum(-1).abs() / (emit_position-position).pow(2).sum(-1).clamp_min(1e-6) # B, 1
+        G = (wi*normal).sum(-1).abs() * (-wi*emitter_normal).sum(-1).abs() / (emit_position-position).pow(2).sum(-1).clamp_min(1e-6) # B, 1
         emit_weight = emit_weight*G[...,None]/emit_pdf.clamp_min(1e-6)
         # emit brdf
-        emit_brdf,brdf_pdf = material_net.eval_brdf(None, position, wi,wo,normal,uv, TBN, latent, batch_mask, footprint_vis, dp_du, dp_dv) # gt_params will not be used in neural brdf model
+        emit_brdf,brdf_pdf,angle_ok, patch_index = material_net.eval_brdf(None, position, wi,wo,normal,uv, TBN, latent, batch_mask, footprint_vis, dp_du, dp_dv) # gt_params will not be used in neural brdf model
+        """ mask out the brdf for the invalid angle, used for radiometric calibration """
+        angle_ok_all[vis] = angle_ok
+        gray_patch_idx[vis] = patch_index
+        # pixel_all_ok = angle_ok_full.reshape(N, spp).all(dim=1)
+        
+        # emit_brdf = emit_brdf * pixel_all_ok.repeat_interleave(spp)[vis].unsqueeze(-1)
         w_mis = torch.where((emit_pdf>0)&(~brdf_pdf.isinf()),emit_pdf*emit_pdf/(emit_pdf*emit_pdf+brdf_pdf*brdf_pdf),0)
         w_mis[emit_pdf.isinf()|(brdf_pdf==0)] = 1
         # Avoid in-place indexed operation for cleaner autograd graph
@@ -809,7 +819,7 @@ def batched_path_tracing_tbn_real_area_emitter(scene,emitter_net,material_net,ra
     
         # Evaluate Le
         Le, emit_pdf, _ = emitter_net.eval_emitter(position, wi, light_id)
-        G = (-wi*normal).sum(-1).abs() / (emit_position-position).pow(2).sum(-1).clamp_min(1e-6) # B, 1
+        G = (wi*normal).sum(-1).abs() * (-wi*emitter_normal).sum(-1).abs() / (emit_position-position).pow(2).sum(-1).clamp_min(1e-6) # B, 1
         Le = Le*G[...,None]/emit_pdf.clamp_min(1e-6)
         
         w_mis = torch.where((brdf_pdf>0)&(~emit_pdf.isinf()),brdf_pdf*brdf_pdf/(emit_pdf*emit_pdf+brdf_pdf*brdf_pdf),0)
@@ -824,5 +834,18 @@ def batched_path_tracing_tbn_real_area_emitter(scene,emitter_net,material_net,ra
     L = L.reshape(N,spp,3).mean(1)
     # Merge visibility across multiple spp - if any ray is visible, vis is true
     vis_reshaped = vis.reshape(N, spp)
+    gray_patch_idx = gray_patch_idx.reshape(N, spp)
+    angle_ok = angle_ok_all.reshape(N, spp)
+    
+    # Check if patch indices are consistent across spp for each pixel (treating -1 same as others)
+    # For each pixel, all patch indices (including -1) should be the same
+    patch_min = gray_patch_idx.min(dim=1)[0]  # [N]
+    patch_max = gray_patch_idx.max(dim=1)[0]  # [N]
+    patch_inconsistent = patch_min != patch_max  # [N]
+    
+    # pixel_all_ok is True only if all angles are ok AND patch indices are consistent
+    pixel_all_ok = angle_ok.all(dim=1) & (~patch_inconsistent)
+    gray_patch_idx = gray_patch_idx[:, 0]
+    
     vis = vis_reshaped.any(dim=1)
-    return L, vis, ray_params
+    return L, vis, ray_params, gray_patch_idx, pixel_all_ok 

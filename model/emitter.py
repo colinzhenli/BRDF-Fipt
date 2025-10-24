@@ -307,17 +307,19 @@ class RealAreaEmitter(nn.Module):
         # Extract configuration parameters
         radius = cfg.get('radius', 0.007)
         fwhm_deg = cfg.get('fwhm_deg', 115.0)
-        self.light_radiance = nn.Parameter(torch.tensor(cfg.get('radiance'), dtype=torch.float32, device='cuda'))
-        # self.register_buffer('light_radiance', torch.tensor(cfg.get('radiance'), dtype=torch.float32, device='cuda'))
+        # self.light_radiance = nn.Parameter(torch.tensor(cfg.get('radiance'), dtype=torch.float32, device='cuda'))
+        self.register_buffer('light_radiance', torch.tensor(cfg.get('radiance'), dtype=torch.float32, device='cuda'))
 
         theta_half = math.radians(fwhm_deg * 0.5)
-        m = math.log(0.5) / math.log(max(1e-8, math.cos(theta_half)))
+        m = math.log(0.5) / math.log(max(1e-8, math.cos(theta_half))) - 1.0
         self.register_buffer('m', torch.tensor(m, dtype=torch.float32, device='cuda'))
         self.register_buffer('light_radius', torch.tensor(radius, dtype=torch.float32, device='cuda'))
 
         self.l2w = self._compute_l2w(cfg, json_path)
         self.register_buffer('light_positions', self.l2w[:, :3, 3])  # [N, 3] - translation part
-        light_normal_local = torch.tensor([0.0, -1.0, 0.0], dtype=torch.float32, device='cuda')
+        # Add a small tilt along z-axis
+        tilt_angle = math.radians(0)  # 5 degree tilt, adjust as needed
+        light_normal_local = torch.tensor([0.0, -math.cos(tilt_angle), math.sin(tilt_angle)], dtype=torch.float32, device='cuda')
         light_normals_world = torch.matmul(self.l2w[:, :3, :3], light_normal_local)  # [N, 3]
         light_normals_world = light_normals_world / (light_normals_world.norm(dim=-1, keepdim=True) + 1e-12)
         self.register_buffer('light_normal', light_normals_world)
@@ -575,7 +577,8 @@ class RealAreaEmitter(nn.Module):
         print("light_normal",self.light_normal[light_id].shape)
         '''
         B = position.shape[0]
-        Le=self._directional_distribution(light_dir,light_id)*(1.0/(t*t)).unsqueeze(-1)
+
+        Le=self._directional_distribution(light_dir,light_id)
         # dA_dw=((position-hit_pos)*(position-hit_pos)).sum(dim=-1)/((-light_dir)*self.light_normal[light_id]).sum(dim=-1)
         pdf=1.0/(self.light_radius.expand(B)*self.light_radius.expand(B)*torch.pi)
         pdf=pdf.unsqueeze(-1)

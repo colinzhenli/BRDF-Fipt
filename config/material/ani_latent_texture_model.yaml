@@ -24,9 +24,9 @@ neural_geometry:
   recompute_frame: False
 
 # config 1:
-larger_latent_dim: True
-different_decoder: True
-output_channels: 1
+# larger_latent_dim: True
+# different_decoder: True
+# output_channels: 1
 
 # # config 2:
 # larger_latent_dim: True
@@ -34,6 +34,6 @@ output_channels: 1
 # output_channels: 1
 
 # # config 3:
-# larger_latent_dim: False
-# different_decoder: False
-# output_channels: 3
+larger_latent_dim: False
+different_decoder: False
+output_channels: 3

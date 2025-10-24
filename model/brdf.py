@@ -838,3 +838,220 @@ class LearnableSvPBRBRDF(nn.Module):
         brdf_weight[brdf_weight.isnan()] = 0
 
         return wi, pdf, brdf_weight
+
+
+class GreyPatchBRDF(nn.Module):
+    """
+    Minimal BRDF for camera-relative response using 5 ColorChecker greys.
+    - Outputs a single (spectrally-averaged) BRDF value per ray.
+    - Only valid when:   |θ_i - 45°| <= inc_thresh_deg   AND   |θ_o - 90°| <= view_thresh_deg
+      Else returns -1.
+    - Per-ray selection of which grey patch via integer patch_index ∈ {0,1,2,3,4}
+      mapping: 0=White 9.5, 1=Neutral 8, 2=Neutral 6.5, 3=Neutral 5, 4=Neutral 3.5.
+    - Spatial layout: patches arranged in a grid, using x,y coordinates to determine patch membership
+    """
+    def __init__(self, cfg):
+        super().__init__()
+        self.lambertian_brdf = cfg.get('lambertian_brdf', False)
+        self.inc_thresh_deg = cfg.get('inc_thresh_deg', 2.0)
+        self.view_thresh_deg = cfg.get('view_thresh_deg', 2.0)
+        device = cfg.get('device', 'cuda')
+        self.device = torch.device(device if torch.cuda.is_available() else "cpu")
+        
+        # Patch layout parameters
+        self.center_x = cfg.get('center_x', 0.0)
+        self.center_y = cfg.get('center_y', 0.0)
+        self.grayscale_patch_ids = cfg.get('grayscale_patch_ids', [0, 1, 2, 3, 4])
+        if self.grayscale_patch_ids is None:
+            self.grayscale_patch_ids = [0, 1, 2, 3, 4]
+        self.patch_width = cfg.get('patch_width', 0.04)
+        self.patch_distance = cfg.get('patch_distance', 0.05)
+        self.grid_rows = cfg.get('grid_rows', 1)
+        self.grid_cols = cfg.get('grid_cols', 5)
+        
+        # Default to top 5 grayscale patches (first row, first 5 columns)
+        # Compute and store patch centers
+        patch_centers = self._compute_patch_centers()
+        self.register_buffer("patch_centers", patch_centers, persistent=False)
+
+        # ─────────────────────────────────────────────────────────────────────
+        # 1) Reference wavelengths (nm) and BabelColor Avg. spectra (30 charts)
+        #    5 grey patches: White 9.5, Neutral 8, Neutral 6.5, Neutral 5, Neutral 3.5
+        # ─────────────────────────────────────────────────────────────────────
+        wl = torch.arange(380, 740, 10, dtype=torch.float32)  # 380..730 step 10 → 36 bands
+
+        white_95 = torch.tensor([
+            0.189,0.255,0.423,0.660,0.811,0.862,0.877,0.884,0.891,0.896,0.899,0.904,
+            0.907,0.909,0.911,0.910,0.911,0.914,0.913,0.916,0.915,0.916,0.914,0.915,
+            0.918,0.919,0.921,0.923,0.924,0.922,0.922,0.925,0.927,0.930,0.930,0.933
+        ], dtype=torch.float32)
+
+        neutral_8 = torch.tensor([
+            0.171,0.232,0.365,0.507,0.567,0.583,0.588,0.590,0.591,0.590,0.588,0.588,
+            0.589,0.589,0.591,0.590,0.590,0.590,0.589,0.591,0.590,0.590,0.587,0.585,
+            0.583,0.580,0.578,0.576,0.574,0.572,0.571,0.569,0.568,0.568,0.566,0.566
+        ], dtype=torch.float32)
+
+        neutral_65 = torch.tensor([
+            0.144,0.192,0.272,0.331,0.350,0.357,0.361,0.363,0.363,0.361,0.359,0.358,
+            0.358,0.359,0.360,0.360,0.361,0.361,0.360,0.362,0.362,0.361,0.359,0.358,
+            0.355,0.352,0.350,0.348,0.345,0.343,0.340,0.338,0.335,0.334,0.332,0.331
+        ], dtype=torch.float32)
+
+        neutral_5 = torch.tensor([
+            0.105,0.131,0.163,0.180,0.186,0.190,0.193,0.194,0.194,0.192,0.192,0.192,
+            0.192,0.192,0.192,0.191,0.189,0.188,0.186,0.184,0.182,0.181,0.179,0.178,
+            0.176,0.174,0.172,0.172,0.171,0.170,0.170,0.172,0.173,0.172,0.171,0.171
+        ], dtype=torch.float32)
+
+        neutral_35 = torch.tensor([
+            0.068,0.077,0.084,0.087,0.089,0.090,0.092,0.092,0.091,0.090,0.090,0.090,
+            0.090,0.090,0.090,0.090,0.090,0.090,0.090,0.090,0.090,0.089,0.089,0.088,
+            0.087,0.086,0.086,0.085,0.084,0.084,0.083,0.083,0.082,0.081,0.081,0.081
+        ], dtype=torch.float32)
+
+        # Stack and compute spectral averages (simple mean over 380–730 nm)
+        spectra = torch.stack([white_95, neutral_8, neutral_65, neutral_5, neutral_35], dim=0)  # (5,36)
+        # Compute spectral average only over 450–670 nm range
+        mask = (wl >= 450) & (wl <= 670)  # boolean mask for wavelengths in range
+        spectra_filtered = spectra[:, mask]  # (5, num_bands_in_range)
+        avg_r = spectra_filtered.mean(dim=1)  # (5,)
+
+        # Keep everything as buffers (non-trainable) and metadata for traceability
+        self.register_buffer("wavelengths_nm", wl, persistent=False)
+        self.register_buffer("spectra", spectra, persistent=False)     # shape (5,36)
+        self.register_buffer("avg_reflectance", avg_r, persistent=False)  # shape (5,)
+    
+    def _compute_patch_centers(self):
+        """
+        (center_x, center_y) = center of the whole grid/row.
+        Patch 0 is bottom-left in XY. Columns run along +X, rows along +Y.
+        """
+        centers = []
+        s = self.patch_width + self.patch_distance  # center-to-center spacing
+
+        x0 = self.center_x 
+        y0 = self.center_y - 0.5 * (self.grid_cols - 1) * s                      # row already centered by you
+
+        for row in range(self.grid_rows):       # top → bottom (X)
+            for col in range(self.grid_cols):   # right → left (Y)
+                x = x0 - row * s
+                y = y0 + col * s
+                centers.append([x, y])
+
+        return torch.tensor(centers, dtype=torch.float32)
+
+    def get_patch_id_from_position(self, positions):
+        """
+        Determine patch IDs by exact square bounds:
+        inside ⇔ |x - cx| ≤ w/2 AND |y - cy| ≤ w/2
+        Bottom-left is ID 0; IDs progress left→right, then bottom→top
+        (row-major over the centers tensor).
+        """
+        device = positions.device
+        xy = positions[:, :2]                              # (N, 2)
+        centers = self.patch_centers.to(device)           # (M, 2) where M = grid_rows*grid_cols
+        N, M = xy.size(0), centers.size(0)
+        half = self.patch_width * 0.5
+
+        # Per-patch bounds
+        lower = centers - half                            # (M, 2)
+        upper = centers + half                            # (M, 2)
+
+        # Broadcasted inside test over all patches
+        # -> inside[n, m] = True iff xy[n] is inside square m
+        ge = xy.unsqueeze(1) >= lower.unsqueeze(0)        # (N, M, 2)
+        # make the upper edge exclusive
+        le = xy.unsqueeze(1) < upper.unsqueeze(0)
+        inside = (ge & le).all(dim=2)
+
+
+        any_inside = inside.any(dim=1)                    # (N,) bool
+        # Choose the first matching patch in row-major order (left→right, bottom→top)
+        first_idx = torch.argmax(inside.to(torch.int64), dim=1)  # (N,)
+        patch_ids = torch.where(
+            any_inside,
+            first_idx,
+            torch.full((N,), -1, device=device, dtype=torch.int64),
+        )
+
+        # Keep only grayscale patches
+        gray_ids = torch.tensor(self.grayscale_patch_ids, device=device, dtype=torch.int64)
+        is_grayscale = torch.isin(patch_ids, gray_ids)
+        patch_ids = torch.where(
+            is_grayscale,
+            patch_ids,
+            torch.full((N,), -1, device=device, dtype=torch.int64),
+        )
+
+        return patch_ids, is_grayscale
+
+    
+    def get_grayscale_patch_centers_and_ids(self):
+        """
+        Get the center positions of the top 5 grayscale patches for initialization.
+        
+        Returns:
+            centers: tensor of shape (5, 2) containing (x, y) centers of grayscale patches
+            patch_ids: list of patch IDs corresponding to the grayscale patches
+        """
+        grayscale_centers = self.patch_centers[self.grayscale_patch_ids]
+        return grayscale_centers, self.grayscale_patch_ids
+
+    @staticmethod
+    def _angle_from_normal(v, n):
+        # v,n: (...,3) unit vectors. Return polar angle θ to the normal in degrees.
+        cos_theta = torch.clamp((v * n).sum(dim=-1), -1.0, 1.0)
+        theta_rad = torch.arccos(cos_theta)
+        return theta_rad * (180.0 / math.pi)
+
+    def eval_brdf(self, gt_params, positions, wi, wo, normal,uv, TBN, latent=None, batch_mask=None, footprint_vis=None, dp_du=None, dp_dv=None):
+        """
+        Evaluate BRDF for grayscale patches. Returns BRDF for the top 5 grayscale patches only,
+        returns 0 for all other patches.
+        
+        Args:
+            wi          : (N,3) incident direction (pointing *toward* the surface)
+            wo          : (N,3) view direction (pointing *toward* the camera)
+            normal      : (N,3) surface normal (unit)
+            patch_index : (N,) int in {0,1,2,3,4} (0=White9.5, 1=N8, 2=N6.5, 3=N5, 4=N3.5)
+                         If None, will use positions to determine patch_index
+            positions   : (N,3) 3D positions (used if patch_index is None)
+            target_inc_deg  : nominal incident polar angle (default 45°)
+            target_view_deg : nominal view polar angle   (default 90°)
+
+        Returns:
+            brdf : (N,1) tensor. If angles out of range or non-grayscale patch → 0. Otherwise ρ_rel/π.
+        """
+        target_inc_deg = 45.0
+        target_view_deg = 0.0
+        wi = torch.nn.functional.normalize(wi, dim=-1)
+        wo = torch.nn.functional.normalize(wo, dim=-1)
+        normal = torch.nn.functional.normalize(normal, dim=-1)
+        
+        N = wi.shape[0]
+        device = wi.device
+        
+        patch_index, is_grayscale = self.get_patch_id_from_position(positions)
+        # Per-ray angles to the normal (deg)
+        theta_i = self._angle_from_normal(wi, normal)
+        theta_o = self._angle_from_normal(wo, normal)
+
+        # In-range masks
+        inc_ok  = (theta_i - target_inc_deg).abs()  <= self.inc_thresh_deg
+        view_ok = (theta_o - target_view_deg).abs() <= self.view_thresh_deg
+        angle_ok = inc_ok & view_ok
+
+        # Select absolute reflectance (no normalization)
+        pidx = patch_index.long()
+        cos_45_deg = math.cos(math.radians(45.0))
+        rho = torch.where(pidx >= 0, self.avg_reflectance[pidx]/cos_45_deg, torch.zeros_like(pidx, dtype=self.avg_reflectance.dtype))
+
+        # Return f_r * cosθi = ρ(λ) (for valid angles), else −1
+        # cos_theta_i = torch.clamp((wi * normal).sum(dim=-1), 0.0, 1.0)
+        # fr_cos = torch.where(angle_ok, rho, torch.zeros_like(rho))
+        if self.lambertian_brdf:
+            rho = torch.where(pidx >= 0, 0.9/math.pi, torch.zeros_like(pidx, dtype=torch.float32))
+
+        pdf = torch.zeros(N, 1, device=device)         # dummy (no sampling here)
+        return rho.unsqueeze(-1), pdf, angle_ok, pidx
