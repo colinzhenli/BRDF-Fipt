@@ -55,46 +55,38 @@ class ForwardRenderer:
     def render(self, emitter, rays, light_idx, spp, gt_params=None, latent=None):
         rays_x, rays_d, dxdu, dydv = rays[..., :3], rays[..., 3:6], rays[..., 6:9], rays[..., 9:12]
         L = torch.zeros_like(rays_x)
+        uv_offset = torch.zeros_like(rays_x)
         ray_params = torch.zeros_like(rays)
-        pixel_all_ok_accumulated = None
-        gray_patch_idx_accumulated = None
+        vis_accumulated = None
         
         if spp < self.SPP_chunk:
             self.SPP_chunk = spp
         if emitter is None:
             for _ in range(spp // self.SPP_chunk):
-                L0, vis, ray_params, gray_patch_idx, pixel_all_ok = self.ray_tracer(
+                L0, vis, ray_params, uv_offset = self.ray_tracer(
                     self.scene, self.emitter, self.material,
                     rays_x, rays_d, dxdu, dydv, 
                     light_idx, self.SPP_chunk, brdf_sampling=self.cfg.renderer.brdf_sampling, emitter_sampling=self.cfg.renderer.emitter_sampling, gt_params=gt_params, latent=latent
                 )
                 L += L0
-                if pixel_all_ok_accumulated is None:
-                    pixel_all_ok_accumulated = pixel_all_ok
+                if vis_accumulated is None:
+                    vis_accumulated = vis
                 else:
-                    pixel_all_ok_accumulated = pixel_all_ok_accumulated & pixel_all_ok
-                if gray_patch_idx_accumulated is None:
-                    gray_patch_idx_accumulated = gray_patch_idx
-                else:
-                    # If gray_patch_idx doesn't match, mark pixel as not ok
-                    pixel_all_ok_accumulated = pixel_all_ok_accumulated & (gray_patch_idx_accumulated == gray_patch_idx)
+                    vis_accumulated = vis_accumulated & vis
         else:
             for _ in range(spp // self.SPP_chunk):
-                L0, vis, ray_params, gray_patch_idx, pixel_all_ok = self.ray_tracer(
+                L0, vis, ray_params, uv_offset = self.ray_tracer(
                     self.scene, emitter, self.material,
                     rays_x, rays_d, dxdu, dydv, 
                     light_idx, self.SPP_chunk, brdf_sampling=self.cfg.renderer.brdf_sampling, emitter_sampling=self.cfg.renderer.emitter_sampling, gt_params=gt_params, latent=latent
                 )
                 L += L0
-                if pixel_all_ok_accumulated is None:
-                    pixel_all_ok_accumulated = pixel_all_ok
+                if vis_accumulated is None:
+                    vis_accumulated = vis
                 else:
-                    pixel_all_ok_accumulated = pixel_all_ok_accumulated & pixel_all_ok
-                if gray_patch_idx_accumulated is None:
-                    gray_patch_idx_accumulated = gray_patch_idx
-                else:
-                    # If gray_patch_idx doesn't match, mark pixel as not ok
-                    pixel_all_ok_accumulated = pixel_all_ok_accumulated & (gray_patch_idx_accumulated == gray_patch_idx)
+                    vis_accumulated = vis_accumulated & vis
         rgbs = L / (spp // self.SPP_chunk)
+        uv_offset = uv_offset / (spp // self.SPP_chunk)
         rgbs = rgbs.squeeze(0) # squeeze the batch dimension
-        return rgbs, vis, ray_params, gray_patch_idx_accumulated, pixel_all_ok_accumulated
+        uv_offset = uv_offset.squeeze(0) # squeeze the batch dimension
+        return rgbs, vis_accumulated, ray_params, uv_offset

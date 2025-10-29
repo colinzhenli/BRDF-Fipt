@@ -381,6 +381,7 @@ class MipmapLearnableSvPBRBRDF(nn.Module):
             print("brdf is nan or inf")
         # Debug: set all brdf to 1
         # brdf = torch.ones_like(brdf)
+        brdf = brdf/NoL.clamp_min(1e-6) # cosine term is moved to G term
         return brdf, pdf
 
     def compute_anisotropic_svbrdf_pdf(self,
@@ -431,6 +432,7 @@ class MipmapLearnableSvPBRBRDF(nn.Module):
         pdf_diff = NoL / math.pi
         pdf = 0.5 * (pdf_spec + pdf_diff)
 
+        brdf = brdf/NoL.clamp_min(1e-6) # cosine term is moved to G term
         return brdf, pdf
 
 
@@ -538,7 +540,7 @@ class MipmapLearnableSvPBRBRDF(nn.Module):
             brdf = color * brdf
             # brdf = torch.ones_like(brdf)
             
-        return brdf, pdf
+        return brdf, pdf, uv
     
     def sample_brdf(self, params, pos, sample1, sample2, wo, normal, latent=None, batch_mask=None):
         """ TODO """

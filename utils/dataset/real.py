@@ -281,7 +281,6 @@ class RealImageDataset(IterableDataset):
         self.focal = self.intrinsics['focal_length']
         self.img_hw = (self.intrinsics['height'], self.intrinsics['width'])
         self.ccm = np.array(cfg.data.ccm) 
-        # self.ccm = self.ccm / np.abs(self.ccm).sum() # ensure ccm not exceed float 16 range
         self.chunk_size = cfg.data.chunk_size
         self.switch_iters = cfg.data.switch_iters
         self.random_chunks = cfg.data.random_chunks
@@ -652,7 +651,6 @@ class RealValDataset(Dataset):
         self.img_hw = (self.intrinsics['height'], self.intrinsics['width'])
         # self.ccm = cfg.data.ccm
         self.ccm = np.array(cfg.data.ccm) 
-        # self.ccm = self.ccm / np.abs(self.ccm).sum()
         
         # get R_c2g and t_c2g from cfg
         self.R_c2g = cfg.renderer.camera.R_c2g

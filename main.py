@@ -9,7 +9,7 @@ from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
 from renderer import ForwardRenderer
 from brdf_trainer import BRDFTrainer
 from model.brdf import SvPBRBRDF
-from model.neural_brdf import SvLatentModel, LatentTexturedModel, AnisotropicLatentTexturedModel, LearnableSvPBRBRDF
+from model.neural_brdf import SvLatentModel, LatentTexturedModel, AnisotropicLatentTexturedModel, LearnableSvPBRBRDF, MipmapAniLatentTexturedModel
 from model.mipmap_brdf import MipmapLearnableSvPBRBRDF
 from torch.utils.data import DataLoader
 from utils.dataset import RealImageDataset, RealValDataset
@@ -64,6 +64,8 @@ def main(cfg):
         material = MipmapLearnableSvPBRBRDF(cfg.material)  # MLP model uses mlp_pbr config
     elif cfg.material.type == "GreyPatchBRDF":
         material = GreyPatchBRDF(cfg.material)  # MLP model uses mlp_pbr config
+    elif cfg.material.type == "MipmapAniLatentTexturedModel":
+        material = MipmapAniLatentTexturedModel(cfg.material)  # MLP model uses mlp_pbr config
     else:
         raise ValueError(f"Invalid material type: {cfg.material.type}")
     gt_material = SvPBRBRDF(
@@ -120,8 +122,10 @@ def main(cfg):
     )
     # tracer = VizTracer()
     # tracer.start()
-    # trainer.fit(model, train_loader, val_loader)
-    trainer.validate(model, val_loader)
+    if cfg.model.test:
+        trainer.validate(model, val_loader)
+    else:
+        trainer.fit(model, train_loader, val_loader)
     # tracer.stop()
     # tracer.save(f"Ray-rect-intersection_tracer.json")
     """  Skipping testing for now """
