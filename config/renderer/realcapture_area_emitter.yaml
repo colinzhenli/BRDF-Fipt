@@ -5,7 +5,7 @@ indir_depth: 0
 
 camera:
   linear_factor: 131231480.000000
-  colmap_camera: False # whether to use colmap camera or robotic log camera
+  colmap_camera: True # whether to use colmap camera or robotic log camera
   distance: 2.0
   number_of_views: 40 # used to generate reference images
   number_of_view_test: 10
@@ -35,10 +35,12 @@ camera:
   intrinsics:
     width: 3072
     height: 2048
-    focal_length: 6699.9749607678123
+    focal_length: 6699.9749607678123 #previous focal length
+    # focal_length: 6781.26
     cx: 1536
     cy: 1024
-    distortion: -0.057534771756603202
+    distortion: -0.057534771756603202 #previous distortion
+    # distortion: -0.0386
 
   # intrinsics:
   #   width: 3080
@@ -52,13 +54,14 @@ mesh:
   path: 
   mitsuba_scene: False
   rectangle:
-    center: [0.16, -0.11, -0.06] 
-    # width: 0.24 # board_size
+    # center: [0.16, -0.11, -0.058] # 0.06 is the foam board top
+    center: [0.16, -0.11, -0.0643] # 0.063 is the foam board bottom
+    # width: 0.264 # board_size
     # length: 0.31
-    # width: 0.16 # sample_size
-    # length: 0.20 # sample_size
-    width: 0.24
-    length: 0.34 # colorchecker size
+    width: 0.16 # sample_size
+    length: 0.20 # sample_size
+    # width: 0.08
+    # length: 0.08 # colorchecker size
 emitter:
   type: "realarea"
   num_lights: 40
@@ -77,7 +80,7 @@ emitter:
     axis: [-0.00876202, -0.01346449, 0.99987096]
 
   R_l2g: [[1.0,  0.0,  0.0],
-          [0.0,  1.0,  0.0],
+          [0.0,  1.0,  0.0], 
           [0.0,  0.0,  1.0]]
   t_l2g: [0.0, -0.102, 0.02112]
   base2_to_base1: [[ 9.99999959e-01,  2.33227594e-04, -1.69051819e-04,  7.22042468e-03],
@@ -85,9 +88,9 @@ emitter:
                   [ 1.64095944e-04,  2.10879262e-02,  9.99777611e-01,  3.93500345e-03],
                   [ 0.00000000e+00,  0.00000000e+00,  0.00000000e+00,  1.00000000e+00]]
 spp:
-  train: 64  
-  val: 64  
-  test: 64  
-SPP_chunk: 8
+  train: 16  
+  val: 16  
+  test: 16  
+SPP_chunk: 4
 
 resolution: [2048, 2048]

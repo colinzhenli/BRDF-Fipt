@@ -1510,6 +1510,454 @@ class LatentTexturedModel(LightningModule):
 
         return wi_proxy, stop_gradient_pdf_proxy, brdf_weight
 
+class MipmapAniLatentTexturedModel(LightningModule):
+    """ MLP-based BRDF class with 2D texture latent grids """
+    def __init__(self, cfg):
+        super().__init__()
+
+        # Latent dimension from config
+        self.latent_dim = cfg.latent_dim
+        self.colorful_texture = cfg.colorful_texture
+        self.larger_latent_dim = cfg.larger_latent_dim
+        self.different_decoder = cfg.different_decoder
+        self.predict_frame = cfg.predict_frame
+        self.gt_frame = cfg.gt_frame
+        self.anisotropic = True
+        self.neural_geometry = cfg.neural_geometry.enable
+        self.geometry_latent_dim = cfg.neural_geometry.latent_dim
+        self.local_wi_wo = cfg.neural_geometry.local_wi_wo
+        self.neural_geometry_pos_enc = cfg.neural_geometry.positional_encoding
+        self.recompute_frame = cfg.neural_geometry.recompute_frame
+
+        self.mipmap_levels = cfg.mipmap_levels
+        self.base_footprint = cfg.base_footprint
+        if self.colorful_texture and self.larger_latent_dim:
+            total_latent_dim = self.latent_dim * 3
+        else:
+            total_latent_dim = self.latent_dim
+        if self.predict_frame:
+            total_latent_dim = total_latent_dim + 6
+            
+        if self.neural_geometry:
+            total_latent_dim = total_latent_dim + self.geometry_latent_dim # 8 for neural geometry latent
+
+        self.texture_resolution = getattr(cfg, 'texture_resolution', 256)
+        self.mipmap_texture = True  # Enable mipmap texture sampling
+
+        # Initialize mipmap latent textures - each level has resolution decreased by factor 2
+        self.latent_texture = nn.ParameterList()
+        for level in range(self.mipmap_levels):
+            # Resolution decreases by factor 2 for each level
+            level_resolution = max(1, self.texture_resolution // (2 ** level))
+            
+            # Initialize latent texture for this level
+            latent_init = torch.randn(1, total_latent_dim, level_resolution, level_resolution) * 0.1
+            
+            if self.predict_frame:
+                # Last 6 dimensions: normal (1,0,0) and tangent (0,1,0)
+                latent_init[:, -6:-3, :, :] = torch.tensor([0.0, 0.0, 1.0]).view(1, 3, 1, 1)  # normal
+                latent_init[:, -3:, :, :] = torch.tensor([0.0, 1.0, 0.0]).view(1, 3, 1, 1)    # tangent
+            
+            self.latent_texture.append(nn.Parameter(latent_init))
+        # gaussian blur parameters
+        self.Gaussian_blur = cfg.Gaussian_blur
+        self.blur_sigma0 = 8.0
+        self.blur_half_life = 3333
+        # Add SH positional encoding module
+        self.degree = 3
+        self.pos_enc = True
+        self.use_nerfstudio_sh = getattr(cfg, 'use_nerfstudio_sh', False)  # Option to use nerfstudio's SHEncoding
+        
+        if self.pos_enc:
+            if self.use_nerfstudio_sh:
+                # Use nerfstudio's SHEncoding
+                # Note: nerfstudio uses 'levels' parameter, where levels=degree+1
+                # For degree=3, we need levels=4, which gives (levels)^2 = 16 bases
+                # But we want to match the same degree, so levels = degree + 1
+                self.sh_encoder = encoding.SHEncoding(levels=self.degree + 1)
+                sh_dim = (self.degree + 1) ** 2  # nerfstudio: (levels)^2
+            else:
+                # Use custom implementation from utils/ops.py
+                self.sh_encoder = lambda x: components_from_spherical_harmonics(self.degree, x)
+                sh_dim = num_sh_bases(self.degree)  # custom: (degree+1)^2
+            
+        # Calculate input dimension after SH encoding
+        encoded_input_dim = sh_dim * 3  # wi, wo, normal each encoded by SH
+        
+        # Add latent dimension to input
+        input_dim = encoded_input_dim + self.latent_dim if self.pos_enc else cfg.input_channels + self.latent_dim
+        
+        # Build MLP layers
+        if self.different_decoder:
+            # Create separate MLPs for RGB channels
+            def build_mlp():
+                layers = []
+                prev_dim = input_dim
+                for hidden_dim in cfg.hidden_layers:
+                    layers.append(nn.Linear(prev_dim, hidden_dim))
+                    if cfg.activation.lower() == "relu":
+                        layers.append(nn.ReLU())
+                    prev_dim = hidden_dim
+                    
+                layers.append(nn.Linear(prev_dim, cfg.output_channels))
+                layers.append(nn.LeakyReLU(0.2))
+                return nn.Sequential(*layers)
+            
+            self.mlp_r = build_mlp()
+            self.mlp_g = build_mlp()
+            self.mlp_b = build_mlp()
+        else:
+            # Single MLP for all channels
+            layers = []
+            prev_dim = input_dim
+            for hidden_dim in cfg.hidden_layers:
+                layers.append(nn.Linear(prev_dim, hidden_dim))
+                if cfg.activation.lower() == "relu":
+                    layers.append(nn.ReLU())
+                prev_dim = hidden_dim
+                
+            layers.append(nn.Linear(prev_dim, cfg.output_channels))
+            layers.append(nn.LeakyReLU(0.2))
+            
+            self.mlp = nn.Sequential(*layers)
+
+        # Build geometry decoder if neural geometry is enabled
+        if self.neural_geometry:
+            layers = []
+            prev_dim = encoded_input_dim + self.geometry_latent_dim if cfg.neural_geometry.positional_encoding else 6 + self.geometry_latent_dim
+            for hidden_dim in cfg.neural_geometry.hidden_layers:
+                layers.append(nn.Linear(prev_dim, hidden_dim))
+                if cfg.activation.lower() == "relu":
+                    layers.append(nn.ReLU())
+                prev_dim = hidden_dim
+                
+            layers.append(nn.Linear(prev_dim, cfg.neural_geometry.output_channels))
+            layers.append(nn.LeakyReLU(0.2))
+            
+            self.geometry_decoder = nn.Sequential(*layers)
+        # Initialize proxy BRDF for importance sampling
+        self.proxy_brdf = ProxyPBRBRDF()  # Default roughness
+
+    def _gaussian_kernel(self, sigma: float, channels: int):
+        """Return a (C×1×k×k) kernel usable by depth-wise conv2d."""
+        if sigma < 0.5:                       # almost no blur → skip
+            return None
+        radius  = int(math.ceil(3 * sigma))
+        ksize   = 2 * radius + 1
+        grid    = torch.arange(-radius, radius + 1, dtype=self.latent_texture[0].dtype, device=self.latent_texture[0].device)
+        g1d     = torch.exp(-0.5 * (grid / sigma) ** 2)
+        g1d     = g1d / g1d.sum()
+        g2d     = (g1d[:, None] * g1d[None, :]).expand(
+                    channels, 1, ksize, ksize)
+        return g2d
+
+    def _blur_latent(self, step: int):
+        """Return blurred copy of latent texture for this training step."""
+        # σ(t) = σ₀ · 2^{-t/h}
+        base_sigma = self.blur_sigma0 * (0.5 ** (step / self.blur_half_life))
+        
+        blurred_textures = []
+        for level in range(self.mipmap_levels):
+            # Sigma decreases by level - higher mipmap levels need less blur
+            # since they already represent lower resolution content
+            level_sigma = base_sigma / (2 ** level)
+            
+            kernel = self._gaussian_kernel(level_sigma, self.latent_texture[level].shape[1])
+            if kernel is None:  # σ<0.5 → no-op
+                blurred_textures.append(self.latent_texture[level])
+            else:
+                pad = kernel.shape[-1] // 2
+                # depth-wise ⇒ groups = channels
+                blurred = NF.conv2d(self.latent_texture[level], kernel,
+                                padding=pad, groups=self.latent_texture[level].shape[1])
+                blurred_textures.append(blurred)
+        
+        return blurred_textures
+
+
+    def sample_latent_from_texture(self, uv, texture):
+        """
+        Sample latent codes from 2D texture using bilinear interpolation
+        Args:
+            uv: Bx2 UV coordinates
+        Returns:
+            latent: BxD latent codes
+        """
+        # Convert sphere positions to UV coordinates
+        
+        # Convert UV to grid coordinates for F.grid_sample
+        # grid_sample expects coordinates in [-1, 1] range
+        grid_coords = uv * 2.0 - 1.0  # Convert [0,1] to [-1,1]
+        grid_coords = grid_coords.unsqueeze(1).unsqueeze(0)  # 1x1xBx2
+        
+        # Sample from latent texture using bilinear interpolation
+        latent = NF.grid_sample(
+            texture,  # 1xDxHxW
+            grid_coords,          # 1x1xBx2
+            mode='bilinear',
+            padding_mode='border',
+            align_corners=False
+        )  # 1xDx1xB
+        
+        # Reshape to BxD
+        latent = latent.squeeze(0).squeeze(-1).transpose(0, 1)  # BxD
+        
+        return latent
+
+    def sample_latent_from_texture_mipmap(self, uv, tex, mipmap_level):
+        """
+        Sample texture from mipmap level
+        Args:
+            tex: list of length L, each tensor of shape [B, C, H, W] where B=1
+            uv:     [N, 2] in [0, 1] (per-ray UVs)
+            mipmap_level: [N, 1] (can be fractional; floor part selects base level)
+            return: [N, C]
+        """
+        device = uv.device
+        dtype = uv.dtype
+        L = len(tex)
+        
+        # Compute base level (integer) and fractional alpha for cross-level blend
+        l0 = torch.floor(mipmap_level).clamp(0, L - 1).long()          # [N]
+        alpha = (mipmap_level - l0.to(dtype)).clamp(0.0, 1.0)          # [N]
+        l1 = torch.clamp(l0 + 1, max=L - 1)                            # [N]
+
+        # Prepare output
+        # Infer C from first level (tex[0] is [1, C, H, W])
+        C = tex[0].shape[1]
+        out = torch.empty((uv.shape[0], C), device=device, dtype=dtype)
+
+        # grid_sample wants normalized coords in [-1, 1]
+        # uv in [0,1] -> grid in [-1,1]
+        def uv_to_grid(u):
+            g = u * 2.0 - 1.0
+            return g
+
+        # Helper to bilinear sample a single level for a subset of rays
+        def sample_level(level_idx, uv_subset):
+            uv_subset_grid = uv_to_grid(uv_subset).unsqueeze(0).unsqueeze(2)  # [1, M, 1, 2]
+                
+            # tex[level_idx] is [1, C, H, W]
+            tex_level = tex[level_idx]  # [1, C, H, W]
+            grid = uv_subset_grid  # [1, M, 1, 2]
+            sampled = NF.grid_sample(tex_level, grid, mode='bilinear', padding_mode='border', align_corners=True)
+            # sampled: [1, C, M, 1] -> [M, C]
+            # Debug: Check for NaN values in sampled
+            if torch.isnan(sampled).any():
+                print(f"Warning: NaN values detected in sampled at level {level_idx}. Count: {torch.isnan(sampled).sum().item()}")
+            return sampled.squeeze(0).squeeze(-1).transpose(0, 1).contiguous()
+
+        # Loop over levels to avoid sampling full textures for all rays unnecessarily
+        for level in range(L):
+            # rays whose base level == level
+            mask = (l0 == level)
+            if not torch.any(mask):
+                continue
+
+            idx = torch.nonzero(mask, as_tuple=False).squeeze(1)
+            uv_subset = uv[idx]  # [M, 2]
+            a_subset = alpha[idx]  # [M]
+
+            # base level sample
+            s0 = sample_level(level, uv_subset)  # [M, C]
+
+            # upper level (could be same as base when at the top mip)
+            level_up = min(level + 1, L - 1)
+            if level_up != level:
+                s1 = sample_level(level_up, uv_subset)  # [M, C]
+                # blend with alpha
+                out[idx] = (1.0 - a_subset.unsqueeze(1)) * s0 + a_subset.unsqueeze(1) * s1
+            else:
+                # top level: no upper level to blend with
+                out[idx] = s0
+
+        return out  # [N, C]
+    
+    def forward(self, enc_dir, latent=None, channel=None):
+        """
+        Evaluate BRDF using MLP with 2D texture latent encoding, wi,wo and normalare in local space
+        Args:
+            enc_dir: encoded directions, wi,wo and normal
+            latent: ignored (for compatibility)
+            global_step: ignored (for compatibility)
+        Returns:
+            brdf: Bx1 BRDF values
+        """   
+
+        if self.different_decoder:
+            if channel == 'r':
+                return self.mlp_r(torch.cat([enc_dir, latent], dim=-1))
+            elif channel == 'g':
+                return self.mlp_g(torch.cat([enc_dir, latent], dim=-1))
+            else:
+                return self.mlp_b(torch.cat([enc_dir, latent], dim=-1))
+        else:
+            return self.mlp(torch.cat([enc_dir, latent], dim=-1))
+
+    def world_to_local(self, v, normal, tangent):
+        
+        # choose arbitrary tangent
+        if tangent is None:
+            tangent = torch.cross(normal, torch.tensor([0.0, 0.0, 1.0], device=normal.device).expand_as(normal))
+        tangent_len = tangent.norm(dim=-1, keepdim=True)
+        tangent = tangent / tangent_len
+        bitangent = torch.cross(normal, tangent)
+
+        v_local = torch.stack([
+            (v * tangent).sum(dim=-1),
+            (v * bitangent).sum(dim=-1),
+            (v * normal).sum(dim=-1)
+        ], dim=-1)
+
+        return v_local
+    
+    def eval_brdf(self, gt_params, pos, wi, wo, normal,uv, TBN, latent=None, batch_mask=None, footprint_vis=None, dp_du=None, dp_dv=None):
+        """
+        Evaluate BRDF and pdf after transforming world-space vectors to local space.
+        Args:
+            gt_params: dictionary of ground truth parameters
+            pos: Bx3 position
+            wi: Bx3 light direction in world space
+            wo: Bx3 viewing direction in world space
+            normal: Bx3 normal in world space
+            latent: optional latent code
+            batch_mask: optional batch mask
+        Returns:
+            brdf: Bx3 BRDF values
+            pdf: Bx1 probability
+        """
+        # Ensure normal is normalized
+        NoL = (wi*normal).sum(-1,keepdim=True)
+        NoV = (wo*normal).sum(-1,keepdim=True)
+        valid_geometry = (NoL > 0) & (NoV > 0)
+        if not valid_geometry.any():
+            return torch.zeros_like(wi), torch.zeros(wi.shape[0], 1, device=wi.device)
+        footprint_ratio = footprint_vis / self.base_footprint
+        mipmap_level = (torch.log2(footprint_ratio)/2).clamp(min=0, max=self.mipmap_levels - 1)
+        
+        if self.training and self.Gaussian_blur:
+            tex = self._blur_latent(self.global_step)
+        else:
+            tex = self.latent_texture       
+        latent = self.sample_latent_from_texture_mipmap(uv, tex, mipmap_level)
+            
+        if self.predict_frame:
+            # Extract predicted normal and tangent from latent
+            predicted_normal = latent[..., -6:-3]  # Last 6-3 dimensions for normal
+            predicted_tangent = latent[..., -3:]   # Last 3 dimensions for tangent       
+            # Normalize predicted vectors
+            predicted_normal = torch.nn.functional.normalize(predicted_normal, dim=-1)
+            predicted_tangent = torch.nn.functional.normalize(predicted_tangent, dim=-1)
+            
+            # Use Gram-Schmidt orthogonalization to make tangent perpendicular to normal
+            # Keep normal unchanged and orthogonalize tangent
+            predicted_tangent = predicted_tangent - torch.sum(predicted_tangent * predicted_normal, dim=-1, keepdim=True) * predicted_normal
+            predicted_tangent = torch.nn.functional.normalize(predicted_tangent, dim=-1)
+            
+        wi_local = self.world_to_local(wi, predicted_normal, predicted_tangent)
+        wo_local = self.world_to_local(wo, predicted_normal, predicted_tangent)
+        local_normal = torch.zeros_like(wi_local)
+        local_normal[..., 2] = 1.0  # Normal is always (0,0,1) in local space
+        if self.neural_geometry:
+            geometry_latent = latent[..., -6-self.geometry_latent_dim:-6]
+            if self.local_wi_wo:
+                if self.neural_geometry_pos_enc:
+                    wi_local_enc = self.sh_encoder(wi_local)
+                    wo_local_enc = self.sh_encoder(wo_local)
+                    uv_offset = self.geometry_decoder(torch.cat([wi_local_enc, wo_local_enc], dim=-1))
+                else:
+                    uv_offset = self.geometry_decoder(torch.cat([geometry_latent, wi_local, wo_local], dim=-1))
+            else:
+                if self.neural_geometry_pos_enc:
+                    wi_enc = self.sh_encoder(wi)
+                    wo_enc = self.sh_encoder(wo)
+                    uv_offset = self.geometry_decoder(torch.cat([wi_enc, wo_enc], dim=-1))
+                else:
+                    uv_offset = self.geometry_decoder(torch.cat([geometry_latent, wi, wo], dim=-1))
+            uv = uv + uv_offset
+            if self.mipmap_texture:
+                latent = self.sample_latent_from_texture_mipmap(uv, tex, mipmap_level)
+            else:
+                latent = self.sample_latent_from_texture(uv, tex)
+                
+            if self.recompute_frame: # recompute frame use new uv
+                predicted_normal = latent[..., -6:-3]  # Last 6-3 dimensions for normal
+                predicted_tangent = latent[..., -3:]   # Last 3 dimensions for tangent       
+                predicted_normal = torch.nn.functional.normalize(predicted_normal, dim=-1)
+                predicted_tangent = torch.nn.functional.normalize(predicted_tangent, dim=-1)
+                predicted_tangent = predicted_tangent - torch.sum(predicted_tangent * predicted_normal, dim=-1, keepdim=True) * predicted_normal
+                predicted_tangent = torch.nn.functional.normalize(predicted_tangent, dim=-1)   
+                wi_local = self.world_to_local(wi, predicted_normal, predicted_tangent)
+                wo_local = self.world_to_local(wo, predicted_normal, predicted_tangent)
+                local_normal = torch.zeros_like(wi_local)
+                local_normal[..., 2] = 1.0  # Normal is always (0,0,1) in local space
+    
+        # Get BRDF value for each channel
+        if self.pos_enc:
+            wi_enc = self.sh_encoder(wi_local)
+            wo_enc = self.sh_encoder(wo_local)
+            normal_enc = self.sh_encoder(local_normal)
+            enc_dir = torch.cat([wi_enc, wo_enc, normal_enc], dim=-1)
+        else:
+            enc_dir = torch.cat([wi_local, wo_local, local_normal], dim=-1)
+            
+        if self.colorful_texture:
+            if self.different_decoder:
+                if self.larger_latent_dim:
+                    latent_r = latent[..., :self.latent_dim]
+                    latent_g = latent[..., self.latent_dim:2*self.latent_dim]
+                    latent_b = latent[..., 2*self.latent_dim:3*self.latent_dim]
+                else:
+                    latent_r = latent[...,:self.latent_dim]
+                    latent_g = latent[...,:self.latent_dim]
+                    latent_b = latent[...,:self.latent_dim]
+                    
+                brdf_r = self.forward(enc_dir, latent_r, 'r')
+                brdf_g = self.forward(enc_dir, latent_g, 'g')
+                brdf_b = self.forward(enc_dir, latent_b, 'b')
+                # Combine channels
+                brdf = torch.cat([brdf_r, brdf_g, brdf_b], dim=-1)
+            else:
+                brdf = self.forward(enc_dir, latent[...,:self.latent_dim], None)
+        else:
+            brdf = self.forward(enc_dir, latent[...,:self.latent_dim], None)
+            brdf = brdf.repeat(1,3)
+        # # brdf = brdf * color
+        pdf = NoL / math.pi
+
+        return brdf, pdf, uv_offset
+    
+    def sample_brdf(self, params, pos, sample1, sample2, wo, normal, latent=None, batch_mask=None):
+        """
+        Importance sampling BRDF using proxy (PBRBRDF) and evaluating MLP BRDF.
+        
+        Args:
+            params: dictionary of parameters
+            pos: Bx3 position
+            sample1: B uniform samples [0,1] to select diffuse or specular sampling
+            sample2: Bx2 uniform samples for hemisphere sampling
+            wo: Bx3 viewing direction in world space
+            normal: Bx3 normal in world space
+            latent: optional latent code
+            batch_mask: optional batch mask
+
+        Returns:
+            wi: Bx3 sampled incoming directions (world space)
+            pdf: Bx1 sampling pdf values from proxy_brdf
+            brdf_weight: Bx3 ratio (MLP evaluated BRDF / pdf)
+        """
+        # Sample direction using proxy BRDF
+        wi_proxy, pdf_proxy = self.proxy_brdf.sample_brdf(pos, sample1, sample2, wo, normal, params['roughness'], batch_mask)
+        
+        stop_gradient_pdf_proxy = pdf_proxy.detach()
+        mlp_brdf, _ = self.eval_brdf(params, pos, wi_proxy, wo, normal, latent, batch_mask)
+        
+        # Calculate weight (MLP BRDF / PDF)
+        mlp_brdf = mlp_brdf * pdf_proxy / (stop_gradient_pdf_proxy + 1e-8)
+        brdf_weight = torch.where(pdf_proxy > 0, mlp_brdf / (stop_gradient_pdf_proxy + 1e-8), torch.zeros_like(mlp_brdf))
+
+        return wi_proxy, stop_gradient_pdf_proxy, brdf_weight 
+
 class AnisotropicLatentTexturedModel(LightningModule):
     """ MLP-based BRDF class with 2D texture latent grids """
     def __init__(self, cfg):
@@ -1755,10 +2203,11 @@ class AnisotropicLatentTexturedModel(LightningModule):
         NoV = (wo*normal).sum(-1,keepdim=True)
 
         
-        if self.Gaussian_blur:
+        if self.training and self.Gaussian_blur:
             tex = self._blur_latent(self.global_step)
         else:
             tex = self.latent_texture       
+
         latent = self.sample_latent_from_texture(uv, tex)
         if self.gt_frame:
             """ load gt frame for reference """
@@ -1909,22 +2358,10 @@ class AnisotropicLatentTexturedModel(LightningModule):
         # # brdf = brdf * color
         pdf = NoL / math.pi
 
-        return brdf, pdf
+        return brdf, pdf, uv_offset
     
     def sample_brdf(self, params, pos, sample1, sample2, wo, normal, latent=None, batch_mask=None):
         """
-        Importance sampling BRDF using proxy (PBRBRDF) and evaluating MLP BRDF.
-        
-        Args:
-            params: dictionary of parameters
-            pos: Bx3 position
-            sample1: B uniform samples [0,1] to select diffuse or specular sampling
-            sample2: Bx2 uniform samples for hemisphere sampling
-            wo: Bx3 viewing direction in world space
-            normal: Bx3 normal in world space
-            latent: optional latent code
-            batch_mask: optional batch mask
-
         Returns:
             wi: Bx3 sampled incoming directions (world space)
             pdf: Bx1 sampling pdf values from proxy_brdf

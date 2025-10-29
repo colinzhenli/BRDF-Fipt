@@ -24,13 +24,13 @@ class BRDFTrainer(pl.LightningModule):
         self.material = material
         self.gt_material = gt_material
         self.gt_folder = cfg.gt_folder
-        # Dictionary to store pairs of (radiance, camera RGB value) for calibration
-        self.radiance_rgb_pairs = {}
+        self.camera_factor = cfg.renderer.camera.linear_factor
         
         #self.latent_dim = cfg.material.latent_dim
         # Create a mapping from roughness-metallic pairs to train latent indices
 
         self.latent_reg_weight = cfg.model.latent_reg_weight if hasattr(cfg.model, 'latent_reg_weight') else 1e-4
+        self.visualize_uv = cfg.data.visualize_uv
         self.inference_lr = cfg.model.optimizer.inference_lr
         self.inference_steps = cfg.model.optimizer.inference_steps
         print("after latent reg weight")
@@ -186,22 +186,23 @@ class BRDFTrainer(pl.LightningModule):
             return torch.ones(H, W, 6)
     
     def save_pbr_texture(self, output_dir, batch_idx, b):
-        if self.hparams.material.type == "AnisotropicLatentTexturedModel": # Save normal and tangent map
+        if self.hparams.material.type == "AnisotropicLatentTexturedModel" or self.hparams.material.type == "MipmapAniLatentTexturedModel": # Save normal and tangent map
             # Extract normal and tangent from latent texture (last 6 dimensions)
-            latent_texture = self.material.latent_texture.data[0]  # [latent_dim, H, W]
+            # latent_texture = self.material.latent_texture.data[0]  # [latent_dim, H, W]
             
-            # Last 6 dimensions: normal (3) and tangent (3)
-            normal_map = latent_texture[-6:-3, :, :].permute(1, 2, 0)  # [H, W, 3]
-            tangent_map = latent_texture[-3:, :, :].permute(1, 2, 0)   # [H, W, 3]
+            # # Last 6 dimensions: normal (3) and tangent (3)
+            # normal_map = latent_texture[-6:-3, :, :].permute(1, 2, 0)  # [H, W, 3]
+            # tangent_map = latent_texture[-3:, :, :].permute(1, 2, 0)   # [H, W, 3]
             
-            torchvision.utils.save_image(
-                normal_map.permute(2, 0, 1),
-                os.path.join(output_dir, f'normal_map_{batch_idx}_{b}.png')
-            )
-            torchvision.utils.save_image(
-                tangent_map.permute(2, 0, 1),
-                os.path.join(output_dir, f'tangent_map_{batch_idx}_{b}.png')
-            )
+            # torchvision.utils.save_image(
+            #     normal_map.permute(2, 0, 1),
+            #     os.path.join(output_dir, f'normal_map_{batch_idx}_{b}.png')
+            # )
+            # torchvision.utils.save_image(
+            #     tangent_map.permute(2, 0, 1),
+            #     os.path.join(output_dir, f'tangent_map_{batch_idx}_{b}.png')
+            # )
+            return
         else:
             # Check if material has prefilter option
             if self.hparams.material.prefliter:
@@ -289,17 +290,20 @@ class BRDFTrainer(pl.LightningModule):
             per_pix = torch.abs(rgbs[vis] - rgbs_gt.squeeze(0)[vis]).mean(dim=-1)
         elif self.hparams.model.loss.recon_loss.name == "l2":  # "l2"
             per_pix = torch.pow(rgbs[vis] - rgbs_gt.squeeze(0)[vis], 2).mean(dim=-1)
-        else:
-            r_ref   = getattr(self.hparams.model.loss.recon_loss.log_space, "logrel_ref", 0.5)      # uniform reference in [0,1]
-            alpha   = getattr(self.hparams.model.loss.recon_loss.log_space, "logrel_alpha", 1e-3)   # epsilon as fraction of r
-            r = torch.as_tensor(r_ref, dtype=rgbs.dtype, device=rgbs.device)
-            eps = alpha * (r + 1e-12)
+        else:  # "logrel" from paper
+            rho_ref = getattr(
+                self.hparams.model.loss.recon_loss.log_space, "logrel_ref", 0.5
+            )  # reference reflectance/radiance
+            eps = getattr(
+                self.hparams.model.loss.recon_loss.log_space, "logrel_eps", 1e-3
+            )  # fixed small constant
 
-            def logrel(x):
-                # log(1 + (x+eps)/(r+eps)) applied per channel
-                return torch.log1p((x + eps) / (r + eps))
+            ref = torch.as_tensor(rho_ref, dtype=rgbs.dtype, device=rgbs.device)
 
-            per_pix_log = (logrel(rgbs) - logrel(rgbs_gt.squeeze(0))).abs().mean(dim=-1)  # [N]
+            def log_mapping(x):
+                return torch.log((x + eps) / (ref + eps) + 1.0)
+
+            per_pix_log = (log_mapping(rgbs) - log_mapping(rgbs_gt.squeeze(0))).abs().mean(dim=-1)  # [N]
             per_pix = per_pix_log
 
         
@@ -329,15 +333,14 @@ class BRDFTrainer(pl.LightningModule):
         if self.handeye_refiner:
             rays, prior = self.handeye_refiner.apply_handeye_delta_to_rays(rays, camera_ids)
         # forward renders
-        rgbs, vis, ray_params = self.renderer.render(self.emitter, rays, emitter_ids, self.cfg.renderer.spp.train,
+        rgbs, vis, ray_params, _ = self.renderer.render(self.emitter, rays, emitter_ids, self.cfg.renderer.spp.train,
                                         None, None)                       # f(r)
-
+        rgbs = rgbs * self.camera_factor
         loss = self.loss_function(rgbs, rgbs_gt, vis, weighted_pdf)
 
-        psnr_loss  = torch.nn.functional.mse_loss(self.gamma(rgbs[vis]),
-                                                self.gamma(rgbs_gt.squeeze(0)[vis]),
-                                                reduction='mean')
-        psnr       = 10.0 * torch.log10(1.0 / psnr_loss.clamp_min(1e-5))
+        psnr_loss  = torch.nn.functional.mse_loss(rgbs[vis], rgbs_gt.squeeze(0)[vis], reduction='mean')
+        max_val = torch.max(torch.stack([rgbs.max(), rgbs_gt.squeeze(0).max()])).clamp_min(1e-8)
+        psnr       = 10.0 * torch.log10((max_val ** 2) / psnr_loss.clamp_min(1e-5))
 
         # ------------------------------------------------------------------
         # 7.  Logging  (now includes diagnostics)
@@ -358,23 +361,13 @@ class BRDFTrainer(pl.LightningModule):
             rays, prior = self.handeye_refiner.apply_handeye_delta_to_rays(rays, batch['camera_ids'])
 
         # forward renders
-        rgbs, vis, ray_params, gray_patch_idx, pixel_all_ok = self.renderer.render(self.emitter, rays, emitter_ids, self.cfg.renderer.spp.train, None, None)    
-        mask = rgbs > 0
-        # rgbs_gt = rgbs_gt / 10
-        rgbs_gt.squeeze(0)[~mask] = 0 # mask out the zero brdf region for debugging
-        
-        # Store radiance-camera RGB pairs for later plotting
-        non_zero = (rgbs[vis].sum(dim=-1) > 0) & pixel_all_ok[vis]
-        rad = rgbs[vis][non_zero].mean(dim=-1).detach().cpu().numpy()
-        cam = rgbs_gt.squeeze(0)[vis][non_zero].mean(dim=-1).detach().cpu().numpy()
-         
-        # Accumulate pairs in dictionary
-        self.radiance_rgb_pairs[batch_idx] = {'radiance': rad, 'camera': cam}
-        
+        rgbs, vis, ray_params, uv_offset = self.renderer.render(self.emitter, rays, emitter_ids, self.cfg.renderer.spp.train, None, None)            
+        rgbs = rgbs * self.camera_factor
         loss = self.loss_function(rgbs, rgbs_gt, vis)
 
-        psnr_loss = torch.nn.functional.mse_loss(self.gamma(rgbs[vis]), self.gamma(rgbs_gt.squeeze(0)[vis]), reduction='mean')
-        psnr = 10.0 * torch.log10((1.0 ** 2) / psnr_loss.clamp_min(1e-5))
+        psnr_loss = torch.nn.functional.mse_loss(rgbs[vis], rgbs_gt.squeeze(0)[vis], reduction='mean')
+        max_val = torch.max(torch.stack([rgbs.max(), rgbs_gt.squeeze(0).max()])).clamp_min(1e-8)
+        psnr = 10.0 * torch.log10((max_val ** 2) / psnr_loss.clamp_min(1e-5))
         emitter_radiance = self.emitter.light_radiance.detach().cpu().numpy()
         
         loss = self.loss_function(rgbs, rgbs_gt, vis)
@@ -383,6 +376,11 @@ class BRDFTrainer(pl.LightningModule):
         batch_size = 1
         batched_rgbs = rgbs.reshape(batch_size, *self.img_hw, -1)
         batched_rgbs_gt = rgbs_gt.reshape(batch_size, *self.img_hw, -1)
+        
+        # Reshape uv_offset for visualization if it exists
+        if uv_offset is not None:
+            batched_uv_offset = uv_offset.reshape(batch_size, *self.img_hw, 2)
+        
         for b in range(batch_size):
             # Reshape individual sample in batch
             sample_rgbs = batched_rgbs[b]
@@ -407,7 +405,51 @@ class BRDFTrainer(pl.LightningModule):
             cv2.imwrite(
                 os.path.join(output_dir, f'result_view_{batch_idx}_{b}.png'),
                 cv2.cvtColor(sample_rgbs_16bit, cv2.COLOR_RGB2BGR)
-            )          
+            )
+            
+            # Visualize UV offsets as grayscale images
+            if self.visualize_uv and (uv_offset is not None):
+                sample_uv_offset = batched_uv_offset[b].cpu().numpy()  # Shape: [H, W, 2]
+                u_offset = sample_uv_offset[:, :, 0]  # U offset
+                v_offset = sample_uv_offset[:, :, 1]  # V offset
+                
+                # Normalize offsets to [0, 255] for visualization
+                # Map the range of values to 0-255, with 127 representing zero offset
+                u_min, u_max = u_offset.min(), u_offset.max()
+                v_min, v_max = v_offset.min(), v_offset.max()
+                
+                # Normalize to [0, 255] with proper handling of positive and negative values
+                u_range = max(abs(u_min), abs(u_max))
+                v_range = max(abs(v_min), abs(v_max))
+                
+                if u_range > 0:
+                    u_offset_vis = ((u_offset / u_range) * 127 + 127).astype(np.uint8)
+                else:
+                    u_offset_vis = np.full_like(u_offset, 127, dtype=np.uint8)
+                    
+                if v_range > 0:
+                    v_offset_vis = ((v_offset / v_range) * 127 + 127).astype(np.uint8)
+                else:
+                    v_offset_vis = np.full_like(v_offset, 127, dtype=np.uint8)
+                
+                # Save grayscale offset images
+                cv2.imwrite(
+                    os.path.join(output_dir, f'u_offset_{batch_idx}_{b}.png'),
+                    u_offset_vis
+                )
+                cv2.imwrite(
+                    os.path.join(output_dir, f'v_offset_{batch_idx}_{b}.png'),
+                    v_offset_vis
+                ) 
+                
+                # Create colorful merged visualization using Red and Green channels
+                # R=U offset, G=V offset, B=neutral (127)
+                blue_channel = np.full_like(u_offset_vis, 127, dtype=np.uint8)
+                uv_color = np.stack([u_offset_vis, v_offset_vis, blue_channel], axis=2)
+                cv2.imwrite(
+                    os.path.join(output_dir, f'uv_offset_color_{batch_idx}_{b}.png'),
+                    cv2.cvtColor(uv_color, cv2.COLOR_RGB2BGR)
+                )          
             # # Save the tone-mapped ground truth and result images
             # torchvision.utils.save_image(
             #     sample_rgbs_gt.permute(2, 0, 1),
@@ -436,122 +478,6 @@ class BRDFTrainer(pl.LightningModule):
         self.log('val/psnr', psnr)        
         return
 
-    def fit_radiance_camera_linear_model(self, all_rad, all_cam):
-        """
-        Fit linear model cam = a * rad (passing through origin) using RANSAC to remove outliers.
-        
-        Args:
-            all_rad (np.ndarray): Radiance values
-            all_cam (np.ndarray): Camera RGB values
-            
-        Returns:
-            dict: {'a', 'r2', 'inlier_mask', 'outlier_mask', 'mean_error', 'median_error'}
-        """
-        from sklearn.linear_model import RANSACRegressor, LinearRegression
-        from sklearn.metrics import r2_score
-        
-        X = all_rad.reshape(-1, 1)
-        # Force the model to pass through the origin by setting fit_intercept=False
-        ransac = RANSACRegressor(
-            estimator=LinearRegression(fit_intercept=False),
-            random_state=42, 
-            residual_threshold=None
-        )
-        ransac.fit(X, all_cam)
-        
-        a = ransac.estimator_.coef_[0]
-        inlier_mask = ransac.inlier_mask_
-        
-        # Calculate R² score on inliers
-        y_pred_inliers = ransac.predict(X[inlier_mask])
-        r2 = r2_score(all_cam[inlier_mask], y_pred_inliers)
-        
-        # Calculate fitting errors (residuals) for inliers
-        residuals = np.abs(all_cam[inlier_mask] - y_pred_inliers)
-        mean_error = np.mean(residuals)
-        median_error = np.median(residuals)
-        
-        return {
-            'a': a, 
-            'r2': r2, 
-            'inlier_mask': inlier_mask, 
-            'outlier_mask': ~inlier_mask,
-            'mean_error': mean_error,
-            'median_error': median_error
-        }
-    
-    def on_validation_epoch_end(self):
-        """Plot accumulated radiance-RGB pairs at the end of validation."""
-        if not self.radiance_rgb_pairs:
-            return
-        
-        import matplotlib
-        matplotlib.use('Agg')
-        import matplotlib.pyplot as plt
-        from matplotlib import cm
-        
-        # Concatenate all data
-        all_rad = np.concatenate([pairs['radiance'] for pairs in self.radiance_rgb_pairs.values()])
-        all_cam = np.concatenate([pairs['camera'] for pairs in self.radiance_rgb_pairs.values()])
-        
-        # Fit linear model using RANSAC
-        fit_res = self.fit_radiance_camera_linear_model(all_rad, all_cam)
-        a, r2 = fit_res['a'], fit_res['r2']
-        inlier_mask, outlier_mask = fit_res['inlier_mask'], fit_res['outlier_mask']
-        mean_error, median_error = fit_res['mean_error'], fit_res['median_error']
-        
-        # Print and save fitting results
-        print(f"\n{'='*60}")
-        print(f"Linear Fitting Results (Epoch {self.current_epoch}):")
-        print(f"  Equation: cam = {a:.6f} * rad")
-        print(f"  R² score (inliers): {r2:.6f}")
-        print(f"  Mean absolute error: {mean_error:.6f}")
-        print(f"  Median absolute error: {median_error:.6f}")
-        print(f"  Inliers: {inlier_mask.sum()} / {len(inlier_mask)} ({100*inlier_mask.sum()/len(inlier_mask):.2f}%)")
-        print(f"  Outliers: {outlier_mask.sum()}")
-        print(f"{'='*60}\n")
-        
-        results_path = os.path.join(self.cfg.exp_output_root_path, f'fitting_results_epoch_{self.current_epoch}.txt')
-        with open(results_path, 'w') as f:
-            f.write(f"Linear Fitting Results (Epoch {self.current_epoch}):\n")
-            f.write(f"Equation: cam = {a:.6f} * rad\n")
-            f.write(f"R² score (inliers): {r2:.6f}\n")
-            f.write(f"Mean absolute error: {mean_error:.6f}\n")
-            f.write(f"Median absolute error: {median_error:.6f}\n")
-            f.write(f"Inliers: {inlier_mask.sum()} / {len(inlier_mask)} ({100*inlier_mask.sum()/len(inlier_mask):.2f}%)\n")
-            f.write(f"Outliers: {outlier_mask.sum()}\n")
-        
-        # Create plot
-        fig = plt.figure(figsize=(12, 8))
-        
-        # Plot data points
-        for idx, (batch_idx, pairs) in enumerate(sorted(self.radiance_rgb_pairs.items())):
-            rad, cam = pairs['radiance'], pairs['camera']
-            plt.scatter(rad, cam, alpha=0.5, s=1, color='blue')
-        
-        # Plot fitted line and reference
-        max_rad, max_cam = all_rad.max(), all_cam.max()
-        rad_range = np.linspace(0, max_rad, 100)
-        plt.plot(rad_range, a * rad_range, 'g-', linewidth=2, 
-                label=f'Fitted: cam = {a:.4f}*rad\nR² = {r2:.4f}')
-        plt.plot([0, max(max_rad, max_cam)], [0, max(max_rad, max_cam)], 
-                'r--', linewidth=2, label='y=x (ideal)')
-        
-        max_rad, max_cam = all_rad.max(), all_cam.max()
-        plt.xlim([0, max_rad])
-        plt.ylim([0, max_cam])
-        plt.xlabel('Predicted Radiance', fontsize=12)
-        plt.ylabel('Camera RGB', fontsize=12)
-        plt.title(f'Radiance vs Camera RGB (Epoch {self.current_epoch})', fontsize=14)
-        plt.legend(loc='upper left', fontsize=10)
-        plt.grid(True, alpha=0.3)
-        
-        save_path = os.path.join(self.cfg.exp_output_root_path, f'radiance_rgb_epoch_{self.current_epoch}.png')
-        plt.savefig(save_path, dpi=150, bbox_inches='tight')
-        plt.close(fig)
-        
-        self.radiance_rgb_pairs.clear()
-    
     def on_train_batch_start(self, batch, batch_idx):
         step = self.global_step
         self.trainer.train_dataloader.dataset.datasets.set_step(step)

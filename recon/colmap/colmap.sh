@@ -1,6 +1,6 @@
 PROJECT="${1:?usage: $0 <project_dir>}"
 gpu_id="${2:?usage: $0 <gpu_id>}"
-IMG_DIR="${PROJECT}/masks/masked_images"
+IMG_DIR="${PROJECT}/ldr"
 DB="${PROJECT}/database.db"
 OUT_SPARSE="${PROJECT}/sparse"         # triangulated sparse model goes here
 UNDIST_OUT="${PROJECT}/undistorted"          # undistorted workspace (optional)

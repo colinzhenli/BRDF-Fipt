@@ -69,8 +69,6 @@ def parse_colmap_images_txt(images):
     """
     cam_c2w_dict = {}
     for img in images.values():
-        if not img.name.startswith('mask'):
-            continue
         rotation = qvec2rotmat(img.qvec)
         translation = img.tvec.reshape(3, 1)
         w2c = np.concatenate([rotation, translation], 1)
@@ -228,6 +226,105 @@ def transform_mesh_to_base(mesh_path, T_BW, output_path=None):
         print(f"Transformed mesh saved to: {output_path}")
     return mesh
 
+def process_pointcloud_to_base(pointcloud_path, T_BW, cfg, output_path=None, z_outlier_percentile=5.0):
+    """
+    Transform Colmap sparse pointcloud to base frame, crop by XY rectangle, remove Z outliers,
+    and compute axis-aligned bounding box.
+    
+    Args:
+        pointcloud_path: Path to point3d.ply file from Colmap
+        T_BW: Transformation matrix from world to base frame
+        cfg: Config dict containing mesh.rectangle parameters
+        output_path: Path to save filtered pointcloud (optional)
+        z_outlier_percentile: Percentage of points to remove as outliers from top and bottom (default 5%)
+    
+    Returns:
+        tuple: (filtered_pcd, bbox_min, bbox_max, bbox_center, bbox_size)
+    """
+    import open3d as o3d
+    
+    # Load pointcloud
+    pcd = o3d.io.read_point_cloud(str(pointcloud_path))
+    if len(pcd.points) == 0:
+        raise ValueError(f"Failed to load pointcloud from {pointcloud_path}")
+    
+    print(f"Loaded {len(pcd.points)} points from {pointcloud_path}")
+    
+    # Transform to base frame
+    pcd.transform(T_BW)
+    print(f"Transformed pointcloud to base frame")
+    
+    # Get rectangle parameters from config
+    center = np.array(cfg.mesh.rectangle.center)
+    width = cfg.mesh.rectangle.width  # x direction
+    length = cfg.mesh.rectangle.length  # y direction
+    
+    # Calculate XY bounds
+    x_min = center[0] - width / 2.0
+    x_max = center[0] + width / 2.0
+    y_min = center[1] - length / 2.0
+    y_max = center[1] + length / 2.0
+    
+    print(f"Cropping rectangle: X=[{x_min:.3f}, {x_max:.3f}], Y=[{y_min:.3f}, {y_max:.3f}]")
+    
+    # Crop by XY coordinates
+    points = np.asarray(pcd.points)
+    colors = np.asarray(pcd.colors) if pcd.has_colors() else None
+    
+    xy_mask = (points[:, 0] >= x_min) & (points[:, 0] <= x_max) & \
+              (points[:, 1] >= y_min) & (points[:, 1] <= y_max)
+    
+    points_cropped = points[xy_mask]
+    colors_cropped = colors[xy_mask] if colors is not None else None
+    
+    print(f"After XY cropping: {len(points_cropped)} points ({100*len(points_cropped)/len(points):.1f}%)")
+    
+    if len(points_cropped) == 0:
+        raise ValueError("No points remain after XY cropping. Check rectangle parameters.")
+    
+    # Remove Z outliers by percentile
+    z_values = points_cropped[:, 2]
+    z_lower = np.percentile(z_values, z_outlier_percentile)
+    z_upper = np.percentile(z_values, 100 - z_outlier_percentile)
+    
+    z_mask = (z_values >= z_lower) & (z_values <= z_upper)
+    points_filtered = points_cropped[z_mask]
+    colors_filtered = colors_cropped[z_mask] if colors_cropped is not None else None
+    
+    print(f"After Z outlier removal ({z_outlier_percentile}% top/bottom): {len(points_filtered)} points "
+          f"({100*len(points_filtered)/len(points_cropped):.1f}% of cropped)")
+    print(f"Z range: [{z_lower:.6f}, {z_upper:.6f}]")
+    
+    # Create filtered pointcloud
+    pcd_filtered = o3d.geometry.PointCloud()
+    pcd_filtered.points = o3d.utility.Vector3dVector(points_filtered)
+    if colors_filtered is not None:
+        pcd_filtered.colors = o3d.utility.Vector3dVector(colors_filtered)
+    
+    # Compute axis-aligned bounding box
+    bbox_min = points_filtered.min(axis=0)
+    bbox_max = points_filtered.max(axis=0)
+    bbox_center = (bbox_min + bbox_max) / 2.0
+    bbox_size = bbox_max - bbox_min
+    
+    print(f"\n{'='*60}")
+    print(f"Axis-Aligned Bounding Box (Base Frame):")
+    print(f"{'='*60}")
+    print(f"Min:    [{bbox_min[0]:9.6f}, {bbox_min[1]:9.6f}, {bbox_min[2]:9.6f}]")
+    print(f"Max:    [{bbox_max[0]:9.6f}, {bbox_max[1]:9.6f}, {bbox_max[2]:9.6f}]")
+    print(f"Center: [{bbox_center[0]:9.6f}, {bbox_center[1]:9.6f}, {bbox_center[2]:9.6f}]")
+    print(f"Size:   [{bbox_size[0]:9.6f}, {bbox_size[1]:9.6f}, {bbox_size[2]:9.6f}]")
+    print(f"{'='*60}\n")
+    
+    # Save filtered pointcloud if output path specified
+    if output_path is not None:
+        ok = o3d.io.write_point_cloud(str(output_path), pcd_filtered)
+        if not ok:
+            raise RuntimeError(f"Failed to save pointcloud to {output_path}")
+        print(f"Filtered pointcloud saved to: {output_path}")
+    
+    return pcd_filtered, bbox_min, bbox_max, bbox_center, bbox_size
+
 def save_camera_log_from_colmap(camera_c2w, T_BW, scan_id, output_path):
     camera_log = []
     for i, C2W in enumerate(camera_c2w):
@@ -249,7 +346,7 @@ def save_camera_log_from_colmap(camera_c2w, T_BW, scan_id, output_path):
 
 # -------------------- main --------------------
 
-def main_process(scan_log_path, images, mesh_path, camera_log_path, cfg):
+def main_process(scan_log_path, images, mesh_path, camera_log_path, cfg, pointcloud_path=None, z_outlier_percentile=5.0):
     # Extract parameters from config
     R_c2g = np.array(cfg.camera.R_c2g)
     t_c2g = np.array(cfg.camera.t_c2g)
@@ -259,20 +356,47 @@ def main_process(scan_log_path, images, mesh_path, camera_log_path, cfg):
     T_BW, cam_c2w, scan_id = estimate_world2base(scan_log_path, images, R_c2g, t_c2g, rotation_center, rotation_axis)
     if mesh_path is not None:
         transform_mesh_to_base(mesh_path, T_BW, output_path=str(Path(mesh_path).with_name(Path(mesh_path).stem + "_transformed.ply")))
+    
+    # Process pointcloud if path provided
+    if pointcloud_path is not None:
+        output_pcd_path = str(Path(pointcloud_path).with_name(Path(pointcloud_path).stem + "_transformed_filtered.ply"))
+        pcd_filtered, bbox_min, bbox_max, bbox_center, bbox_size = process_pointcloud_to_base(
+            pointcloud_path, T_BW, cfg, output_path=output_pcd_path, z_outlier_percentile=z_outlier_percentile
+        )
+        
+        # Save bounding box info to a JSON file
+        bbox_info = {
+            "bbox_min": bbox_min.tolist(),
+            "bbox_max": bbox_max.tolist(),
+            "bbox_center": bbox_center.tolist(),
+            "bbox_size": bbox_size.tolist(),
+            "num_points": len(pcd_filtered.points)
+        }
+        bbox_json_path = str(Path(pointcloud_path).with_name(Path(pointcloud_path).stem + "_bbox.json"))
+        with open(bbox_json_path, 'w') as f:
+            json.dump(bbox_info, f, indent=2)
+        print(f"Bounding box info saved to: {bbox_json_path}")
+    
     save_camera_log_from_colmap(cam_c2w, T_BW, scan_id, camera_log_path)
 
 @hydra.main(version_base=None, config_path="../../config/renderer", config_name="realcapture_area_emitter")
 def main(cfg: DictConfig) -> None:
     # Hard-coded arguments from launch.json
-    scan_log_path = "/media/raid/cloth/No_cable_capture_Sep22/BRDF_recon_Sep30/scan_log.json"
+    scan_log_path = "/media/raid/cloth/capture_data/BRDF_recon_Oct28_close/scan_log.json"
     mesh_path = None  # "None" from launch.json
-    model_path = "/media/raid/cloth/No_cable_capture_Sep22/BRDF_recon_Sep30/Controlled_light/ldr/sparse"
+    model_path = "/media/raid/cloth/capture_data/BRDF_recon_Oct28_close/sparse"
+    
+    # Optional: pointcloud path for processing sparse reconstruction
+    pointcloud_path = str(Path(model_path) / "points3D.ply")
+    if not Path(pointcloud_path).exists():
+        print(f"Warning: Pointcloud not found at {pointcloud_path}, skipping pointcloud processing")
+        pointcloud_path = None
     
     camera_log_path = str(Path(scan_log_path).parent / "rotated_camera.json")
 
     cameras, images = read_model(model_path, ext=".bin")
 
-    main_process(scan_log_path, images, mesh_path, camera_log_path, cfg)
+    main_process(scan_log_path, images, mesh_path, camera_log_path, cfg, pointcloud_path=pointcloud_path, z_outlier_percentile=5.0)
 
 if __name__ == "__main__":
     main()

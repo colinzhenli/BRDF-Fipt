@@ -176,61 +176,220 @@ def ray_intersect_with_tbn(scene, xs, ds):
 
     return positions, normals, ret.uv.torch(), ret.dp_du.torch(), ret.dp_dv.torch(), idx, valid, TBN
 
-def uv_footprint_simple(ro, wi, p, n, dp_du, dp_dv, dx_du, dy_dv, eps=1e-8):
-    t = ((p - ro) * wi).sum(-1, keepdim=True).clamp_min(0.0)
-    cosi = (n * wi).sum(-1, keepdim=True).abs().clamp_min(eps)
-    theta = 0.5 * torch.sqrt((dx_du**2).sum(-1, keepdim=True) + (dy_dv**2).sum(-1, keepdim=True))
-    r_surf = (t * theta) / cosi
-    ru = r_surf / dp_du.norm(dim=-1, keepdim=True).clamp_min(eps)
-    rv = r_surf / dp_dv.norm(dim=-1, keepdim=True).clamp_min(eps)
-    return torch.sqrt(ru * rv)  # isotropic radius in UV
-
-def compute_footprint(rays_o, rays_d, p, dp_du, dp_dv, dx_du, dy_dv, eps=1e-8):
+def cal_pixel_derivative(rays_o, rays_d, p, dp_du, dp_dv, dx_du, dy_dv, normal, eps=1e-8):
     """
-    Compute the surface footprint (per-pixel projected area) for each ray hit.
-
+    Calculate UV partial derivatives with respect to pixel coordinates.
+    
     Args:
-        rays_o, rays_d: (N,3) ray origins and directions
-        p:              (N,3) hit positions
-        dp_du, dp_dv:   (N,3) surface partials at hit (∂p/∂u, ∂p/∂v)
-        dx_du, dy_dv:   (N,3) direction differentials wrt screen x and y (from get_rays)
-        eps:            small epsilon to avoid division by zero
-
+        rays_o: (N,3) ray origins
+        rays_d: (N,3) ray directions 
+        p: (N,3) intersection points
+        dp_du, dp_dv: (N,3) surface partials from mitsuba (∂p/∂u, ∂p/∂v)
+        dx_du, dy_dv: (N,3) ray direction differentials wrt screen x,y
+        normal: (N,3) surface normals from mitsuba (already normalized)
+        eps: small epsilon to avoid division by zero
+        
     Returns:
-        dp_dx, dp_dy:   (N,3) 3D intersection differentials on the surface for screen x,y
-        area:           (N,)  footprint area on the surface (per pixel)
-        n:              (N,3) shading normal at the hit
-        t:              (N,)  parameter distance along each ray to the hit
+        du_dx, du_dy: (N,) UV partial derivatives wrt pixel x coordinate
+        dv_dx, dv_dy: (N,) UV partial derivatives wrt pixel y coordinate
     """
-    # Distance t to hit; works whether rays_d is normalized or not
+    # Distance t to hit
     d = rays_d
     o = rays_o
     t = ((p - o) * d).sum(-1) / (d * d).sum(-1).clamp_min(eps)  # (N,)
-
-    # Surface normal
-    n = torch.cross(dp_du, dp_dv, dim=-1)
-    n = n / (n.norm(dim=-1, keepdim=True) + eps)  # (N,3)
-
+    
+    # Use the normal directly from mitsuba (already normalized)
+    n = normal  # (N,3)
+    
     ndotd = (n * d).sum(-1).clamp(min=-1.0, max=1.0)  # (N,)
+    # Debug: Check if ndotd is zero
+    if (ndotd.abs() ==0 ).any():
+        print(f"Warning: ndotd near zero detected. Count: {(ndotd.abs() < eps).sum().item()}")
     # Avoid near-grazing division
     ndotd = torch.where(ndotd.abs() < eps, ndotd.sign() * eps, ndotd)
-
-    def one_axis(dd):  # dd = d_x or d_y
+    
+    def compute_dp_dscreen(dd):
+        """Compute dp/dx or dp/dy where dd is dx_du or dy_dv"""
         ndotdd = (n * dd).sum(-1)                # (N,)
         dt = - t * ndotdd / ndotd                # (N,)
         dp = t[..., None] * dd + dt[..., None] * d  # (N,3)
-
-        # optional: remove any tiny normal component (numerical stability)
-        dp = dp - (dp * n).sum(-1, keepdim=True) * n
+        # Remove normal component for numerical stability
+        #dp = dp - (dp * n).sum(-1, keepdim=True) * n
+        # Debug: Check for NaN values in dp
+        if torch.isinf(dp).any():
+            print(f"Warning: Inf values detected in dp. Count: {torch.isinf(dp).sum().item()}")
         return dp
+    
+    # Calculate dp/dx and dp/dy (3D surface position derivatives)
+    dp_dx = compute_dp_dscreen(dx_du)  # (N,3)
+    dp_dy = compute_dp_dscreen(dy_dv)  # (N,3)
+    '''
+    print("rays_d",rays_d)
+    print("n",n)
+    print("t",t)
+    print("dx_du",dx_du)
+    print("dy_dv",dy_dv)
+    print("dp_du",dp_du)
+    print("dp_dv",dp_dv)
+    print("dp_dx",dp_dx)
+    print("dp_dy",dp_dy)
+    '''
+    # Now solve for du/dx, dv/dx, du/dy, dv/dy using the chain rule:
+    # dp/dx = (∂p/∂u)(du/dx) + (∂p/∂v)(dv/dx)
+    # dp/dy = (∂p/∂u)(du/dy) + (∂p/∂v)(dv/dy)
+    
+    # Stack the surface partials into a matrix: J = [dp_du, dp_dv] shape (N,3,2)
+    J = torch.stack([dp_du, dp_dv], dim=-1)  # (N,3,2)
+    
+    # Analytical solution using 2x2 matrix inversion
+    # We need to solve: J^T @ J @ [du/dx, dv/dx]^T = J^T @ dp/dx
+    # where J^T @ J is a 2x2 matrix that we can invert analytically
+    
+    # Compute Gram matrix: G = J^T @ J  (N,2,2)
+    JT = J.transpose(-1, -2)  # (N,2,3)
+    G = torch.bmm(JT, J)  # (N,2,2)
+    
+    # Compute right-hand side: rhs_x = J^T @ dp/dx, rhs_y = J^T @ dp/dy
+    rhs_x = torch.bmm(JT, dp_dx.unsqueeze(-1)).squeeze(-1)  # (N,2)
+    rhs_y = torch.bmm(JT, dp_dy.unsqueeze(-1)).squeeze(-1)  # (N,2)
+    
+    # Analytical 2x2 matrix inversion
+    # For matrix [[a,b],[c,d]], inverse is (1/det) * [[d,-b],[-c,a]]
+    a = G[:, 0, 0]  # (N,)
+    b = G[:, 0, 1]  # (N,)  
+    c = G[:, 1, 0]  # (N,)
+    d = G[:, 1, 1]  # (N,)
+    
+    # Compute determinant with regularization for numerical stability
+    det = a * d - b * c  # (N,)
+    det_reg = torch.where(det.abs() < eps, det.sign() * eps, det)  # Avoid division by zero
+    
+    # Compute inverse elements
+    inv_det = 1.0 / det_reg  # (N,)
+    G_inv_00 = d * inv_det   # (N,)
+    G_inv_01 = -b * inv_det  # (N,)
+    G_inv_10 = -c * inv_det  # (N,)
+    G_inv_11 = a * inv_det   # (N,)
+    
+    # Solve for UV derivatives analytically
+    # [du/dx, dv/dx]^T = G^{-1} @ rhs_x
+    du_dx = G_inv_00 * rhs_x[:, 0] + G_inv_01 * rhs_x[:, 1]  # (N,)
+    dv_dx = G_inv_10 * rhs_x[:, 0] + G_inv_11 * rhs_x[:, 1]  # (N,)
+    
+    # [du/dy, dv/dy]^T = G^{-1} @ rhs_y  
+    du_dy = G_inv_00 * rhs_y[:, 0] + G_inv_01 * rhs_y[:, 1]  # (N,)
+    dv_dy = G_inv_10 * rhs_y[:, 0] + G_inv_11 * rhs_y[:, 1]  # (N,)
+    
+    # Handle degenerate cases where determinant is too small
+    invalid_mask = det.abs() < eps
+    if invalid_mask.any():
+        # Fallback to pseudoinverse for degenerate cases
+        try:
+            J_pinv = torch.linalg.pinv(J[invalid_mask])  # (M,2,3) where M = invalid_mask.sum()
+            
+            uv_x_fallback = (J_pinv @ dp_dx[invalid_mask].unsqueeze(-1)).squeeze(-1)  # (M,2)
+            uv_y_fallback = (J_pinv @ dp_dy[invalid_mask].unsqueeze(-1)).squeeze(-1)  # (M,2)
+            
+            du_dx[invalid_mask] = uv_x_fallback[:, 0]
+            dv_dx[invalid_mask] = uv_x_fallback[:, 1]
+            du_dy[invalid_mask] = uv_y_fallback[:, 0]
+            dv_dy[invalid_mask] = uv_y_fallback[:, 1]
+        except:
+            # Ultimate fallback: set to zero for invalid cases
+            du_dx[invalid_mask] = 0.0
+            dv_dx[invalid_mask] = 0.0
+            du_dy[invalid_mask] = 0.0
+            dv_dy[invalid_mask] = 0.0
+    
+    # Debug: Check for NaN values in UV derivatives
+    if torch.isnan(du_dx).any() or torch.isnan(du_dy).any() or torch.isnan(dv_dx).any() or torch.isnan(dv_dy).any():
+        print(f"Warning: NaN values detected in UV derivatives.")
+        print(f"  du_dx NaN count: {torch.isnan(du_dx).sum().item()}")
+        print(f"  du_dy NaN count: {torch.isnan(du_dy).sum().item()}")
+        print(f"  dv_dx NaN count: {torch.isnan(dv_dx).sum().item()}")
+        print(f"  dv_dy NaN count: {torch.isnan(dv_dy).sum().item()}")
+    return du_dx, du_dy, dv_dx, dv_dy
 
-    dp_dx = one_axis(dx_du)
-    dp_dy = one_axis(dy_dv)
+def compute_area(A: torch.Tensor, B: torch.Tensor) -> torch.Tensor:
+    """
+    Compute area of triangle formed by each pair of points in A, B and the origin (0,0).
 
-    # Footprint area = area of parallelogram spanned by dp_dx and dp_dy
-    area = torch.linalg.norm(torch.cross(dp_dx, dp_dy, dim=-1), dim=-1)  # (N,)
+    Args:
+        A: (n,2) torch tensor
+        B: (n,2) torch tensor
+    Returns:
+        areas: (n,) tensor, absolute triangle areas
+    """
+    cross = A[:, 0] * B[:, 1] - A[:, 1] * B[:, 0]  # scalar cross product
+    return cross.abs()
 
+def compute_footprint(rays_o, rays_d, position, dp_du, dp_dv, dx_du, dy_dv, normal, eps=1e-8):
+    du_dx, du_dy, dv_dx, dv_dy = cal_pixel_derivative(rays_o, rays_d, position, dp_du, dp_dv, dx_du, dy_dv, normal)
+    # print("du_dx",torch.mean(du_dx))
+    # print("du_dy",torch.mean(du_dy))
+    # print("dv_dx",torch.mean(dv_dx))
+    # print("dv_dy",torch.mean(dv_dy))
+    uv_x=torch.stack((du_dx, dv_dx), dim=1) 
+    uv_y=torch.stack((du_dy, dv_dy), dim=1) 
+    
+    area=compute_area(uv_x,uv_y) 
     return area
+
+# def uv_footprint_simple(ro, wi, p, n, dp_du, dp_dv, dx_du, dy_dv, eps=1e-8):
+#     t = ((p - ro) * wi).sum(-1, keepdim=True).clamp_min(0.0)
+#     cosi = (n * wi).sum(-1, keepdim=True).abs().clamp_min(eps)
+#     theta = 0.5 * torch.sqrt((dx_du**2).sum(-1, keepdim=True) + (dy_dv**2).sum(-1, keepdim=True))
+#     r_surf = (t * theta) / cosi
+#     ru = r_surf / dp_du.norm(dim=-1, keepdim=True).clamp_min(eps)
+#     rv = r_surf / dp_dv.norm(dim=-1, keepdim=True).clamp_min(eps)
+#     return torch.sqrt(ru * rv)  # isotropic radius in UV
+
+# def compute_footprint(rays_o, rays_d, p, dp_du, dp_dv, dx_du, dy_dv, eps=1e-8):
+#     """
+#     Compute the surface footprint (per-pixel projected area) for each ray hit.
+
+#     Args:
+#         rays_o, rays_d: (N,3) ray origins and directions
+#         p:              (N,3) hit positions
+#         dp_du, dp_dv:   (N,3) surface partials at hit (∂p/∂u, ∂p/∂v)
+#         dx_du, dy_dv:   (N,3) direction differentials wrt screen x and y (from get_rays)
+#         eps:            small epsilon to avoid division by zero
+
+#     Returns:
+#         dp_dx, dp_dy:   (N,3) 3D intersection differentials on the surface for screen x,y
+#         area:           (N,)  footprint area on the surface (per pixel)
+#         n:              (N,3) shading normal at the hit
+#         t:              (N,)  parameter distance along each ray to the hit
+#     """
+#     # Distance t to hit; works whether rays_d is normalized or not
+#     d = rays_d
+#     o = rays_o
+#     t = ((p - o) * d).sum(-1) / (d * d).sum(-1).clamp_min(eps)  # (N,)
+
+#     # Surface normal
+#     n = torch.cross(dp_du, dp_dv, dim=-1)
+#     n = n / (n.norm(dim=-1, keepdim=True) + eps)  # (N,3)
+
+#     ndotd = (n * d).sum(-1).clamp(min=-1.0, max=1.0)  # (N,)
+#     # Avoid near-grazing division
+#     ndotd = torch.where(ndotd.abs() < eps, ndotd.sign() * eps, ndotd)
+
+#     def one_axis(dd):  # dd = d_x or d_y
+#         ndotdd = (n * dd).sum(-1)                # (N,)
+#         dt = - t * ndotdd / ndotd                # (N,)
+#         dp = t[..., None] * dd + dt[..., None] * d  # (N,3)
+
+#         # optional: remove any tiny normal component (numerical stability)
+#         dp = dp - (dp * n).sum(-1, keepdim=True) * n
+#         return dp
+
+#     dp_dx = one_axis(dx_du)
+#     dp_dy = one_axis(dy_dv)
+
+#     # Footprint area = area of parallelogram spanned by dp_dx and dp_dy
+#     area = torch.linalg.norm(torch.cross(dp_dx, dp_dy, dim=-1), dim=-1)  # (N,)
+
+#     return area
     
 def batched_path_tracing_dynamic_emitter(scene,emitter_net,material_net,rays_o,rays_d,dx_du,dy_dv,spp, brdf_sampling, emitter_sampling, gt_params=None, latent=None):
     """ Path trace current scene
@@ -736,7 +895,8 @@ def batched_path_tracing_tbn_real_area_emitter(scene,emitter_net,material_net,ra
     
     # sample camera ray
     du,dv = torch.rand(2,len(rays_o),spp,1,device=device)-0.5
-    wi = NF.normalize(rays_d[:,None]+dx_du[:,None]*du+dy_dv[:,None]*dv,dim=-1).reshape(-1,3)
+    rays_d = (rays_d[:,None]+dx_du[:,None]*du+dy_dv[:,None]*dv).reshape(-1,3)
+    wi = NF.normalize(rays_d,dim=-1)
     
     # wi = rays_d.repeat_interleave(spp, 0)
     # Add mask for wi z component
@@ -756,10 +916,14 @@ def batched_path_tracing_tbn_real_area_emitter(scene,emitter_net,material_net,ra
     else:
         # Use Mitsuba scene intersection
         position, normal, uv, dp_du, dp_dv, _, vis, TBN = ray_intersect_with_tbn(scene, position, wi)
-    footprint_vis = uv_footprint_simple(rays_o.repeat_interleave(spp,0)[vis], wi[vis], position[vis], normal[vis], dp_du[vis], dp_dv[vis], dx_du.repeat_interleave(spp,0)[vis], dy_dv.repeat_interleave(spp,0)[vis])
+    footprint_vis = compute_footprint(rays_o.repeat_interleave(spp,0)[vis], rays_d[vis], position[vis], dp_du[vis], dp_dv[vis], dx_du.repeat_interleave(spp,0)[vis], dy_dv.repeat_interleave(spp,0)[vis], normal[vis])
+    # Debug: Check for NaN values in footprint_vis
+    if torch.isnan(footprint_vis).any():
+        print(f"Warning: NaN values detected in footprint_vis. Count: {torch.isnan(footprint_vis).sum().item()}")
     
     # position, normal, vis = ray_sphere_intersect(scene,position,wi)
     L = torch.zeros(vis.shape[0],3,device=device)
+    uv_offset = torch.zeros(vis.shape[0],2,device=device)
     if not vis.any():
         print("No valid intersection")
         return L.reshape(N,spp,3).mean(1), None, None
@@ -777,9 +941,6 @@ def batched_path_tracing_tbn_real_area_emitter(scene,emitter_net,material_net,ra
     light_id = light_id[vis]
     TBN = TBN[vis]
     
-    angle_ok_all = torch.zeros(N*spp, dtype=torch.bool, device=device)
-    gray_patch_idx = torch.zeros(N*spp, dtype=torch.long, device=device)
-    
     # deterministic sampling
     if emitter_sampling:
         wi, emit_pdf, emit_position, emitter_normal= emitter_net.sample_emitter(torch.rand_like(position[..., :2]), position, light_id)
@@ -788,13 +949,7 @@ def batched_path_tracing_tbn_real_area_emitter(scene,emitter_net,material_net,ra
         G = (wi*normal).sum(-1).abs() * (-wi*emitter_normal).sum(-1).abs() / (emit_position-position).pow(2).sum(-1).clamp_min(1e-6) # B, 1
         emit_weight = emit_weight*G[...,None]/emit_pdf.clamp_min(1e-6)
         # emit brdf
-        emit_brdf,brdf_pdf,angle_ok, patch_index = material_net.eval_brdf(None, position, wi,wo,normal,uv, TBN, latent, batch_mask, footprint_vis, dp_du, dp_dv) # gt_params will not be used in neural brdf model
-        """ mask out the brdf for the invalid angle, used for radiometric calibration """
-        angle_ok_all[vis] = angle_ok
-        gray_patch_idx[vis] = patch_index
-        # pixel_all_ok = angle_ok_full.reshape(N, spp).all(dim=1)
-        
-        # emit_brdf = emit_brdf * pixel_all_ok.repeat_interleave(spp)[vis].unsqueeze(-1)
+        emit_brdf,brdf_pdf, uv_offset[vis] = material_net.eval_brdf(None, position, wi,wo,normal,uv, TBN, latent, batch_mask, footprint_vis, dp_du, dp_dv) # gt_params will not be used in neural brdf model
         w_mis = torch.where((emit_pdf>0)&(~brdf_pdf.isinf()),emit_pdf*emit_pdf/(emit_pdf*emit_pdf+brdf_pdf*brdf_pdf),0)
         w_mis[emit_pdf.isinf()|(brdf_pdf==0)] = 1
         # Avoid in-place indexed operation for cleaner autograd graph
@@ -832,20 +987,8 @@ def batched_path_tracing_tbn_real_area_emitter(scene,emitter_net,material_net,ra
         L = L + L_update
     ray_params = torch.cat([position, wi, wo], dim=-1)
     L = L.reshape(N,spp,3).mean(1)
-    # Merge visibility across multiple spp - if any ray is visible, vis is true
+    uv_offset = uv_offset.reshape(N,spp,2).mean(1)
+    # Merge visibility across multiple spp - if all rays are visible, vis is true
     vis_reshaped = vis.reshape(N, spp)
-    gray_patch_idx = gray_patch_idx.reshape(N, spp)
-    angle_ok = angle_ok_all.reshape(N, spp)
-    
-    # Check if patch indices are consistent across spp for each pixel (treating -1 same as others)
-    # For each pixel, all patch indices (including -1) should be the same
-    patch_min = gray_patch_idx.min(dim=1)[0]  # [N]
-    patch_max = gray_patch_idx.max(dim=1)[0]  # [N]
-    patch_inconsistent = patch_min != patch_max  # [N]
-    
-    # pixel_all_ok is True only if all angles are ok AND patch indices are consistent
-    pixel_all_ok = angle_ok.all(dim=1) & (~patch_inconsistent)
-    gray_patch_idx = gray_patch_idx[:, 0]
-    
-    vis = vis_reshaped.any(dim=1)
-    return L, vis, ray_params, gray_patch_idx, pixel_all_ok 
+    vis = vis_reshaped.all(dim=1)
+    return L, vis, ray_params, uv_offset

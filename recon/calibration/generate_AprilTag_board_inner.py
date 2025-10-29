@@ -2,11 +2,12 @@
 # -*- coding: utf-8 -*-
 """
 Generate a dense board with AprilTag 36h11 markers around a 250x170 mm cut-out.
-- TWO rows/columns (double lines) of tags around each edge of the hole.
-- Each corner has a 2x2 cluster (four tags) placed outside the hole.
-- NEW: Fills the hole with a centered grid of smaller AprilTags (for pose/axis estimation).
+- KEEP: ONE inner ring of tags (next to the hole edges).
+- REMOVE: All outer ring tags.
+- Corner 2x2 clusters remain.
+- NEW: Inner grid now fills the hole EXACTLY (no white margin). Gaps are auto-computed to use all space.
 - Tags are rotated by TAG_ROTATION_DEG around their centers (default 180°).
-- Labels remain upright for readability (edge/corner tags only; inner grid has no labels).
+- Labels remain upright for edge/corner tags; inner grid has no labels.
 - Outputs PNG (300 DPI) and PDF.
 
 Requires: opencv-contrib-python >= 4.7 (cv2.aruco.DICT_APRILTAG_36h11), Pillow, numpy
@@ -24,17 +25,17 @@ except Exception as e:
     raise
 
 # =================== CONFIG (millimeters) ===================
-BOARD_W_MM = 297   # printing size
-BOARD_H_MM = 210   # printing size
+BOARD_W_MM = 297   # A4 landscape width
+BOARD_H_MM = 210   # A4 landscape height
 
 HOLE_W_MM  = 250.0   # central cut-out width
 HOLE_H_MM  = 170.0   # central cut-out height
 
-TAG_SIZE_MM    = 16.0  # edge/outer tags square size
+TAG_SIZE_MM    = 16.0  # edge/inner-ring tag square size
 INNER_CLEAR_MM = 6.0   # spacing: hole edge -> (inner ring) tag edge
-TAG_GAP_MM     = 3.0   # spacing between adjacent tags along an edge
+TAG_GAP_MM     = 3.0   # spacing between adjacent tags along an edge (inner ring)
 
-# Spacing between the inner and outer rings (edge-to-edge).
+# Spacing between inner & outer rings (NO LONGER USED — outer ring removed)
 RING_GAP_MM    = 3.0
 
 # Rotate every tag around its center. 0 for default, 180 for your comparison case.
@@ -47,11 +48,13 @@ CORNER_CLUSTER_ROWS   = 2
 CORNER_CLUSTER_COLS   = 2
 CORNER_CLUSTER_GAP_MM = 3.0   # edge-to-edge gap inside a cluster
 
-# ---- NEW: Inner grid INSIDE the hole ----
+# ---- Inner grid INSIDE the hole ----
 ADD_INNER_GRID           = True
-INNER_GRID_TAG_SIZE_MM   = 16.0   # smaller tags inside the hole
-INNER_GRID_GAP_MM        = 3.0    # gap between inner grid tags
-INNER_GRID_MARGIN_MM     = 5.0    # white margin from the hole edge to nearest inner tag
+INNER_GRID_TAG_SIZE_MM   = 16.0   # tag size for inner grid
+# NOTE: margins are ignored; grid fills hole exactly.
+# INNER_GRID_GAP_MM is treated as a MINIMUM; actual gaps are auto-scaled to fill the space.
+INNER_GRID_GAP_MM        = 1.5    # minimum desired gap; will be increased to fit exactly
+INNER_GRID_MARGIN_MM     = 0.0    # force zero margin by design
 
 DPI = 300
 # ============================================================
@@ -81,7 +84,6 @@ def compute_layout():
     tag_px = mm_to_px(TAG_SIZE_MM)
     inner_px = mm_to_px(INNER_CLEAR_MM)
     gap_px = mm_to_px(TAG_GAP_MM)
-    ring_gap_px = mm_to_px(RING_GAP_MM)
 
     cx, cy = BW // 2, BH // 2
     x0 = cx - hole_w_px // 2
@@ -89,7 +91,7 @@ def compute_layout():
     x1 = x0 + hole_w_px
     y1 = y0 + hole_h_px
 
-    # How many tags fit along each side (maximal packing based on hole span)
+    # How many tags fit along each side (maximal packing based on hole span) — for the inner ring
     def max_count(length_px, tag_px, gap_px):
         return max(1, int((length_px + gap_px) // (tag_px + gap_px)))
 
@@ -105,18 +107,11 @@ def compute_layout():
     x_offsets_top  = centers_along(top_count,  tag_px, gap_px)
     y_offsets_side = centers_along(side_count, tag_px, gap_px)
 
-    # ---- Inner ring centerlines ----
+    # ---- Inner ring centerlines (adjacent to hole) ----
     top_row_y_inner    = y0 - inner_px - tag_px // 2
     bottom_row_y_inner = y1 + inner_px + tag_px // 2
     left_col_x_inner   = x0 - inner_px - tag_px // 2
     right_col_x_inner  = x1 + inner_px + tag_px // 2
-
-    # ---- Outer ring centerlines ----
-    ring_offset_px = tag_px + ring_gap_px
-    top_row_y_outer    = top_row_y_inner    - ring_offset_px
-    bottom_row_y_outer = bottom_row_y_inner + ring_offset_px
-    left_col_x_outer   = left_col_x_inner   - ring_offset_px
-    right_col_x_outer  = right_col_x_inner  + ring_offset_px
 
     out = {
         "BOARD_W_PX": BW, "BOARD_H_PX": BH,
@@ -132,18 +127,12 @@ def compute_layout():
         "bottom_row_y_inner": bottom_row_y_inner,
         "left_col_x_inner": left_col_x_inner,
         "right_col_x_inner": right_col_x_inner,
-        # outer ring
-        "top_row_y_outer": top_row_y_outer,
-        "bottom_row_y_outer": bottom_row_y_outer,
-        "left_col_x_outer": left_col_x_outer,
-        "right_col_x_outer": right_col_x_outer,
     }
 
-    # Corner cluster geometry
+    # Corner cluster geometry (relative to hole corners)
     if ADD_CORNER_TAGS:
         corner_tag_px = mm_to_px(CORNER_TAG_SIZE_MM)
         cluster_gap_px = mm_to_px(CORNER_CLUSTER_GAP_MM)
-        # Slightly tighter to the hole as in your code
         corner_dx = inner_px - corner_tag_px // 10
         corner_dy = inner_px - corner_tag_px // 10
 
@@ -153,12 +142,7 @@ def compute_layout():
             "bl": (x0 - corner_dx, y1 + corner_dy),
             "br": (x1 + corner_dx, y1 + corner_dy),
         }
-        signs = {
-            "tl": (-1, -1),
-            "tr": (+1, -1),
-            "bl": (-1, +1),
-            "br": (+1, +1),
-        }
+        signs = { "tl": (-1, -1), "tr": (+1, -1), "bl": (-1, +1), "br": (+1, +1) }
 
         step = corner_tag_px + cluster_gap_px  # center-to-center
         corner_clusters = {}
@@ -184,6 +168,39 @@ def generate_marker(dict36h11, tag_id, size_px):
     if TAG_ROTATION_DEG % 360 != 0:
         pil = pil.rotate(TAG_ROTATION_DEG, resample=Image.NEAREST, expand=False)
     return pil
+
+def compute_fill_grid(inner_w_px, inner_h_px, tag_px, min_gap_px):
+    """
+    Compute rows, cols, and EXACT gaps so the grid fills the hole with zero margin.
+    - Ensures non-negative gaps by reducing rows/cols if necessary.
+    """
+    # Start with the most columns/rows that can fit with the minimum gap
+    def max_count_len(length_px, tag_px, gap_px):
+        return max(1, int((length_px + gap_px) // (tag_px + gap_px)))
+
+    cols = max_count_len(inner_w_px, tag_px, min_gap_px)
+    rows = max_count_len(inner_h_px, tag_px, min_gap_px)
+
+    # Make sure we can solve for a non-negative gap that fills exactly
+    while cols > 1 and (inner_w_px - cols * tag_px) < 0:
+        cols -= 1
+    while rows > 1 and (inner_h_px - rows * tag_px) < 0:
+        rows -= 1
+
+    # Exact gaps to use all available space
+    gap_x = 0.0 if cols == 1 else (inner_w_px - cols * tag_px) / (cols - 1)
+    gap_y = 0.0 if rows == 1 else (inner_h_px - rows * tag_px) / (rows - 1)
+
+    # Enforce minimum desired gap by reducing counts if needed
+    # (keeps decreasing until gaps >= min_gap_px or count == 1)
+    while cols > 1 and gap_x < min_gap_px:
+        cols -= 1
+        gap_x = 0.0 if cols == 1 else (inner_w_px - cols * tag_px) / (cols - 1)
+    while rows > 1 and gap_y < min_gap_px:
+        rows -= 1
+        gap_y = 0.0 if rows == 1 else (inner_h_px - rows * tag_px) / (rows - 1)
+
+    return rows, cols, gap_y, gap_x
 
 def main():
     aruco_dict = ensure_apriltag_dict()
@@ -219,7 +236,7 @@ def main():
         x = int(round(cx2 - w / 2))
         y = int(round(cy2 - h / 2))
         canvas.paste(tag_img, (x, y))
-        # label
+        # label (drawn but hidden text to keep layout consistent; uncomment to show numbers)
         label = f"{tag_id}"
         bbox = draw.textbbox((0, 0), label, font=font)
         tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
@@ -242,13 +259,14 @@ def main():
             lx, ly = x + w + pad, y + h + pad
         else:
             lx, ly = cx2 - tw // 2, cy2 - th // 2
+        # background to keep it legible if you enable text
         draw.rectangle([lx - 2, ly - 2, lx + tw + 2, ly + th + 2], fill=(255, 255, 255))
-        # draw.text((lx, ly), label, fill=(0, 0, 0), font=font)
+        # draw.text((lx, ly), label, fill=(0, 0, 0), font=font)  # << enable if you want labels
 
     cx, cy = L["cx"], L["cy"]
     tid = 1
 
-    # ---------- INNER RING ----------
+    # ---------- INNER RING ONLY ----------
     for xo in L["x_offsets_top"]:
         paste_tag_with_label(tid, (int(round(cx + xo)), int(round(L["top_row_y_inner"]))), "top", tag_px); tid += 1
     for xo in L["x_offsets_top"]:
@@ -258,16 +276,6 @@ def main():
     for yo in L["y_offsets_side"]:
         paste_tag_with_label(tid, (int(round(L["right_col_x_inner"])), int(round(cy + yo))), "right", tag_px); tid += 1
 
-    # ---------- OUTER RING ----------
-    for xo in L["x_offsets_top"]:
-        paste_tag_with_label(tid, (int(round(cx + xo)), int(round(L["top_row_y_outer"]))), "top", tag_px); tid += 1
-    for xo in L["x_offsets_top"]:
-        paste_tag_with_label(tid, (int(round(cx + xo)), int(round(L["bottom_row_y_outer"]))), "bottom", tag_px); tid += 1
-    for yo in L["y_offsets_side"]:
-        paste_tag_with_label(tid, (int(round(L["left_col_x_outer"])), int(round(cy + yo))), "left", tag_px); tid += 1
-    for yo in L["y_offsets_side"]:
-        paste_tag_with_label(tid, (int(round(L["right_col_x_outer"])), int(round(cy + yo))), "right", tag_px); tid += 1
-
     # ---------- CORNER CLUSTERS (2x2) ----------
     if ADD_CORNER_TAGS:
         cpx = L["corner_tag_px"]
@@ -275,47 +283,39 @@ def main():
             for center in L["corner_clusters"][edge]:
                 paste_tag_with_label(tid, center, edge, cpx); tid += 1
 
-    # ---------- NEW: INNER GRID INSIDE THE HOLE ----------
+    # ---------- INNER GRID INSIDE THE HOLE (fills exactly) ----------
     if ADD_INNER_GRID:
-        ig_tag_px   = mm_to_px(INNER_GRID_TAG_SIZE_MM)
-        ig_gap_px   = mm_to_px(INNER_GRID_GAP_MM)
-        ig_margin_px= mm_to_px(INNER_GRID_MARGIN_MM)
+        ig_tag_px = mm_to_px(INNER_GRID_TAG_SIZE_MM)
+        min_gap_px = mm_to_px(INNER_GRID_GAP_MM)
+        # zero margin by design
+        inner_w = (x1 - x0)
+        inner_h = (y1 - y0)
 
-        inner_w = (x1 - x0) - 2 * ig_margin_px
-        inner_h = (y1 - y0) - 2 * ig_margin_px
-        if inner_w > ig_tag_px and inner_h > ig_tag_px:
-            # counts along width/height
-            def max_count_len(length_px, tag_px, gap_px):
-                return max(1, int((length_px + gap_px) // (tag_px + gap_px)))
+        rows, cols, gap_y, gap_x = compute_fill_grid(inner_w, inner_h, ig_tag_px, min_gap_px)
 
-            cols = max_count_len(inner_w, ig_tag_px, ig_gap_px)
-            rows = max_count_len(inner_h, ig_tag_px, ig_gap_px)
+        # Top-left placement so the grid exactly spans [x0, x1] × [y0, y1]
+        start_x = x0
+        start_y = y0
 
-            # center the grid
-            grid_w = cols * ig_tag_px + (cols - 1) * ig_gap_px
-            grid_h = rows * ig_tag_px + (rows - 1) * ig_gap_px
-            start_x = x0 + ig_margin_px + (inner_w - grid_w) // 2
-            start_y = y0 + ig_margin_px + (inner_h - grid_h) // 2
-
-            for r in range(rows):
-                for c in range(cols):
-                    cxg = start_x + c * (ig_tag_px + ig_gap_px) + ig_tag_px // 2
-                    cyg = start_y + r * (ig_tag_px + ig_gap_px) + ig_tag_px // 2
-                    paste_tag(tid, (int(cxg), int(cyg)), ig_tag_px)
-                    tid += 1
+        for r in range(rows):
+            for c in range(cols):
+                cxg = start_x + ig_tag_px/2 + c * (ig_tag_px + gap_x)
+                cyg = start_y + ig_tag_px/2 + r * (ig_tag_px + gap_y)
+                paste_tag(tid, (int(round(cxg)), int(round(cyg))), ig_tag_px)
+                tid += 1
 
     # Header text (small)
     try:
         info_font = ImageFont.truetype("DejaVuSans.ttf", mm_to_px(4))
     except Exception:
         info_font = ImageFont.load_default()
-    info_text = (f"AprilTag 36h11 - edge tags {TAG_SIZE_MM}mm, inner grid {INNER_GRID_TAG_SIZE_MM}mm - "
-                 f"double ring (gap {TAG_GAP_MM}mm, ring gap {RING_GAP_MM}mm)")
+    info_text = (f"AprilTag 36h11 - inner ring {TAG_SIZE_MM}mm, inner grid {INNER_GRID_TAG_SIZE_MM}mm "
+                 f"(fills hole; min gap {INNER_GRID_GAP_MM}mm) - rotation {TAG_ROTATION_DEG}°")
     draw.text((10, 20), info_text, fill=(0, 0, 0), font=info_font)
 
     # Save
-    png_path = "apriltag_board_double_ring_innergrid_rot{}.png".format(TAG_ROTATION_DEG)
-    pdf_path = "apriltag_board_double_ring_innergrid_rot{}.pdf".format(TAG_ROTATION_DEG)
+    png_path = "apriltag_board_inner_ring_filled_grid_rot{}.png".format(TAG_ROTATION_DEG)
+    pdf_path = "apriltag_board_inner_ring_filled_grid_rot{}.pdf".format(TAG_ROTATION_DEG)
     canvas.save(png_path, "PNG", dpi=(DPI, DPI))
     canvas.save(pdf_path, "PDF", resolution=DPI)
     print("Saved:", png_path, "and", pdf_path)

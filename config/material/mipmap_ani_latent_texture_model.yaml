@@ -1,4 +1,4 @@
-type: "AnisotropicLatentTexturedModel"
+type: "MipmapAniLatentTexturedModel"
 latent_dim: 16
 predict_frame: True
 use_nerfstudio_sh: False
@@ -12,6 +12,10 @@ hidden_layers: [128, 128, 64, 32, 16]
 Gaussian_blur: True
 activation: "relu"
 input_channels: 9
+
+# mipmap texture
+mipmap_levels: 4
+base_footprint: 1e-7
 
 # neural geometry 
 neural_geometry:
