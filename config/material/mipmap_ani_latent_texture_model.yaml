@@ -15,7 +15,7 @@ input_channels: 9
 
 # mipmap texture
 mipmap_levels: 4
-base_footprint: 1e-7
+base_footprint: 1e-7 
 
 # neural geometry 
 neural_geometry:

@@ -64,13 +64,13 @@
                 "CUDA_VISIBLE_DEVICES": "1"
             },
             "args": [
-                "dataset_folder=/media/raid/cloth/capture_data/BRDF_recon_Oct22_cloth/hdr",
+                "dataset_folder=/media/raid/cloth/capture_data/BRDF_recon_Oct28_close/hdr",
                 // "dataset_folder=/media/raid/cloth/capture_data/BRDF_recon_Oct20_white_test/hdr",
                 // "dataset_folder=/media/raid/cloth/capture_data/BRDF_recon_Oct21_color_checker_5_distance_grey_center/hdr",
                 // "dataset_folder=/media/raid/cloth/No_cable_capture_Sep22/BRDF_recon_Sep30/Controlled_light/hdr",
                 "renderer=realcapture_area_emitter",
                 "material=mipmap_ani_latent_texture_model",
-                "experiment_name=Over-fit-Mipmap_debug_1",
+                "experiment_name=Close-view_Mipmap_debug_1",
                 "model.test=False",
                 // "model.ckpt_path=/media/raid/cloth/output/BRDF/real/All-images_Correct-height_capture_Camera-factor_Chunk-200-3000_run_1/training/model_0.20_0.20/last.ckpt"
             ]
