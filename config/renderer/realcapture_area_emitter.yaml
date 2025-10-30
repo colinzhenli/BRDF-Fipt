@@ -35,12 +35,12 @@ camera:
   intrinsics:
     width: 3072
     height: 2048
-    focal_length: 6699.9749607678123 #previous focal length
-    # focal_length: 6781.26
+    # focal_length: 6699.9749607678123 #previous focal length
+    focal_length: 6781.26
     cx: 1536
     cy: 1024
-    distortion: -0.057534771756603202 #previous distortion
-    # distortion: -0.0386
+    # distortion: -0.057534771756603202 #previous distortion
+    distortion: -0.0386
 
   # intrinsics:
   #   width: 3080
@@ -58,8 +58,8 @@ mesh:
     center: [0.16, -0.11, -0.0643] # 0.063 is the foam board bottom
     # width: 0.264 # board_size
     # length: 0.31
-    width: 0.16 # sample_size
-    length: 0.20 # sample_size
+    width: 0.08 # sample_size
+    length: 0.08 # sample_size
     # width: 0.08
     # length: 0.08 # colorchecker size
 emitter:
