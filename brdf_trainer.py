@@ -182,7 +182,7 @@ class BRDFTrainer(pl.LightningModule):
             return torch.ones(H, W, 6)
     
     def save_pbr_texture(self, output_dir, batch_idx, b):
-        if self.hparams.material.type == "AnisotropicLatentTexturedModel": # Save normal and tangent map
+        if self.hparams.material.type != "MipmapLearnableSvPBRBRDF": # Save normal and tangent map
             # Extract normal and tangent from latent texture (last 6 dimensions)
             latent_texture = self.material.latent_texture.data[0]  # [latent_dim, H, W]
             
@@ -329,6 +329,10 @@ class BRDFTrainer(pl.LightningModule):
                                         None, None)                       # f(r)
 
         loss = self.loss_function(rgbs, rgbs_gt, vis, weighted_pdf)
+        print("loss", loss)
+        if self.material.type=="MoeLatentTextureModel":
+            print("moe loss", self.material.moe_loss)
+            loss += self.material.moe_loss
 
         psnr_loss  = torch.nn.functional.mse_loss(self.gamma(rgbs[vis]),
                                                 self.gamma(rgbs_gt.squeeze(0)[vis]),
@@ -408,4 +412,5 @@ class BRDFTrainer(pl.LightningModule):
 
     def on_train_batch_start(self, batch, batch_idx):
         step = self.global_step
-        self.trainer.train_dataloader.dataset.datasets.set_step(step)
+        if step!=0:
+            self.trainer.train_dataloader.dataset.datasets.set_step(step)

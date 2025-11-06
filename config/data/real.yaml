@@ -12,6 +12,7 @@ pixel: True
 ray_diff: True
 custom_c2w: True
 
+#metadata_path: /media/raid/cloth/No_cable_capture_Sep22/BRDF_recon_Sep30/scan_log_updated.json
 metadata_path: /media/raid/cloth/No_cable_capture_Sep22/BRDF_recon_Sep30/scan_log.json
 camera_metadata_path: /media/raid/cloth/No_cable_capture_Sep22/BRDF_recon_Sep30/rotated_camera.json
 handeye_refiner: False # whether to learn the refiner

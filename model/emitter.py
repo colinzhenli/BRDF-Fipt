@@ -321,8 +321,25 @@ class RealAreaEmitter(nn.Module):
         light_normals_world = torch.matmul(self.l2w[:, :3, :3], light_normal_local)  # [N, 3]
         light_normals_world = light_normals_world / (light_normals_world.norm(dim=-1, keepdim=True) + 1e-12)
         self.register_buffer('light_normal', light_normals_world)
-        
+    
     def _compute_l2w(self, cfg, json_path):
+        """
+        Compute the world transform for each light.
+        """
+        # Compute light transformation matrix
+        R_l2g = torch.tensor(cfg.get('R_l2g'), dtype=torch.float32, device='cuda')
+        t_l2g = torch.tensor(cfg.get('t_l2g'), dtype=torch.float32, device='cuda')
+        base2_to_base1 = torch.tensor(cfg.get('base2_to_base1'), dtype=torch.float32, device='cuda')
+        g2b0 = read_light_transforms(json_path, cfg.turntable.center, cfg.turntable.axis, base2_to_base1) # [N, 4, 4]
+        #print("g2b0",g2b0[190])
+        # g2b0 = base2_to_base1.unsqueeze(0) @ g2b
+        l2g = torch.eye(4, device='cuda')
+        l2g[:3, :3] = R_l2g
+        l2g[:3, 3] = t_l2g
+        l2w = g2b0 @ l2g
+        return l2w
+
+    def _compute_l2w_debug(self, cfg, json_path):
         """
         Compute the world transform for each light.
         """
@@ -336,7 +353,34 @@ class RealAreaEmitter(nn.Module):
         l2g[:3, :3] = R_l2g
         l2g[:3, 3] = t_l2g
         l2w = g2b0 @ l2g
-        return l2w
+        '''
+        rotation_matrix_light = [
+            [0.028322419006849342, -0.9728096963848317, -0.22986764713906993],
+            [-0.006689541023191124, 0.22977028798813612, -0.9732218990542435],
+            [0.9995764556163274, 0.029101707467097147, 0.0]
+        ]
+        position_light = [-166.2422773567819,32.80531565136983,11.698886401773052] 
+        pose = torch.eye(4, dtype=torch.float32)
+        pose[:3, :3] = torch.tensor(rotation_matrix_light, dtype=torch.float32)
+        pose[:3, 3] = torch.tensor(position_light, dtype=torch.float32)/ 1000.0
+        R_l2g=torch.tensor([[1.0,  0.0,  0.0],
+          [0.0,  1.0,  0.0],
+          [0.0,  0.0,  1.0]], dtype=torch.float32)
+        t_l2g=torch.tensor([0.0, -0.102, 0.02112], dtype=torch.float32)
+        l2g = torch.eye(4, dtype=torch.float32)
+        l2g[:3, :3] = R_l2g
+        l2g[:3, 3] = t_l2g
+        l2b2 = pose @ l2g
+        base2_to_base1=torch.tensor([[ 9.99999959e-01,  2.33227594e-04, -1.69051819e-04,  7.22042468e-03],
+                  [-2.36740680e-04,  9.99777598e-01, -2.10878871e-02,  8.26339062e-03],
+                  [ 1.64095944e-04,  2.10879262e-02,  9.99777611e-01,  3.93500345e-03],
+                  [ 0.00000000e+00,  0.00000000e+00,  0.00000000e+00,  1.00000000e+00]], dtype=torch.float32)
+        l2w = base2_to_base1 @ l2b2
+        
+        l2w=l2w.expand(g2b0.shape[0],4,4)
+        l2w=l2w.clone()
+        '''
+        return l2w.cuda()
     
     def _update_poses_for_vis(self, turntable_center, steps):
         turntable_center = turntable_center.to(self.l2w.device)

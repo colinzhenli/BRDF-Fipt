@@ -1,4 +1,4 @@
-CUDA_VISIBLE_DEVICES=0 \
+CUDA_VISIBLE_DEVICES=2 \
 python generate_images.py \
     renderer=realcapture_emitter \
     material=ani_latent_texture_model \

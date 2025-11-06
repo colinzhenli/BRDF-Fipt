@@ -1,0 +1,53 @@
+==> initializing monitor ...
+==> initializing trainer ...
+You are using a CUDA device ('NVIDIA L40S') that has Tensor Cores. To properly utilize them, you should set `torch.set_float32_matmul_precision('medium' | 'high')` which will trade-off precision for performance. For more details, read https://pytorch.org/docs/stable/generated/torch.set_float32_matmul_precision.html#torch.set_float32_matmul_precision
+Epoch 0:   0%|                                                                                               | 0/1.0 [00:00<?, ?it/s]Switched to chunk 1/1 with 1 images
+Loading rays with downsample scale 1...
+Loading images and rays: 100%|█████████████████████████████████████████████████████████████████████████| 1/1 [00:00<00:00,  1.94it/s]
+Traceback (most recent call last):█████████████████████████████████████████████████████████████████████| 1/1 [00:00<00:00,  1.95it/s]
+rays torch.Size([6291456, 12])
+Epoch 1: : 2it [00:07,  3.82s/it, loss=0.393, v_num=2saz, train/recon_loss=0.390, train/total_loss=0.390, train/psnr=6.910]          
+                                                                                                                                     
+  File "/home/haoran/BRDF-Fipt/main.py", line 125, in <module>
+    main()
+  File "/home/haoran/miniconda3/envs/material-capture/lib/python3.10/site-packages/hydra/main.py", line 90, in decorated_main
+    _run_hydra(
+  File "/home/haoran/miniconda3/envs/material-capture/lib/python3.10/site-packages/hydra/_internal/utils.py", line 389, in _run_hydra
+    _run_app(
+  File "/home/haoran/miniconda3/envs/material-capture/lib/python3.10/site-packages/hydra/_internal/utils.py", line 452, in _run_app
+    run_and_report(
+  File "/home/haoran/miniconda3/envs/material-capture/lib/python3.10/site-packages/hydra/_internal/utils.py", line 213, in run_and_report
+    return func()
+  File "/home/haoran/miniconda3/envs/material-capture/lib/python3.10/site-packages/hydra/_internal/utils.py", line 453, in <lambda>
+    lambda: hydra.run(
+  File "/home/haoran/miniconda3/envs/material-capture/lib/python3.10/site-packages/hydra/_internal/hydra.py", line 119, in run
+    ret = run_job(
+  File "/home/haoran/miniconda3/envs/material-capture/lib/python3.10/site-packages/hydra/core/utils.py", line 186, in run_job
+    ret.return_value = task_function(task_cfg)
+  File "/home/haoran/BRDF-Fipt/main.py", line 119, in main
+    torch.cuda.empty_cache()
+  File "/home/haoran/miniconda3/envs/material-capture/lib/python3.10/site-packages/torch/cuda/memory.py", line 222, in empty_cache
+    torch._C._cuda_emptyCache()
+KeyboardInterrupt
+Traceback (most recent call last):
+  File "/home/haoran/BRDF-Fipt/main.py", line 125, in <module>
+    main()
+  File "/home/haoran/miniconda3/envs/material-capture/lib/python3.10/site-packages/hydra/main.py", line 90, in decorated_main
+    _run_hydra(
+  File "/home/haoran/miniconda3/envs/material-capture/lib/python3.10/site-packages/hydra/_internal/utils.py", line 389, in _run_hydra
+    _run_app(
+  File "/home/haoran/miniconda3/envs/material-capture/lib/python3.10/site-packages/hydra/_internal/utils.py", line 452, in _run_app
+    run_and_report(
+  File "/home/haoran/miniconda3/envs/material-capture/lib/python3.10/site-packages/hydra/_internal/utils.py", line 213, in run_and_report
+    return func()
+  File "/home/haoran/miniconda3/envs/material-capture/lib/python3.10/site-packages/hydra/_internal/utils.py", line 453, in <lambda>
+    lambda: hydra.run(
+  File "/home/haoran/miniconda3/envs/material-capture/lib/python3.10/site-packages/hydra/_internal/hydra.py", line 119, in run
+    ret = run_job(
+  File "/home/haoran/miniconda3/envs/material-capture/lib/python3.10/site-packages/hydra/core/utils.py", line 186, in run_job
+    ret.return_value = task_function(task_cfg)
+  File "/home/haoran/BRDF-Fipt/main.py", line 119, in main
+    torch.cuda.empty_cache()
+  File "/home/haoran/miniconda3/envs/material-capture/lib/python3.10/site-packages/torch/cuda/memory.py", line 222, in empty_cache
+    torch._C._cuda_emptyCache()
+KeyboardInterrupt

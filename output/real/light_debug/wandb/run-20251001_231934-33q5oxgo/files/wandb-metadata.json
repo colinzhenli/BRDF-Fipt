@@ -1,0 +1,75 @@
+{
+  "os":  "Linux-5.15.0-130-generic-x86_64-with-glibc2.35",
+  "python":  "CPython 3.10.18",
+  "startedAt":  "2025-10-01T23:19:34.305251Z",
+  "args":  [
+    "renderer=realcapture_area_emitter",
+    "material=ani_latent_texture_model",
+    "experiment_name=light_debug",
+    "output_folder=output",
+    "model.loss.recon_loss.name=l1",
+    "data.importance_sampling=False",
+    "data.use_single_chunk_sampling=False",
+    "data.uniform_sampling=False",
+    "dataset_folder=/media/raid/cloth/No_cable_capture_Sep22/BRDF_recon_Sep30/Controlled_light/hdr",
+    "model.trainer.max_epochs=300",
+    "model.trainer.limit_train_batches=1",
+    "data.rays_num=32768"
+  ],
+  "program":  "/home/haoran/BRDF-Fipt/main.py",
+  "codePath":  "main.py",
+  "codePathLocal":  "main.py",
+  "git":  {
+    "remote":  "git@github.com:colinzhenli/BRDF-Fipt.git",
+    "commit":  "9657661ad7ba584ed077fe2870c4eae4150673aa"
+  },
+  "email":  "2191103695@qq.com",
+  "root":  "output/real/light_debug",
+  "host":  "cs-theia-gpu01",
+  "executable":  "/home/haoran/miniconda3/envs/material-capture/bin/python",
+  "cpu_count":  64,
+  "cpu_count_logical":  128,
+  "gpu":  "NVIDIA L40S",
+  "gpu_count":  4,
+  "disk":  {
+    "/":  {
+      "total":  "527836135424",
+      "used":  "466420858880"
+    }
+  },
+  "memory":  {
+    "total":  "1081603182592"
+  },
+  "gpu_nvidia":  [
+    {
+      "name":  "NVIDIA L40S",
+      "memoryTotal":  "48305799168",
+      "cudaCores":  18176,
+      "architecture":  "Ada",
+      "uuid":  "GPU-525983b7-be2c-5d9b-8304-9365f570e2d3"
+    },
+    {
+      "name":  "NVIDIA L40S",
+      "memoryTotal":  "48305799168",
+      "cudaCores":  18176,
+      "architecture":  "Ada",
+      "uuid":  "GPU-fe3c7723-4045-15b9-41d9-49bac2e8bed6"
+    },
+    {
+      "name":  "NVIDIA L40S",
+      "memoryTotal":  "48305799168",
+      "cudaCores":  18176,
+      "architecture":  "Ada",
+      "uuid":  "GPU-57d4d500-f409-1faa-c313-f6b150d2aedb"
+    },
+    {
+      "name":  "NVIDIA L40S",
+      "memoryTotal":  "48305799168",
+      "cudaCores":  18176,
+      "architecture":  "Ada",
+      "uuid":  "GPU-91d2d0bc-2ea3-b923-c9fd-5829710c8b98"
+    }
+  ],
+  "cudaVersion":  "12.6",
+  "writerId":  "q03igc7jhyd4lv4moj2l0cb94oyedhjs"
+}

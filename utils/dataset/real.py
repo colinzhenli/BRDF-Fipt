@@ -129,6 +129,7 @@ def load_metadata(metadata_path, camera_metadata_path, gt_folder, cfg, debug, de
     valid_metadata = []
     filtered_purple_ids = getattr(cfg.data, 'filtered_purple_ids', [])
     
+    raw_metadata=metadata
     for item in metadata:
         # Add "masked_" prefix to filename
         file_name = item["filename"]
@@ -168,14 +169,18 @@ def load_metadata(metadata_path, camera_metadata_path, gt_folder, cfg, debug, de
     
     # Use 80% for training
     if debug:
-        selected_metadata = metadata[0:0+debug_num]
+        selected_metadata = metadata[-1:]
+        #selected_metadata = metadata[-150:]
+        #selected_metadata=selected_metadata[::10]
     else:
         split_idx = int(0.8 * total_images)
         if split == 'train':
             selected_indices = indices[:split_idx]
+            selected_indices=selected_indices
         else:
             selected_indices = indices[split_idx:]
-            selected_metadata = [metadata[i] for i in selected_indices] 
+            selected_indices=selected_indices[:50]
+        selected_metadata = [metadata[i] for i in selected_indices]
         
     return selected_metadata, camera_metadata
 
@@ -238,6 +243,7 @@ class RealImageDataset(IterableDataset):
             c2w = c2w[:3, :4]
             rays_o, rays_d, dxdu, dydv = get_rays(self.directions, c2w, focal=self.intrinsics['focal_length'])
             rays = torch.cat([rays_o, rays_d, dxdu, dydv], dim=-1)
+            print("rays",rays.shape)
             # Load original RGB image (without gamma correction)
             file_name = img_data["filename"]
             img_path = os.path.join(self.gt_folder, file_name)
@@ -455,7 +461,7 @@ class RealImageDataset(IterableDataset):
             downsample_scale = 1  # Use scale 1 after both thresholds
         
         # Reload data if downsample scale changed
-        if not hasattr(self, '_current_downsample_scale') or self._current_downsample_scale != downsample_scale or self.reload_data:
+        if (not hasattr(self, '_current_downsample_scale') or self._current_downsample_scale != downsample_scale or self.reload_data) :
             self._current_downsample_scale = downsample_scale
             # Clear GPU memory if attributes exist
             if hasattr(self, 'directions'):

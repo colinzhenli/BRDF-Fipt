@@ -1,0 +1,104 @@
+2025-10-02 00:30:31,274 INFO    MainThread:2014737 [wandb_setup.py:_flush():80] Current SDK version is 0.21.0
+2025-10-02 00:30:31,274 INFO    MainThread:2014737 [wandb_setup.py:_flush():80] Configure stats pid to 2014737
+2025-10-02 00:30:31,274 INFO    MainThread:2014737 [wandb_setup.py:_flush():80] Loading settings from /home/haoran/.config/wandb/settings
+2025-10-02 00:30:31,275 INFO    MainThread:2014737 [wandb_setup.py:_flush():80] Loading settings from /home/haoran/BRDF-Fipt/wandb/settings
+2025-10-02 00:30:31,275 INFO    MainThread:2014737 [wandb_setup.py:_flush():80] Loading settings from environment variables
+2025-10-02 00:30:31,275 INFO    MainThread:2014737 [wandb_init.py:setup_run_log_directory():703] Logging user logs to output/real/light_debug/wandb/run-20251002_003031-jkwmzexy/logs/debug.log
+2025-10-02 00:30:31,275 INFO    MainThread:2014737 [wandb_init.py:setup_run_log_directory():704] Logging internal logs to output/real/light_debug/wandb/run-20251002_003031-jkwmzexy/logs/debug-internal.log
+2025-10-02 00:30:31,275 INFO    MainThread:2014737 [wandb_init.py:init():830] calling init triggers
+2025-10-02 00:30:31,275 INFO    MainThread:2014737 [wandb_init.py:init():835] wandb.init called with sweep_config: {}
+config: {'_wandb': {}}
+2025-10-02 00:30:31,275 INFO    MainThread:2014737 [wandb_init.py:init():871] starting backend
+2025-10-02 00:30:31,482 INFO    MainThread:2014737 [wandb_init.py:init():874] sending inform_init request
+2025-10-02 00:30:31,489 INFO    MainThread:2014737 [wandb_init.py:init():882] backend started and connected
+2025-10-02 00:30:31,493 INFO    MainThread:2014737 [wandb_init.py:init():953] updated telemetry
+2025-10-02 00:30:31,499 INFO    MainThread:2014737 [wandb_init.py:init():977] communicating run to backend with 90.0 second timeout
+2025-10-02 00:30:32,075 INFO    MainThread:2014737 [wandb_init.py:init():1029] starting run threads in backend
+2025-10-02 00:30:32,311 INFO    MainThread:2014737 [wandb_run.py:_console_start():2458] atexit reg
+2025-10-02 00:30:32,312 INFO    MainThread:2014737 [wandb_run.py:_redirect():2306] redirect: wrap_raw
+2025-10-02 00:30:32,312 INFO    MainThread:2014737 [wandb_run.py:_redirect():2375] Wrapping output streams.
+2025-10-02 00:30:32,312 INFO    MainThread:2014737 [wandb_run.py:_redirect():2398] Redirects installed.
+2025-10-02 00:30:32,314 INFO    MainThread:2014737 [wandb_init.py:init():1075] run started, returning control to user process
+2025-10-02 00:30:32,362 INFO    MainThread:2014737 [wandb_run.py:_config_callback():1363] config_cb None None {'data/train_num': 44, 'data/val_num': 9, 'data/test_num': 1, 'data/num_workers': 0, 'data/rays_num': 32768, 'data/filtered_purple_ids': [0, 9, 45, 109, 189, 675, 684, 850, 1012, 1013, 1014, 1039, 1051, 1052, 1053, 1054, 1064, 1065, 1066, 1077, 1078, 1079, 1080, 1082, 1103, 1104, 1105, 1106, 1117, 1118, 1130, 1131, 1139, 1143, 1144, 1145, 1146, 1155, 1156, 1157, 1168, 1169, 1170, 1181, 1182, 1183, 1196, 1209], 'data/chunk_size': 4, 'data/switch_iters': 10, 'data/importance_sampling': False, 'data/use_single_chunk_sampling': False, 'data/uniform_sampling': False, 'data/importance_sampling_num': 32768, 'data/batch_size': 1, 'data/multi_resolution': False, 'data/downsample_iter': [-1, -1], 'data/debug': True, 'data/debug_num': 1, 'data/dataset_name': 'real', 'data/pbr_path': None, 'data/shape/type': 'real', 'data/shape/center': [0.0, 0.0, 0.0], 'data/shape/radius': 0.2, 'data/pixel': True, 'data/ray_diff': True, 'data/custom_c2w': True, 'data/metadata_path': '/media/raid/cloth/No_cable_capture_Sep22/BRDF_recon_Sep30/scan_log.json', 'data/camera_metadata_path': '/media/raid/cloth/No_cable_capture_Sep22/BRDF_recon_Sep30/rotated_camera.json', 'data/handeye_refiner': False, 'renderer/type': 'path_tracing_realarea_emitter', 'renderer/brdf_sampling': False, 'renderer/emitter_sampling': True, 'renderer/indir_depth': 0, 'renderer/camera/distance': 2.0, 'renderer/camera/number_of_views': 40, 'renderer/camera/number_of_view_test': 10, 'renderer/camera/views_per_batch': 8, 'renderer/camera/look_at': [0.0, 0.0, 0.0], 'renderer/camera/up': [0.0, 1.0, 0.0], 'renderer/camera/position': [0.0, 0.0, -2.0], 'renderer/camera/camera_angle_x': 0.5, 'renderer/camera/R_c2g': [[-0.000717667595, 0.999776474, 0.0211302413], [-0.00442126179, 0.021126868, -0.999767027], [-0.999989969, -0.000810922726, 0.00440511146]], 'renderer/camera/t_c2g': [0.0326272696, -0.0161560433, 0.0280920856], 'renderer/camera/intrinsics/width': 3072, 'renderer/camera/intrinsics/height': 2048, 'renderer/camera/intrinsics/focal_length': 6699.974960767812, 'renderer/camera/intrinsics/cx': 1536, 'renderer/camera/intrinsics/cy': 1024, 'renderer/camera/intrinsics/distortion': -0.0575347717566032, 'renderer/mesh/path': None, 'renderer/mesh/rectangle/center': [0.16, -0.11, -0.06], 'renderer/mesh/rectangle/width': 0.16, 'renderer/mesh/rectangle/length': 0.2, 'renderer/emitter/type': 'realarea', 'renderer/emitter/num_lights': 40, 'renderer/emitter/dist': 4.0, 'renderer/emitter/radius': 0.007, 'renderer/emitter/fwhm_deg': 115.0, 'renderer/emitter/positions': [0.0, 0.0, 0.0], 'renderer/emitter/radiance': [10.0, 10.0, 10.0], 'renderer/emitter/turntable/center': [0.16084722, -0.11011424, -0.021], 'renderer/emitter/turntable/axis': [-0.00876202, -0.01346449, 0.99987096], 'renderer/emitter/R_l2g': [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], 'renderer/emitter/t_l2g': [0.0, -0.102, 0.02112], 'renderer/emitter/base2_to_base1': [[0.999999959, 0.000233227594, -0.000169051819, 0.00722042468], [-0.00023674068, 0.999777598, -0.0210878871, 0.00826339062], [0.000164095944, 0.0210879262, 0.999777611, 0.00393500345], [0.0, 0.0, 0.0, 1.0]], 'renderer/spp/train': 16, 'renderer/spp/val': 16, 'renderer/spp/test': 16, 'renderer/SPP_chunk': 4, 'renderer/resolution': [2048, 2048], 'model/ckpt_path': None, 'model/logger/_target_': 'pytorch_lightning.loggers.WandbLogger', 'model/logger/project': 'brdf-capture', 'model/logger/name': 'light_debug', 'model/trainer/accelerator': 'gpu', 'model/trainer/devices': 1, 'model/trainer/num_nodes': 1, 'model/trainer/max_epochs': 300, 'model/trainer/check_val_every_n_epoch': 1, 'model/trainer/limit_train_batches': 1, 'model/checkpoint_monitor/_target_': 'pytorch_lightning.callbacks.ModelCheckpoint', 'model/checkpoint_monitor/save_top_k': 2, 'model/checkpoint_monitor/every_n_epochs': 1, 'model/checkpoint_monitor/filename': '{epoch}', 'model/checkpoint_monitor/dirpath': 'output/real/light_debug/training', 'model/optimizer/name': 'Adam', 'model/optimizer/weight_decay': 0.0, 'model/optimizer/lr': 0.001, 'model/optimizer/inference_lr': 0.001, 'model/optimizer/inference_steps': 3400, 'model/optimizer/warmup_steps_ratio': 0.5, 'model/loss/recon_loss/name': 'l1', 'model/loss/recon_loss/weight': 1.0, 'model/loss/recon_loss/log_space/logrel_ref': 0.5, 'model/loss/recon_loss/log_space/logrel_alpha': 0.001, 'model/loss/refiner_prior_loss/weight': 0.01, 'model/lr_decay/decay_start_epoch': 20, 'material/type': 'AnisotropicLatentTexturedModel', 'material/latent_dim': 8, 'material/predict_frame': True, 'material/gt_frame': False, 'material/colorful_texture': True, 'material/leaky_relu': True, 'material/texture_resolution': 2048, 'material/hidden_layers': [128, 128, 64, 32, 16], 'material/Gaussian_blur': True, 'material/activation': 'relu', 'material/input_channels': 9, 'material/neural_geometry/enable': True, 'material/neural_geometry/latent_dim': 8, 'material/neural_geometry/hidden_layers': [16, 8, 4], 'material/neural_geometry/output_channels': 2, 'material/neural_geometry/local_wi_wo': False, 'material/neural_geometry/positional_encoding': False, 'material/neural_geometry/recompute_frame': False, 'material/larger_latent_dim': True, 'material/different_decoder': True, 'material/output_channels': 1, 'experiment_name': 'light_debug', 'exp_folder': '/media/raid/cloth/No_cable_capture_Sep22/BRDF_recon_Sep30/Controlled_light/hdr', 'dataset_folder': '/media/raid/cloth/No_cable_capture_Sep22/BRDF_recon_Sep30/Controlled_light/hdr', 'output_folder': 'output', 'exp_output_root_path': 'output/real/light_debug', 'gt_folder': '/media/raid/cloth/No_cable_capture_Sep22/BRDF_recon_Sep30/Controlled_light/hdr', 'test_on_train': True, 'global_train_seed': 42}
+2025-10-02 00:30:38,446 INFO    MsgRouterThr:2014737 [mailbox.py:close():129] [no run ID] Closing mailbox, abandoning 1 handles.
+2025-10-02 00:30:39,124 ERROR   MainThread:2014737 [redirect.py:_on_write():664] [all runs] error in stdout callback
+Traceback (most recent call last):
+  File "/home/haoran/miniconda3/envs/material-capture/lib/python3.10/site-packages/wandb/sdk/lib/redirect.py", line 662, in _on_write
+    cb(written_data)
+  File "/home/haoran/miniconda3/envs/material-capture/lib/python3.10/site-packages/wandb/sdk/wandb_run.py", line 2379, in <lambda>
+    lambda data: self._console_raw_callback("stdout", data),
+  File "/home/haoran/miniconda3/envs/material-capture/lib/python3.10/site-packages/wandb/sdk/wandb_run.py", line 398, in wrapper
+    return func(self, *args, **kwargs)
+  File "/home/haoran/miniconda3/envs/material-capture/lib/python3.10/site-packages/wandb/sdk/wandb_run.py", line 456, in wrapper_fn
+    return func(self, *args, **kwargs)
+  File "/home/haoran/miniconda3/envs/material-capture/lib/python3.10/site-packages/wandb/sdk/wandb_run.py", line 1566, in _console_raw_callback
+    self._backend.interface.publish_output_raw(name, data)
+  File "/home/haoran/miniconda3/envs/material-capture/lib/python3.10/site-packages/wandb/sdk/interface/interface.py", line 771, in publish_output_raw
+    self._publish_output_raw(o)
+  File "/home/haoran/miniconda3/envs/material-capture/lib/python3.10/site-packages/wandb/sdk/interface/interface_shared.py", line 38, in _publish_output_raw
+    self._publish(rec)
+  File "/home/haoran/miniconda3/envs/material-capture/lib/python3.10/site-packages/wandb/sdk/interface/interface_sock.py", line 39, in _publish
+    self._sock_client.send_record_publish(record)
+  File "/home/haoran/miniconda3/envs/material-capture/lib/python3.10/site-packages/wandb/sdk/lib/sock_client.py", line 170, in send_record_publish
+    self.send_server_request(server_req)
+  File "/home/haoran/miniconda3/envs/material-capture/lib/python3.10/site-packages/wandb/sdk/lib/sock_client.py", line 150, in send_server_request
+    self._send_message(msg)
+  File "/home/haoran/miniconda3/envs/material-capture/lib/python3.10/site-packages/wandb/sdk/lib/sock_client.py", line 147, in _send_message
+    self._sendall_with_error_handle(header + data)
+  File "/home/haoran/miniconda3/envs/material-capture/lib/python3.10/site-packages/wandb/sdk/lib/sock_client.py", line 126, in _sendall_with_error_handle
+    sent = self._sock.send(data)
+BrokenPipeError: [Errno 32] Broken pipe
+2025-10-02 00:30:39,125 ERROR   MainThread:2014737 [redirect.py:_on_write():664] [all runs] error in stdout callback
+Traceback (most recent call last):
+  File "/home/haoran/miniconda3/envs/material-capture/lib/python3.10/site-packages/wandb/sdk/lib/redirect.py", line 662, in _on_write
+    cb(written_data)
+  File "/home/haoran/miniconda3/envs/material-capture/lib/python3.10/site-packages/wandb/sdk/wandb_run.py", line 2379, in <lambda>
+    lambda data: self._console_raw_callback("stdout", data),
+  File "/home/haoran/miniconda3/envs/material-capture/lib/python3.10/site-packages/wandb/sdk/wandb_run.py", line 398, in wrapper
+    return func(self, *args, **kwargs)
+  File "/home/haoran/miniconda3/envs/material-capture/lib/python3.10/site-packages/wandb/sdk/wandb_run.py", line 456, in wrapper_fn
+    return func(self, *args, **kwargs)
+  File "/home/haoran/miniconda3/envs/material-capture/lib/python3.10/site-packages/wandb/sdk/wandb_run.py", line 1566, in _console_raw_callback
+    self._backend.interface.publish_output_raw(name, data)
+  File "/home/haoran/miniconda3/envs/material-capture/lib/python3.10/site-packages/wandb/sdk/interface/interface.py", line 771, in publish_output_raw
+    self._publish_output_raw(o)
+  File "/home/haoran/miniconda3/envs/material-capture/lib/python3.10/site-packages/wandb/sdk/interface/interface_shared.py", line 38, in _publish_output_raw
+    self._publish(rec)
+  File "/home/haoran/miniconda3/envs/material-capture/lib/python3.10/site-packages/wandb/sdk/interface/interface_sock.py", line 39, in _publish
+    self._sock_client.send_record_publish(record)
+  File "/home/haoran/miniconda3/envs/material-capture/lib/python3.10/site-packages/wandb/sdk/lib/sock_client.py", line 170, in send_record_publish
+    self.send_server_request(server_req)
+  File "/home/haoran/miniconda3/envs/material-capture/lib/python3.10/site-packages/wandb/sdk/lib/sock_client.py", line 150, in send_server_request
+    self._send_message(msg)
+  File "/home/haoran/miniconda3/envs/material-capture/lib/python3.10/site-packages/wandb/sdk/lib/sock_client.py", line 147, in _send_message
+    self._sendall_with_error_handle(header + data)
+  File "/home/haoran/miniconda3/envs/material-capture/lib/python3.10/site-packages/wandb/sdk/lib/sock_client.py", line 126, in _sendall_with_error_handle
+    sent = self._sock.send(data)
+BrokenPipeError: [Errno 32] Broken pipe
+2025-10-02 00:30:39,126 ERROR   MainThread:2014737 [redirect.py:_on_write():664] [all runs] error in stdout callback
+Traceback (most recent call last):
+  File "/home/haoran/miniconda3/envs/material-capture/lib/python3.10/site-packages/wandb/sdk/lib/redirect.py", line 662, in _on_write
+    cb(written_data)
+  File "/home/haoran/miniconda3/envs/material-capture/lib/python3.10/site-packages/wandb/sdk/wandb_run.py", line 2379, in <lambda>
+    lambda data: self._console_raw_callback("stdout", data),
+  File "/home/haoran/miniconda3/envs/material-capture/lib/python3.10/site-packages/wandb/sdk/wandb_run.py", line 398, in wrapper
+    return func(self, *args, **kwargs)
+  File "/home/haoran/miniconda3/envs/material-capture/lib/python3.10/site-packages/wandb/sdk/wandb_run.py", line 456, in wrapper_fn
+    return func(self, *args, **kwargs)
+  File "/home/haoran/miniconda3/envs/material-capture/lib/python3.10/site-packages/wandb/sdk/wandb_run.py", line 1566, in _console_raw_callback
+    self._backend.interface.publish_output_raw(name, data)
+  File "/home/haoran/miniconda3/envs/material-capture/lib/python3.10/site-packages/wandb/sdk/interface/interface.py", line 771, in publish_output_raw
+    self._publish_output_raw(o)
+  File "/home/haoran/miniconda3/envs/material-capture/lib/python3.10/site-packages/wandb/sdk/interface/interface_shared.py", line 38, in _publish_output_raw
+    self._publish(rec)
+  File "/home/haoran/miniconda3/envs/material-capture/lib/python3.10/site-packages/wandb/sdk/interface/interface_sock.py", line 39, in _publish
+    self._sock_client.send_record_publish(record)
+  File "/home/haoran/miniconda3/envs/material-capture/lib/python3.10/site-packages/wandb/sdk/lib/sock_client.py", line 170, in send_record_publish
+    self.send_server_request(server_req)
+  File "/home/haoran/miniconda3/envs/material-capture/lib/python3.10/site-packages/wandb/sdk/lib/sock_client.py", line 150, in send_server_request
+    self._send_message(msg)
+  File "/home/haoran/miniconda3/envs/material-capture/lib/python3.10/site-packages/wandb/sdk/lib/sock_client.py", line 147, in _send_message
+    self._sendall_with_error_handle(header + data)
+  File "/home/haoran/miniconda3/envs/material-capture/lib/python3.10/site-packages/wandb/sdk/lib/sock_client.py", line 126, in _sendall_with_error_handle
+    sent = self._sock.send(data)
+BrokenPipeError: [Errno 32] Broken pipe

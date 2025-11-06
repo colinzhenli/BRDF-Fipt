@@ -1,0 +1,1 @@
+{"val/psnr":24.52570152282715,"_runtime":1964,"val/emitter_radiance":10,"_timestamp":1.7593628542624955e+09,"_wandb":{"runtime":1964},"epoch":99,"val/loss":0.03199296444654465,"lr-Adam":0.001,"train/recon_loss":0.03208092600107193,"train/total_loss":0.03208092600107193,"train/psnr":24.501346588134766,"trainer/global_step":99,"_step":103}

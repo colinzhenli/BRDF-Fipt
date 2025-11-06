@@ -9,12 +9,13 @@ rays_num: 65536 # 4 times more rays
 # filtered_purple_ids: [39, 45, 86, 160, 189, 460, 560, 575, 778, 940]
 # filtered_purple_ids: [3, 11, 127, 266, 365, 458, 656, 669, 699, 899, 1021, 1036, 1056]
 # Filtered IDs for problematic scans
-filtered_purple_ids: [0, 9, 45, 109, 189, 675, 684, 850, 1012, 1013, 1014, 1039, 1051, 1052, 1053, 1054, 1064, 1065, 1066, 1077, 1078, 1079, 1080, 1082, 1103, 1104, 1105, 1106, 1117, 1118, 1130, 1131, 1139, 1143, 1144, 1145, 1146, 1155, 1156, 1157, 1168, 1169, 1170, 1181, 1182, 1183, 1196, 1209]
 
+filtered_purple_ids: [0, 9, 45, 109, 189, 675, 684, 850, 1012, 1013, 1014, 1039, 1051, 1052, 1053, 1054, 1064, 1065, 1066, 1077, 1078, 1079, 1080, 1082, 1103, 1104, 1105, 1106, 1117, 1118, 1130, 1131, 1139, 1143, 1144, 1145, 1146, 1155, 1156, 1157, 1168, 1169, 1170, 1181, 1182, 1183, 1196, 1209]
+#filtered_purple_ids: [0750,0583,0004,0211,0760,0036,0492,0658,0876,1099,    0, 9, 45, 109, 189, 675, 684, 850, 1012, 1013, 1014, 1039, 1051, 1052, 1053, 1054, 1064, 1065, 1066, 1077, 1078, 1079, 1080, 1082, 1103, 1104, 1105, 1106, 1117, 1118, 1130, 1131, 1139, 1143, 1144, 1145, 1146, 1155, 1156, 1157, 1168, 1169, 1170, 1181, 1182, 1183, 1196, 1209]
 
 #load images chunk to memory
-chunk_size: 4 # 0 means no chunking
-switch_iters: 10 # switch chunk every 10000 steps
+chunk_size: 100 # 0 means no chunking
+switch_iters: 5000 # switch chunk every 10000 steps
 
 importance_sampling: False
 use_single_chunk_sampling: False
@@ -25,5 +26,5 @@ batch_size: 1 # equal to train_num
 multi_resolution: False
 downsample_iter: [-1, -1]
 
-debug: True
-debug_num: 10
+debug: False
+debug_num: 1

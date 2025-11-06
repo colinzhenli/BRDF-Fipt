@@ -9,12 +9,13 @@ from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
 from renderer import ForwardRenderer
 from brdf_trainer import BRDFTrainer
 from model.brdf import SvPBRBRDF
-from model.neural_brdf import SvLatentModel, LatentTexturedModel, AnisotropicLatentTexturedModel, LearnableSvPBRBRDF
+from model.neural_brdf import SvLatentModel, LatentTexturedModel, AnisotropicLatentTexturedModel, LearnableSvPBRBRDF,MoELatentTexturedModel
 from model.mipmap_brdf import MipmapLearnableSvPBRBRDF
 from torch.utils.data import DataLoader
 from utils.dataset import RealImageDataset, RealValDataset
 import hydra
-from omegaconf import DictConfig
+import omegaconf
+from omegaconf import DictConfig, OmegaConf
 from pytorch_lightning.strategies import DDPStrategy
 import importlib
 import warnings
@@ -31,6 +32,15 @@ def init_callbacks(cfg):
 
 @hydra.main(version_base=None, config_path="config", config_name="config")
 def main(cfg):
+
+    torch.serialization.add_safe_globals([omegaconf.dictconfig.DictConfig])
+    _original_torch_load = torch.load
+
+    def torch_load_with_weights_only_false(*args, **kwargs):
+        kwargs["weights_only"] = False
+        return _original_torch_load(*args, **kwargs)
+
+    torch.load = torch_load_with_weights_only_false
     # fix the seed
     pl.seed_everything(cfg.global_train_seed, workers=True)
     os.makedirs(cfg.exp_output_root_path, exist_ok=True)
@@ -57,12 +67,25 @@ def main(cfg):
         material = SvLatentModel(cfg.material)  # MLP model uses mlp_pbr config
     elif cfg.material.type == "AnisotropicLatentTexturedModel":
         material = AnisotropicLatentTexturedModel(cfg.material)  # MLP model uses mlp_pbr config
+    elif cfg.material.type == "MoELatentTexturedModel":
+        material = MoELatentTexturedModel(cfg.material)  # MLP model uses mlp_pbr config
     elif cfg.material.type == "LearnableSvPBRBRDF":
         material = LearnableSvPBRBRDF(cfg.material)  # MLP model uses mlp_pbr config
     elif cfg.material.type == "MipmapLearnableSvPBRBRDF":
         material = MipmapLearnableSvPBRBRDF(cfg.material)  # MLP model uses mlp_pbr config
     else:
         raise ValueError(f"Invalid material type: {cfg.material.type}")
+    
+    # Print parameter information
+    total_params = sum(p.numel() for p in material.parameters())
+    print(f"\n{'='*60}")
+    print(f"Material Model: {cfg.material.type}")
+    print(f"Total number of parameters: {total_params:,}")
+    print(f"\nParameter names and shapes:")
+    for name, param in material.named_parameters():
+        print(f"  {name}: {param.shape} ({param.numel():,} parameters)")
+    print(f"{'='*60}\n")
+    
     gt_material = SvPBRBRDF(
         cfg=gt_material_cfg,
         albedo=torch.tensor(albedo)
@@ -103,15 +126,22 @@ def main(cfg):
     print("==> initializing trainer ...")
 
     trainer = pl.Trainer(
+        num_sanity_val_steps=0,
         callbacks=[checkpoint_callback, lr_monitor], logger=logger, **cfg.model.trainer
     )
     # tracer = VizTracer()
     # tracer.start()
-    trainer.fit(model, train_loader, val_loader)
+    
+    # Load checkpoint if specified
+    ckpt_path = cfg.get('resume_checkpoint', None)
+    if cfg.use_ckpt:
+        trainer.fit(model, train_loader, val_loader, ckpt_path=ckpt_path)
+    else:
+        trainer.fit(model, train_loader, val_loader)
     # tracer.stop()
     # tracer.save(f"is_all-pixels_tracer.json")
     """  Skipping testing for now """
-    # test_results = trainer.test(model, dataloaders=test_loader)
+    # test_results = trainer.test(m odel, dataloaders=test_loader)
 
     # test_psnr = sum(result['test/psnr'] for result in test_results) / len(test_results)
     # print(f"PSNR for roughness {roughness:.2f}, metallic {metallic:.2f}: {test_psnr:.2f}")

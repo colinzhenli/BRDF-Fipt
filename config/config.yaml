@@ -2,7 +2,7 @@ defaults:
   - data: real
   - renderer: realcapture_area_emitter
   - model: direct
-  - material: svlatent_model
+  - material: moe_lantent
 
 experiment_name: test
 exp_folder: /media/raid/cloth/No_cable_capture_Sep22/BRDF_recon_Sep30/Controlled_light/hdr
@@ -12,3 +12,6 @@ exp_output_root_path: ${output_folder}/${data.dataset_name}/${experiment_name}
 gt_folder: ${dataset_folder}
 test_on_train: True
 global_train_seed: 42
+
+use_ckpt: False  
+resume_checkpoint: /media/raid/cloth/capture_data/output_h/No_checker_real_run_1/real/moe_lantent_test/training/model_0.20_0.20/last.ckpt

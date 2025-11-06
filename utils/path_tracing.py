@@ -620,7 +620,6 @@ def batched_path_tracing_tbn_real_area_emitter(scene,emitter_net,material_net,ra
     batch_mask = batch_mask.reshape(-1)
     N = len(rays_o)
     device = rays_o.device
-    
     # sample camera ray
     du,dv = torch.rand(2,len(rays_o),spp,1,device=device)-0.5
     wi = NF.normalize(rays_d[:,None]+dx_du[:,None]*du+dy_dv[:,None]*dv,dim=-1).reshape(-1,3)
@@ -662,9 +661,16 @@ def batched_path_tracing_tbn_real_area_emitter(scene,emitter_net,material_net,ra
         emit_weight = emit_weight*G[...,None]/emit_pdf.clamp_min(1e-6)
         # emit brdf
         emit_brdf,brdf_pdf = material_net.eval_brdf(None, position, wi,wo,normal,uv, TBN, latent, batch_mask, footprint_vis, dp_du, dp_dv) # gt_params will not be used in neural brdf model
+        #emit_brdf[:,:]=1.0
         w_mis = torch.where((emit_pdf>0)&(~brdf_pdf.isinf()),emit_pdf*emit_pdf/(emit_pdf*emit_pdf+brdf_pdf*brdf_pdf),0)
         w_mis[emit_pdf.isinf()|(brdf_pdf==0)] = 1
-        L[vis] += emit_brdf*emit_weight
+        #L[vis] += emit_brdf*emit_weight
+        
+        contribution = emit_brdf * emit_weight
+        L_update = torch.zeros_like(L)
+        L_update[vis] = contribution
+        L = L + L_update
+
     # sample brdf
     if brdf_sampling:
         wi,brdf_pdf,brdf_weight = material_net.sample_brdf(
@@ -688,6 +694,7 @@ def batched_path_tracing_tbn_real_area_emitter(scene,emitter_net,material_net,ra
         w_mis[brdf_pdf.isinf()|(emit_pdf==0)] = 1
         w_mis[w_mis.isnan()] = 0
         L[vis] += brdf_weight*Le * w_mis
+    
     ray_params = torch.cat([position, wi, wo], dim=-1)
     L = L.reshape(N,spp,3).mean(1)
     # Merge visibility across multiple spp - if any ray is visible, vis is true

@@ -1,0 +1,477 @@
+_wandb:
+    value:
+        cli_version: 0.21.0
+        e:
+            j7lboztiefzu0l6iko17mismkab5jrsf:
+                args:
+                    - renderer=realcapture_area_emitter
+                    - material=ani_latent_texture_model
+                    - experiment_name=light_debug
+                    - output_folder=output
+                    - model.loss.recon_loss.name=l1
+                    - data.importance_sampling=False
+                    - data.use_single_chunk_sampling=False
+                    - data.uniform_sampling=False
+                    - dataset_folder=/media/raid/cloth/No_cable_capture_Sep22/BRDF_recon_Sep30/Controlled_light/hdr
+                    - model.trainer.max_epochs=300
+                    - model.trainer.limit_train_batches=1
+                    - data.rays_num=32768
+                codePath: main.py
+                codePathLocal: main.py
+                cpu_count: 64
+                cpu_count_logical: 128
+                cudaVersion: "12.6"
+                disk:
+                    /:
+                        total: "527836135424"
+                        used: "466418868224"
+                email: 2191103695@qq.com
+                executable: /home/haoran/miniconda3/envs/material-capture/bin/python
+                git:
+                    commit: 9657661ad7ba584ed077fe2870c4eae4150673aa
+                    remote: git@github.com:colinzhenli/BRDF-Fipt.git
+                gpu: NVIDIA L40S
+                gpu_count: 4
+                gpu_nvidia:
+                    - architecture: Ada
+                      cudaCores: 18176
+                      memoryTotal: "48305799168"
+                      name: NVIDIA L40S
+                      uuid: GPU-525983b7-be2c-5d9b-8304-9365f570e2d3
+                    - architecture: Ada
+                      cudaCores: 18176
+                      memoryTotal: "48305799168"
+                      name: NVIDIA L40S
+                      uuid: GPU-fe3c7723-4045-15b9-41d9-49bac2e8bed6
+                    - architecture: Ada
+                      cudaCores: 18176
+                      memoryTotal: "48305799168"
+                      name: NVIDIA L40S
+                      uuid: GPU-57d4d500-f409-1faa-c313-f6b150d2aedb
+                    - architecture: Ada
+                      cudaCores: 18176
+                      memoryTotal: "48305799168"
+                      name: NVIDIA L40S
+                      uuid: GPU-91d2d0bc-2ea3-b923-c9fd-5829710c8b98
+                host: cs-theia-gpu01
+                memory:
+                    total: "1081603182592"
+                os: Linux-5.15.0-130-generic-x86_64-with-glibc2.35
+                program: /home/haoran/BRDF-Fipt/main.py
+                python: CPython 3.10.18
+                root: output/real/light_debug
+                startedAt: "2025-10-01T22:55:25.539454Z"
+                writerId: j7lboztiefzu0l6iko17mismkab5jrsf
+        m:
+            - "1": trainer/global_step
+              "6":
+                - 3
+              "7": []
+            - "2": '*'
+              "5": 1
+              "6":
+                - 1
+              "7": []
+        python_version: 3.10.18
+        t:
+            "1":
+                - 1
+                - 5
+                - 9
+                - 41
+                - 50
+                - 53
+                - 103
+            "2":
+                - 1
+                - 5
+                - 9
+                - 41
+                - 50
+                - 53
+                - 103
+            "3":
+                - 7
+                - 13
+                - 66
+            "4": 3.10.18
+            "5": 0.21.0
+            "12": 0.21.0
+            "13": linux-x86_64
+data/batch_size:
+    value: 1
+data/camera_metadata_path:
+    value: /media/raid/cloth/No_cable_capture_Sep22/BRDF_recon_Sep30/rotated_camera.json
+data/chunk_size:
+    value: 4
+data/custom_c2w:
+    value: true
+data/dataset_name:
+    value: real
+data/debug:
+    value: true
+data/debug_num:
+    value: 10
+data/downsample_iter:
+    value:
+        - -1
+        - -1
+data/filtered_purple_ids:
+    value:
+        - 0
+        - 9
+        - 45
+        - 109
+        - 189
+        - 675
+        - 684
+        - 850
+        - 1012
+        - 1013
+        - 1014
+        - 1039
+        - 1051
+        - 1052
+        - 1053
+        - 1054
+        - 1064
+        - 1065
+        - 1066
+        - 1077
+        - 1078
+        - 1079
+        - 1080
+        - 1082
+        - 1103
+        - 1104
+        - 1105
+        - 1106
+        - 1117
+        - 1118
+        - 1130
+        - 1131
+        - 1139
+        - 1143
+        - 1144
+        - 1145
+        - 1146
+        - 1155
+        - 1156
+        - 1157
+        - 1168
+        - 1169
+        - 1170
+        - 1181
+        - 1182
+        - 1183
+        - 1196
+        - 1209
+data/handeye_refiner:
+    value: false
+data/importance_sampling:
+    value: false
+data/importance_sampling_num:
+    value: 32768
+data/metadata_path:
+    value: /media/raid/cloth/No_cable_capture_Sep22/BRDF_recon_Sep30/scan_log.json
+data/multi_resolution:
+    value: false
+data/num_workers:
+    value: 0
+data/pbr_path:
+    value: null
+data/pixel:
+    value: true
+data/ray_diff:
+    value: true
+data/rays_num:
+    value: 32768
+data/shape/center:
+    value:
+        - 0
+        - 0
+        - 0
+data/shape/radius:
+    value: 0.2
+data/shape/type:
+    value: real
+data/switch_iters:
+    value: 10
+data/test_num:
+    value: 1
+data/train_num:
+    value: 44
+data/uniform_sampling:
+    value: false
+data/use_single_chunk_sampling:
+    value: false
+data/val_num:
+    value: 9
+dataset_folder:
+    value: /media/raid/cloth/No_cable_capture_Sep22/BRDF_recon_Sep30/Controlled_light/hdr
+exp_folder:
+    value: /media/raid/cloth/No_cable_capture_Sep22/BRDF_recon_Sep30/Controlled_light/hdr
+exp_output_root_path:
+    value: output/real/light_debug
+experiment_name:
+    value: light_debug
+global_train_seed:
+    value: 42
+gt_folder:
+    value: /media/raid/cloth/No_cable_capture_Sep22/BRDF_recon_Sep30/Controlled_light/hdr
+material/Gaussian_blur:
+    value: true
+material/activation:
+    value: relu
+material/colorful_texture:
+    value: true
+material/different_decoder:
+    value: true
+material/gt_frame:
+    value: false
+material/hidden_layers:
+    value:
+        - 128
+        - 128
+        - 64
+        - 32
+        - 16
+material/input_channels:
+    value: 9
+material/larger_latent_dim:
+    value: true
+material/latent_dim:
+    value: 8
+material/leaky_relu:
+    value: true
+material/neural_geometry/enable:
+    value: true
+material/neural_geometry/hidden_layers:
+    value:
+        - 16
+        - 8
+        - 4
+material/neural_geometry/latent_dim:
+    value: 8
+material/neural_geometry/local_wi_wo:
+    value: false
+material/neural_geometry/output_channels:
+    value: 2
+material/neural_geometry/positional_encoding:
+    value: false
+material/neural_geometry/recompute_frame:
+    value: false
+material/output_channels:
+    value: 1
+material/predict_frame:
+    value: true
+material/texture_resolution:
+    value: 2048
+material/type:
+    value: AnisotropicLatentTexturedModel
+model/checkpoint_monitor/_target_:
+    value: pytorch_lightning.callbacks.ModelCheckpoint
+model/checkpoint_monitor/dirpath:
+    value: output/real/light_debug/training
+model/checkpoint_monitor/every_n_epochs:
+    value: 1
+model/checkpoint_monitor/filename:
+    value: '{epoch}'
+model/checkpoint_monitor/save_top_k:
+    value: 2
+model/ckpt_path:
+    value: null
+model/logger/_target_:
+    value: pytorch_lightning.loggers.WandbLogger
+model/logger/name:
+    value: light_debug
+model/logger/project:
+    value: brdf-capture
+model/loss/recon_loss/log_space/logrel_alpha:
+    value: 0.001
+model/loss/recon_loss/log_space/logrel_ref:
+    value: 0.5
+model/loss/recon_loss/name:
+    value: l1
+model/loss/recon_loss/weight:
+    value: 1
+model/loss/refiner_prior_loss/weight:
+    value: 0.01
+model/lr_decay/decay_start_epoch:
+    value: 20
+model/optimizer/inference_lr:
+    value: 0.001
+model/optimizer/inference_steps:
+    value: 3400
+model/optimizer/lr:
+    value: 0.001
+model/optimizer/name:
+    value: Adam
+model/optimizer/warmup_steps_ratio:
+    value: 0.5
+model/optimizer/weight_decay:
+    value: 0
+model/trainer/accelerator:
+    value: gpu
+model/trainer/check_val_every_n_epoch:
+    value: 1
+model/trainer/devices:
+    value: 1
+model/trainer/limit_train_batches:
+    value: 1
+model/trainer/max_epochs:
+    value: 300
+model/trainer/num_nodes:
+    value: 1
+output_folder:
+    value: output
+renderer/SPP_chunk:
+    value: 4
+renderer/brdf_sampling:
+    value: false
+renderer/camera/R_c2g:
+    value:
+        - - -0.000717667595
+          - 0.999776474
+          - 0.0211302413
+        - - -0.00442126179
+          - 0.021126868
+          - -0.999767027
+        - - -0.999989969
+          - -0.000810922726
+          - 0.00440511146
+renderer/camera/camera_angle_x:
+    value: 0.5
+renderer/camera/distance:
+    value: 2
+renderer/camera/intrinsics/cx:
+    value: 1536
+renderer/camera/intrinsics/cy:
+    value: 1024
+renderer/camera/intrinsics/distortion:
+    value: -0.0575347717566032
+renderer/camera/intrinsics/focal_length:
+    value: 6699.974960767812
+renderer/camera/intrinsics/height:
+    value: 2048
+renderer/camera/intrinsics/width:
+    value: 3072
+renderer/camera/look_at:
+    value:
+        - 0
+        - 0
+        - 0
+renderer/camera/number_of_view_test:
+    value: 10
+renderer/camera/number_of_views:
+    value: 40
+renderer/camera/position:
+    value:
+        - 0
+        - 0
+        - -2
+renderer/camera/t_c2g:
+    value:
+        - 0.0326272696
+        - -0.0161560433
+        - 0.0280920856
+renderer/camera/up:
+    value:
+        - 0
+        - 1
+        - 0
+renderer/camera/views_per_batch:
+    value: 8
+renderer/emitter/R_l2g:
+    value:
+        - - 1
+          - 0
+          - 0
+        - - 0
+          - 1
+          - 0
+        - - 0
+          - 0
+          - 1
+renderer/emitter/base2_to_base1:
+    value:
+        - - 0.999999959
+          - 0.000233227594
+          - -0.000169051819
+          - 0.00722042468
+        - - -0.00023674068
+          - 0.999777598
+          - -0.0210878871
+          - 0.00826339062
+        - - 0.000164095944
+          - 0.0210879262
+          - 0.999777611
+          - 0.00393500345
+        - - 0
+          - 0
+          - 0
+          - 1
+renderer/emitter/dist:
+    value: 4
+renderer/emitter/fwhm_deg:
+    value: 115
+renderer/emitter/num_lights:
+    value: 40
+renderer/emitter/positions:
+    value:
+        - 0
+        - 0
+        - 0
+renderer/emitter/radiance:
+    value:
+        - 10
+        - 10
+        - 10
+renderer/emitter/radius:
+    value: 0.007
+renderer/emitter/t_l2g:
+    value:
+        - 0
+        - -0.102
+        - 0.02112
+renderer/emitter/turntable/axis:
+    value:
+        - -0.00876202
+        - -0.01346449
+        - 0.99987096
+renderer/emitter/turntable/center:
+    value:
+        - 0.16084722
+        - -0.11011424
+        - -0.021
+renderer/emitter/type:
+    value: realarea
+renderer/emitter_sampling:
+    value: true
+renderer/indir_depth:
+    value: 0
+renderer/mesh/path:
+    value: null
+renderer/mesh/rectangle/center:
+    value:
+        - 0.16
+        - -0.11
+        - -0.06
+renderer/mesh/rectangle/length:
+    value: 0.2
+renderer/mesh/rectangle/width:
+    value: 0.16
+renderer/resolution:
+    value:
+        - 2048
+        - 2048
+renderer/spp/test:
+    value: 16
+renderer/spp/train:
+    value: 16
+renderer/spp/val:
+    value: 16
+renderer/type:
+    value: path_tracing_realarea_emitter
+test_on_train:
+    value: true

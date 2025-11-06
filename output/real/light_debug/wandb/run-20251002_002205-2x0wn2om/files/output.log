@@ -1,0 +1,63 @@
+==> initializing monitor ...
+==> initializing trainer ...
+You are using a CUDA device ('NVIDIA L40S') that has Tensor Cores. To properly utilize them, you should set `torch.set_float32_matmul_precision('medium' | 'high')` which will trade-off precision for performance. For more details, read https://pytorch.org/docs/stable/generated/torch.set_float32_matmul_precision.html#torch.set_float32_matmul_precision
+Sanity Checking DataLoader 0:   0%|                                                                            | 0/1 [00:00<?, ?it/s]
+Error executing job with overrides: ['renderer=realcapture_area_emitter', 'material=ani_latent_texture_model', 'experiment_name=light_debug', 'output_folder=output', 'model.loss.recon_loss.name=l1', 'data.importance_sampling=False', 'data.use_single_chunk_sampling=False', 'data.uniform_sampling=False', 'dataset_folder=/media/raid/cloth/No_cable_capture_Sep22/BRDF_recon_Sep30/Controlled_light/hdr', 'model.trainer.max_epochs=300', 'model.trainer.limit_train_batches=1', 'data.rays_num=32768']
+Traceback (most recent call last):
+  File "/home/haoran/BRDF-Fipt/main.py", line 110, in main
+    trainer.fit(model, train_loader, val_loader)
+  File "/home/haoran/miniconda3/envs/material-capture/lib/python3.10/site-packages/pytorch_lightning/trainer/trainer.py", line 608, in fit
+    call._call_and_handle_interrupt(
+  File "/home/haoran/miniconda3/envs/material-capture/lib/python3.10/site-packages/pytorch_lightning/trainer/call.py", line 38, in _call_and_handle_interrupt
+    return trainer_fn(*args, **kwargs)
+  File "/home/haoran/miniconda3/envs/material-capture/lib/python3.10/site-packages/pytorch_lightning/trainer/trainer.py", line 650, in _fit_impl
+    self._run(model, ckpt_path=self.ckpt_path)
+  File "/home/haoran/miniconda3/envs/material-capture/lib/python3.10/site-packages/pytorch_lightning/trainer/trainer.py", line 1103, in _run
+    results = self._run_stage()
+  File "/home/haoran/miniconda3/envs/material-capture/lib/python3.10/site-packages/pytorch_lightning/trainer/trainer.py", line 1182, in _run_stage
+    self._run_train()
+  File "/home/haoran/miniconda3/envs/material-capture/lib/python3.10/site-packages/pytorch_lightning/trainer/trainer.py", line 1195, in _run_train
+    self._run_sanity_check()
+  File "/home/haoran/miniconda3/envs/material-capture/lib/python3.10/site-packages/pytorch_lightning/trainer/trainer.py", line 1267, in _run_sanity_check
+    val_loop.run()
+  File "/home/haoran/miniconda3/envs/material-capture/lib/python3.10/site-packages/pytorch_lightning/loops/loop.py", line 199, in run
+    self.advance(*args, **kwargs)
+  File "/home/haoran/miniconda3/envs/material-capture/lib/python3.10/site-packages/pytorch_lightning/loops/dataloader/evaluation_loop.py", line 152, in advance
+    dl_outputs = self.epoch_loop.run(self._data_fetcher, dl_max_batches, kwargs)
+  File "/home/haoran/miniconda3/envs/material-capture/lib/python3.10/site-packages/pytorch_lightning/loops/loop.py", line 199, in run
+    self.advance(*args, **kwargs)
+  File "/home/haoran/miniconda3/envs/material-capture/lib/python3.10/site-packages/pytorch_lightning/loops/epoch/evaluation_epoch_loop.py", line 137, in advance
+    output = self._evaluation_step(**kwargs)
+  File "/home/haoran/miniconda3/envs/material-capture/lib/python3.10/site-packages/pytorch_lightning/loops/epoch/evaluation_epoch_loop.py", line 234, in _evaluation_step
+    output = self.trainer._call_strategy_hook(hook_name, *kwargs.values())
+  File "/home/haoran/miniconda3/envs/material-capture/lib/python3.10/site-packages/pytorch_lightning/trainer/trainer.py", line 1485, in _call_strategy_hook
+    output = fn(*args, **kwargs)
+  File "/home/haoran/miniconda3/envs/material-capture/lib/python3.10/site-packages/pytorch_lightning/strategies/strategy.py", line 390, in validation_step
+    return self.model.validation_step(*args, **kwargs)
+  File "/home/haoran/BRDF-Fipt/brdf_trainer.py", line 357, in validation_step
+    rgbs, vis, ray_params = self.renderer.render(self.emitter, rays, emitter_ids, self.cfg.renderer.spp.train, None, None)
+  File "/home/haoran/BRDF-Fipt/renderer.py", line 70, in render
+    L0, vis, ray_params = self.ray_tracer(
+  File "/home/haoran/BRDF-Fipt/utils/path_tracing.py", line 664, in batched_path_tracing_tbn_real_area_emitter
+    emit_brdf,brdf_pdf = material_net.eval_brdf(None, position, wi,wo,normal,uv, TBN, latent, batch_mask, footprint_vis, dp_du, dp_dv) # gt_params will not be used in neural brdf model
+  File "/home/haoran/BRDF-Fipt/model/neural_brdf.py", line 1855, in eval_brdf
+    brdf_r = self.forward(pos, wi_local, wo_local, local_normal, latent_r, batch_mask, 'r')
+  File "/home/haoran/BRDF-Fipt/model/neural_brdf.py", line 1682, in forward
+    return self.mlp_r(x)
+  File "/home/haoran/miniconda3/envs/material-capture/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1751, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/home/haoran/miniconda3/envs/material-capture/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1762, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/haoran/miniconda3/envs/material-capture/lib/python3.10/site-packages/torch/nn/modules/container.py", line 240, in forward
+    input = module(input)
+  File "/home/haoran/miniconda3/envs/material-capture/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1751, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/home/haoran/miniconda3/envs/material-capture/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1762, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/haoran/miniconda3/envs/material-capture/lib/python3.10/site-packages/torch/nn/modules/activation.py", line 133, in forward
+    return F.relu(input, inplace=self.inplace)
+  File "/home/haoran/miniconda3/envs/material-capture/lib/python3.10/site-packages/torch/nn/functional.py", line 1704, in relu
+    result = torch.relu(input)
+torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 2.50 GiB. GPU 0 has a total capacity of 44.42 GiB of which 1.05 GiB is free. Process 1951020 has 28.94 GiB memory in use. Including non-PyTorch memory, this process has 14.42 GiB memory in use. Of the allocated memory 11.36 GiB is allocated by PyTorch, and 657.84 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)
+
+Set the environment variable HYDRA_FULL_ERROR=1 for a complete stack trace.

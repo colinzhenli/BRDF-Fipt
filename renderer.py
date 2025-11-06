@@ -1,6 +1,6 @@
 import torch
 from utils.path_tracing import path_tracing_envmap_emitter, batched_path_tracing_dynamic_emitter, batched_path_tracing_preset_emitter, batched_path_tracing_tbn_preset_emitter, batched_path_tracing_tbn_real_area_emitter
-from utils.scene_loader import load_uv_obj_to_mitsuba_scene, create_rectangle_scene
+from utils.scene_loader import load_uv_obj_to_mitsuba_scene, create_rectangle_scene, add_circle_to_scene_dict
 from mitsuba import load_dict
 import mitsuba as mi
 from model.emitter import EnvMapEmitter, DynamicPointEmitter
@@ -24,11 +24,12 @@ class ForwardRenderer:
         if cfg.renderer.mesh.path is not None:
             self.scene=load_uv_obj_to_mitsuba_scene(cfg.renderer.mesh.path)
         else:
-            self.scene = create_rectangle_scene(
+            self.scene_dict = create_rectangle_scene(
                 center=cfg.renderer.mesh.rectangle.center,
                 width=cfg.renderer.mesh.rectangle.width,
                 length=cfg.renderer.mesh.rectangle.length
             )
+            self.scene=mi.load_dict(self.scene_dict)
         self.material = material.to(self.device)
 
         print("type",cfg.renderer.emitter.type)
@@ -47,6 +48,12 @@ class ForwardRenderer:
         self.SPP_chunk = cfg.renderer.SPP_chunk
     
     def render(self, emitter, rays, light_idx, spp, gt_params=None, latent=None):
+        '''
+        print("light_idx",light_idx)
+        print("emitter.l2w",emitter.l2w.shape)
+        self.scene_dict=add_circle_to_scene_dict(self.scene_dict, emitter.l2w[light_idx[0,0]], emitter.light_radius)
+        self.scene=mi.load_dict(self.scene_dict)
+        '''
         rays_x, rays_d, dxdu, dydv = rays[..., :3], rays[..., 3:6], rays[..., 6:9], rays[..., 9:12]
         L = torch.zeros_like(rays_x)
         ray_params = torch.zeros_like(rays)

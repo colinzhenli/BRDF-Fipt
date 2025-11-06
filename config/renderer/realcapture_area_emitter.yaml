@@ -34,6 +34,7 @@ camera:
     width: 3072
     height: 2048
     focal_length: 6699.9749607678123
+    #focal_length: 3699.9749607678123
     cx: 1536
     cy: 1024
     distortion: -0.057534771756603202
@@ -50,6 +51,7 @@ mesh:
   path: 
   rectangle:
     center: [0.16, -0.11, -0.06]
+    #center: [0.16, -0.11, -0.02]
     # width: 0.24 # board_size
     # length: 0.31
     width: 0.16 # sample_size
@@ -81,9 +83,9 @@ emitter:
                   [ 1.64095944e-04,  2.10879262e-02,  9.99777611e-01,  3.93500345e-03],
                   [ 0.00000000e+00,  0.00000000e+00,  0.00000000e+00,  1.00000000e+00]]
 spp:
-  train: 16
+  train: 4
   val: 16
   test: 16
-SPP_chunk: 4
+SPP_chunk: 2
 
 resolution: [2048, 2048]
