@@ -203,3 +203,70 @@ def read_light_transforms(json_path, turntable_center, turntable_axis, base2_to_
             light_transforms.append(Tw2w0 @ light2world)
     
     return torch.stack(light_transforms).cuda()  # (N, 4, 4)
+
+def load_colmap_sparse_pointcloud(sparse_path):
+    """
+    Load COLMAP sparse reconstruction and extract 3D points with their 2D pixel observations.
+    
+    Args:
+        sparse_path (str): Path to COLMAP sparse reconstruction folder (containing cameras.bin/txt, images.bin/txt, points3D.bin/txt)
+    
+    Returns:
+        tuple: (points3d_tensor, observations_tensor)
+            - points3d_tensor: torch.Tensor of shape (N, 3) containing 3D point coordinates
+            - observations_tensor: torch.Tensor of shape (N, 3) where:
+                - [:, 0] is image_id
+                - [:, 1] is pixel x coordinate
+                - [:, 2] is pixel y coordinate
+    
+    Note: Each 3D point may be observed by multiple cameras. This function returns one observation
+          per 3D point (the first observation in the track). If you need all observations, 
+          the output will have more than N rows.
+    """
+    import sys
+    import os
+    
+    # Add the calibration directory to path to import read_write_model
+    calib_dir = os.path.join(os.path.dirname(__file__), '..', 'recon', 'calibration')
+    if calib_dir not in sys.path:
+        sys.path.insert(0, calib_dir)
+    
+    from read_write_model import read_points3D_binary, read_points3D_text, read_images_binary, read_images_text, detect_model_format
+    
+    # Detect format (.bin or .txt)
+    if detect_model_format(sparse_path, ".bin"):
+        ext = ".bin"
+        points3D = read_points3D_binary(os.path.join(sparse_path, "points3D" + ext))
+        images = read_images_binary(os.path.join(sparse_path, "images" + ext))
+    elif detect_model_format(sparse_path, ".txt"):
+        ext = ".txt"
+        points3D = read_points3D_text(os.path.join(sparse_path, "points3D" + ext))
+        images = read_images_text(os.path.join(sparse_path, "images" + ext))
+    else:
+        raise ValueError(f"Could not detect COLMAP model format in {sparse_path}")
+    
+    # Extract data for all observations
+    points_list = []
+    observations_list = []
+    
+    for point3D_id, point3D in points3D.items():
+        xyz = point3D.xyz  # 3D coordinates
+        image_ids = point3D.image_ids  # Which images see this point
+        point2D_idxs = point3D.point2D_idxs  # Index into the image's xys array
+        
+        # For each observation of this 3D point
+        for img_id, point2D_idx in zip(image_ids, point2D_idxs):
+            # Get the 2D pixel coordinates from the image
+            if img_id in images:
+                image = images[img_id]
+                xy = image.xys[point2D_idx]  # 2D pixel coordinates
+                
+                # Store the 3D point and its observation
+                points_list.append(xyz)
+                observations_list.append([img_id, xy[0], xy[1]])
+    
+    # Convert to torch tensors
+    points3d_tensor = torch.tensor(points_list, dtype=torch.float32)  # Shape: (M, 3)
+    observations_tensor = torch.tensor(observations_list, dtype=torch.float32)  # Shape: (M, 3)
+    
+    return points3d_tensor, observations_tensor

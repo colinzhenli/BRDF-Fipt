@@ -1,0 +1,471 @@
+import torch
+import torch.nn.functional as NF
+from torch.utils.data import Dataset
+import json
+import numpy as np
+import os
+os.environ["OPENCV_IO_ENABLE_OPENEXR"]="1"
+import cv2
+import math
+from pathlib import Path
+from torch.utils.data import IterableDataset
+from tqdm import tqdm
+import matplotlib.pyplot as plt
+from utils.io import load_camera_turntable_light_metadata, load_camera_metadata, load_camera_metadata_from_robotic_log
+import threading, queue, time
+from dataclasses import dataclass
+
+def build_4x4(R, t):
+    T = np.eye(4, dtype=float)
+    T[:3, :3] = R
+    T[:3, 3]  = t
+    return T
+
+def _cv_to_gl(cv):
+    # convert to GL convention used in iNGP
+    gl = cv * torch.tensor([1, -1, -1, 1])
+    return gl
+
+def get_ray_directions(H, W, focal, cx, cy, distortion):
+    """ get camera ray direction with radial distortion correction, using opengl convention
+    Args:
+        H,W: height and width
+        focal: focal length
+        cx, cy: principal point coordinates
+        distortion: radial distortion coefficient k1
+    """
+    x_coords = torch.linspace(0.5, W - 0.5, W)
+    y_coords = torch.linspace(0.5, H - 0.5, H)
+    j, i = torch.meshgrid([y_coords, x_coords])
+    
+    # Convert to normalized coordinates relative to principal point
+    x_norm = (i - cx) / focal
+    y_norm = (j - cy) / focal
+    
+    # Apply radial distortion correction
+    r_squared = x_norm**2 + y_norm**2
+    distortion_factor = 1 + distortion * r_squared
+    
+    x_corrected = x_norm * distortion_factor
+    y_corrected = y_norm * distortion_factor
+    
+    directions = torch.stack([x_corrected, -y_corrected, -torch.ones_like(i)], -1)
+
+    return directions
+
+def get_rays(directions, c2w, focal=None):
+    """ world space camera ray
+    Args:
+        directions: camera ray direction (local)
+        c2w: 3x4 camera to world matrix
+        focal: if not None, return ray differentials as well
+    """
+    R = c2w[:,:3]
+    rays_d = directions @ R.T
+    
+    rays_o = c2w[:, 3].expand(rays_d.shape) # (H, W, 3)
+
+    rays_d = rays_d.view(-1, 3)
+    rays_o = rays_o.view(-1, 3)
+    if focal is not None:
+        dxdu = torch.tensor([1.0/focal,0,0])[None,None].expand_as(directions)@R.T
+        dydv = torch.tensor([0,1.0/focal,0])[None,None].expand_as(directions)@R.T
+        dxdu = dxdu.view(-1,3)
+        dydv = dydv.view(-1,3)
+        return rays_o, rays_d, dxdu, dydv
+    else:
+        rays_d = rays_d / torch.norm(rays_d, dim=-1, keepdim=True)
+        return rays_o, rays_d
+
+def read_image(path, img_hw):
+    img = plt.imread(path)[...,:3]
+    assert img.shape[0] == img_hw[0]
+    assert img.shape[1] == img_hw[1]
+    return torch.from_numpy(img.astype(np.float32))
+
+def open_exr(file,img_hw):
+    """ open image exr file """
+    img = cv2.imread(str(file),cv2.IMREAD_UNCHANGED)
+    assert img.shape[0] == img_hw[0]
+    assert img.shape[1] == img_hw[1]
+    if len(img.shape) == 3 and img.shape[2] == 3:
+        img = img[...,[2,1,0]]
+    img = torch.from_numpy(img.astype(np.float32))
+    return img
+
+def get_c2w(camera):
+    position = torch.tensor(camera['position'], dtype=torch.float32)
+    target = torch.tensor(camera['look_at'], dtype=torch.float32)
+    up = torch.tensor(camera.get('up', [0,1,0]), dtype=torch.float32)
+     
+    forward = target - position
+    forward = forward / torch.norm(forward)
+    # Ensure `up` is not parallel to `forward`
+    if torch.abs(torch.dot(forward, up)) > 0.99:  # Too parallel, adjust up
+        up = torch.tensor([1.0, 0.0, 0.0]) if torch.abs(forward[0]) < 0.99 else torch.tensor([0.0, 1.0, 0.0])
+    """ right hand coordinate system """
+    right = torch.cross(up, forward)
+    right = right / torch.norm(right)
+    up = torch.cross(forward, right)
+    
+    c2w = torch.eye(4)
+    c2w[:3,:3] = torch.stack([right, up, forward], dim=1)
+    c2w[:3,3] = position
+    c2w = _cv_to_gl(c2w)
+    c2w = c2w[:3,:4]
+    return c2w
+
+def get_c2w_from_robot_pose(camera_info, R_c2g, t_c2g):
+    """ get camera to world matrix from robot pose """
+    g2w = build_4x4(camera_info["rotation_matrix"], camera_info["position"])
+    c2g = build_4x4(R_c2g, t_c2g)
+    c2w = g2w @ c2g
+    return torch.from_numpy(c2w[:3, :4]).float()
+
+def load_metadata(colmap_camera, metadata_path, camera_metadata_path, gt_folder, cfg, debug, debug_num, split, turntable_center, turntable_axis, R_c2g, t_c2g, start_idx):
+    metadata, _, _= load_camera_turntable_light_metadata(metadata_path)
+    
+    if colmap_camera:
+        camera_metadata = load_camera_metadata(camera_metadata_path)
+    else:
+        camera_metadata = load_camera_metadata_from_robotic_log(metadata_path, turntable_center, turntable_axis, R_c2g, t_c2g)
+    
+    # Filter out metadata entries with non-existent image files and filtered_puple_ids
+    valid_metadata = []
+    filtered_purple_ids = getattr(cfg.data, 'filtered_purple_ids', [])
+    
+    for item in metadata:
+        # Add "masked_" prefix to filename
+        file_name = item["filename"]
+        # if not file_name.startswith("masked_"):
+        #     file_name = "masked_" + file_name
+        #     item["filename"] = file_name
+        # file_name = item["filename"]
+        img_path = os.path.join(gt_folder, file_name)
+        overall_id = item.get("overall_id")
+        
+        # Skip if image file doesn't exist or is 0 bytes
+        if not os.path.exists(img_path):
+            print(f"Warning: Image file {img_path} does not exist, skipping from metadata...")
+            continue
+        
+        # Skip if image file is 0 bytes
+        if os.path.getsize(img_path) == 0:
+            print(f"Warning: Image file {img_path} is 0 bytes, skipping from metadata...")
+            continue
+            
+        # Skip if overall_id is in filtered_puple_ids
+        
+        if int(overall_id) in filtered_purple_ids:
+            print(f"Warning: overall_id {overall_id} is in filtered_puple_ids, skipping from metadata...")
+            continue
+            
+        valid_metadata.append(item)
+    
+    metadata = valid_metadata
+    # # Filter out images with overall_id >= 1000
+    # metadata = [item for item in metadata if int(item.get("overall_id", 0)) < 1000]
+    # print(f"After filtering overall_id >= 1000: {len(metadata)} images remaining")
+    # print(f"Loaded {len(metadata)} valid images out of {len(metadata) + len([item for item in metadata if not os.path.exists(os.path.join(gt_folder, item['filename']))])} total metadata entries")
+    
+    total_images = len(metadata)
+    
+    # Split metadata into training and validation sets with fixed random seed
+    torch.manual_seed(42)  # Fixed seed for reproducible splits
+    indices = torch.randperm(total_images)
+    
+    # Use 80% for training
+    if debug:
+        selected_metadata = metadata[start_idx:start_idx+debug_num]
+    else:
+        split_idx = int(0.8 * total_images)
+        if split == 'train':
+            selected_indices = indices[:split_idx]
+        else:
+            selected_indices = indices[split_idx:]
+            
+        selected_metadata = [metadata[i] for i in selected_indices] 
+        
+    return selected_metadata, camera_metadata
+
+def get_ray_directions_for_pixels(pixel_coords, focal, cx, cy, distortion):
+    """
+    Get camera ray directions for specific pixel coordinates with radial distortion correction.
+    
+    Args:
+        pixel_coords: (N, 2) tensor of [u, v] pixel coordinates
+        focal: focal length
+        cx, cy: principal point coordinates
+        distortion: radial distortion coefficient k1
+        
+    Returns:
+        directions: (N, 3) tensor of ray directions in camera space
+    """
+    u = pixel_coords[:, 0]  # (N,)
+    v = pixel_coords[:, 1]  # (N,)
+    
+    # Convert to normalized coordinates relative to principal point
+    x_norm = (u - cx) / focal
+    y_norm = (v - cy) / focal
+    
+    # Apply radial distortion correction
+    r_squared = x_norm**2 + y_norm**2
+    distortion_factor = 1 + distortion * r_squared
+    
+    x_corrected = x_norm * distortion_factor
+    y_corrected = y_norm * distortion_factor
+    
+    # Stack into direction vectors (OpenGL convention: -y, -z)
+    directions = torch.stack([x_corrected, -y_corrected, -torch.ones_like(u)], dim=-1)  # (N, 3)
+    
+    return directions
+
+class MultiMaterialPointDataset(IterableDataset if True else Dataset):
+    """
+    Dataset for multiple materials loaded from point observations.
+    Each material has its own folder containing:
+    - hdr/ (images, not loaded)
+    - scan_log.json (emitter metadata)
+    - rotated_camera.json (camera poses)
+    - sparse/observations.npz (point observations with [x, y, z, image_id, pixel_x, pixel_y, r, g, b])
+    
+    This class preloads all observations and generates rays for each observation point.
+    Supports both training and validation splits from the same data.
+    """
+    
+    def __init__(self, cfg, root_folder, split='train'):
+        """
+        Args:
+            cfg: configuration object
+            root_folder: path to folder containing material subfolders (0, 1, 2, ...)
+            split: 'train' or 'val'
+        """
+        self.cfg = cfg
+        self.root_folder = root_folder
+        self.split = split
+        self.rays_num = cfg.data.rays_num
+        
+        # Camera intrinsics
+        self.intrinsics = cfg.renderer.camera.intrinsics
+        self.focal = self.intrinsics['focal_length']
+        self.cx = self.intrinsics['cx']
+        self.cy = self.intrinsics['cy']
+        self.distortion = self.intrinsics['distortion']
+        self.img_hw = (self.intrinsics['height'], self.intrinsics['width'])
+        
+        # Discover material folders
+        self.material_folders = sorted([
+            d for d in Path(root_folder).iterdir() 
+            if d.is_dir() and d.name.isdigit()
+        ], key=lambda x: int(x.name))
+        
+        print(f"\n{'='*60}")
+        print(f"Loading MultiMaterial Dataset ({split})")
+        print(f"{'='*60}")
+        print(f"Found {len(self.material_folders)} material folders: {[int(f.name) for f in self.material_folders]}")
+        
+        # Load all material data
+        self._load_all_materials()
+        
+        # Split into train/val
+        self._create_split()
+        
+        print(f"\nDataset ready: {len(self.indices)} observations")
+        print(f"{'='*60}\n")
+    
+    def _load_all_materials(self):
+        """Load observations, camera metadata, and scan metadata for all materials."""
+        all_rays = []
+        all_rgbs = []
+        all_xyz = []
+        all_emitter_ids = []
+        all_camera_ids = []
+        all_material_ids = []
+        
+        for material_folder in tqdm(self.material_folders, desc="Loading materials"):
+            material_id = int(material_folder.name)
+            
+            # Load camera metadata (c2w matrices)
+            camera_json_path = material_folder / "rotated_camera.json"
+            with open(camera_json_path, 'r') as f:
+                camera_list = json.load(f)
+            
+            # Build camera lookup: camera_id -> c2w matrix
+            camera_lookup = {}
+            for cam_entry in camera_list:
+                cam_id = cam_entry['camera_id']
+                # Build c2w from position and rotation_matrix
+                position = np.array(cam_entry['position']) / 1000.0  # mm to m
+                rotation_matrix = np.array(cam_entry['rotation_matrix'])
+                c2w = build_4x4(rotation_matrix, position)
+                camera_lookup[cam_id] = torch.from_numpy(c2w).float()
+            
+            # Load scan log for emitter IDs
+            scan_log_path = material_folder / "scan_log.json"
+            with open(scan_log_path, 'r') as f:
+                scan_log = json.load(f)
+            
+            # Build emitter lookup: scan_id -> emitter_id
+            emitter_lookup = {}
+            for scan_entry in scan_log:
+                scan_id = scan_entry['scan_id']
+                # Derive emitter_id from light configuration
+                # Assuming emitter_id is encoded in the scan log
+                # You may need to adjust this based on your actual data structure
+                emitter_id = scan_entry.get('emitter_id', scan_id)  # fallback to scan_id if not present
+                emitter_lookup[scan_id] = emitter_id
+            
+            # Load observations
+            obs_path = material_folder / "sparse" / "observations.npz"
+            obs_data = np.load(obs_path)
+            observations = obs_data['observations']  # (N, 9): [x, y, z, image_id, pixel_x, pixel_y, r, g, b]
+            
+            print(f"  Material {material_id}: {len(observations)} observations")
+            
+            # Process observations
+            xyz = torch.from_numpy(observations[:, :3]).float()  # (N, 3)
+            image_ids = observations[:, 3].astype(np.int32)  # (N,)
+            pixel_coords = torch.from_numpy(observations[:, 4:6]).float()  # (N, 2)
+            rgbs = torch.from_numpy(observations[:, 6:9]).float()  # (N, 3)
+            
+            # Generate rays for each observation
+            rays_list = []
+            xyz_list = []
+            rgbs_list = []
+            emitter_ids_list = []
+            camera_ids_list = []
+            
+            # Group by image_id for efficient processing
+            from collections import defaultdict
+            obs_by_image = defaultdict(list)
+            for obs_idx, img_id in enumerate(image_ids):
+                obs_by_image[img_id].append(obs_idx)
+            
+            for img_id, obs_indices in obs_by_image.items():
+                # Get camera c2w
+                if img_id not in camera_lookup:
+                    print(f"    Warning: image_id {img_id} not found in camera_lookup, skipping...")
+                    continue
+                
+                c2w_full = camera_lookup[img_id]  # (4, 4)
+                c2w = c2w_full[:3, :4]  # (3, 4)
+                
+                # Get pixel coordinates for this image's observations
+                obs_indices_t = torch.tensor(obs_indices, dtype=torch.long)
+                pixels = pixel_coords[obs_indices_t]  # (M, 2)
+                
+                # Generate ray directions for these specific pixels (with distortion)
+                directions = get_ray_directions_for_pixels(
+                    pixels, self.focal, self.cx, self.cy, self.distortion
+                )  # (M, 3)
+                
+                # Transform to world space using get_rays (without modification)
+                rays_o, rays_d = get_rays(directions, c2w, focal=None)  # (M, 3), (M, 3)
+                rays = torch.cat([rays_o, rays_d], dim=-1)  # (M, 6)
+                
+                rays_list.append(rays)
+                
+                # Keep xyz and rgbs aligned with rays
+                xyz_list.append(xyz[obs_indices_t])
+                rgbs_list.append(rgbs[obs_indices_t])
+                
+                # Get emitter IDs
+                emitter_id = emitter_lookup.get(img_id, 0)  # default to 0 if not found
+                emitter_ids_batch = torch.full((len(obs_indices),), emitter_id, dtype=torch.long)
+                emitter_ids_list.append(emitter_ids_batch)
+                
+                # Camera IDs
+                camera_ids_batch = torch.full((len(obs_indices),), img_id, dtype=torch.long)
+                camera_ids_list.append(camera_ids_batch)
+            
+            # Concatenate for this material
+            if len(rays_list) > 0:
+                material_rays = torch.cat(rays_list, dim=0)
+                material_xyz = torch.cat(xyz_list, dim=0)
+                material_rgbs = torch.cat(rgbs_list, dim=0)
+                material_emitter_ids = torch.cat(emitter_ids_list, dim=0)
+                material_camera_ids = torch.cat(camera_ids_list, dim=0)
+                
+                # Create material IDs
+                material_material_ids = torch.full((material_rays.shape[0],), material_id, dtype=torch.long)
+                
+                all_rays.append(material_rays)
+                all_rgbs.append(material_rgbs)
+                all_xyz.append(material_xyz)
+                all_emitter_ids.append(material_emitter_ids)
+                all_camera_ids.append(material_camera_ids)
+                all_material_ids.append(material_material_ids)
+        
+        # Concatenate across all materials
+        self.all_rays = torch.cat(all_rays, dim=0)  # (N_total, 6)
+        self.all_rgbs = torch.cat(all_rgbs, dim=0)  # (N_total, 3)
+        self.all_xyz = torch.cat(all_xyz, dim=0)  # (N_total, 3)
+        self.all_emitter_ids = torch.cat(all_emitter_ids, dim=0)  # (N_total,)
+        self.all_camera_ids = torch.cat(all_camera_ids, dim=0)  # (N_total,)
+        self.all_material_ids = torch.cat(all_material_ids, dim=0)  # (N_total,)
+        
+        print(f"\nTotal observations loaded: {len(self.all_rays):,}")
+        print(f"  Materials: {torch.unique(self.all_material_ids).tolist()}")
+        print(f"  Cameras: {len(torch.unique(self.all_camera_ids))}")
+        print(f"  Emitters: {len(torch.unique(self.all_emitter_ids))}")
+    
+    def _create_split(self):
+        """Split data into train/val with fixed random seed."""
+        total = len(self.all_rays)
+        
+        # Shuffle with fixed seed for reproducibility
+        torch.manual_seed(42)
+        all_indices = torch.randperm(total)
+        
+        # 80/20 split
+        split_idx = int(0.8 * total)
+        if self.split == 'train':
+            self.indices = all_indices[:split_idx]
+        else:  # 'val'
+            self.indices = all_indices[split_idx:]
+        
+        print(f"\nSplit: {self.split}")
+        print(f"  Total rays: {total:,}")
+        print(f"  Split rays: {len(self.indices):,} ({100*len(self.indices)/total:.1f}%)")
+    
+    def __len__(self):
+        """Return number of observations in this split."""
+        return len(self.indices)
+    
+    def __iter__(self):
+        """Infinite iterator for training (samples random batches)."""
+        while True:
+            # Random sample rays_num rays from split indices
+            sample_idx = torch.randint(0, len(self.indices), (self.rays_num,), dtype=torch.long)
+            actual_idx = self.indices[sample_idx]
+            
+            yield {
+                'rays': self.all_rays[actual_idx],  # (N, 6)
+                'rgbs': self.all_rgbs[actual_idx],  # (N, 3)
+                'xyz': self.all_xyz[actual_idx],  # (N, 3)
+                'emitter_ids': self.all_emitter_ids[actual_idx],  # (N,)
+                'camera_ids': self.all_camera_ids[actual_idx],  # (N,)
+                'material_ids': self.all_material_ids[actual_idx],  # (N,)
+                'gt_params': torch.zeros(1),
+            }
+    
+    def __getitem__(self, idx):
+        """For validation: return a single batch of rays."""
+        # For validation, we can return a batch at index `idx`
+        # This allows for validation with DataLoader
+        batch_size = min(self.rays_num, len(self.indices) - idx * self.rays_num)
+        start_idx = idx * self.rays_num
+        end_idx = min(start_idx + self.rays_num, len(self.indices))
+        
+        actual_indices = self.indices[start_idx:end_idx]
+        
+        return {
+            'rays': self.all_rays[actual_indices],
+            'rgbs': self.all_rgbs[actual_indices],
+            'xyz': self.all_xyz[actual_indices],
+            'emitter_ids': self.all_emitter_ids[actual_indices],
+            'camera_ids': self.all_camera_ids[actual_indices],
+            'material_ids': self.all_material_ids[actual_indices],
+            'gt_params': torch.zeros(1),
+        }
+        

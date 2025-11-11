@@ -36,12 +36,12 @@ for path in ${PROJECT}/sparse/*/; do
     fi
 done
 
-echo "== Undistort images =="
-colmap image_undistorter \
-    --image_path=${IMG_DIR} \
-    --input_path=${PROJECT}/sparse \
-    --output_path=${UNDIST_OUT} \
-    --output_type=COLMAP
+# echo "== Undistort images =="
+# colmap image_undistorter \
+#     --image_path=${IMG_DIR} \
+#     --input_path=${PROJECT}/sparse \
+#     --output_path=${UNDIST_OUT} \
+#     --output_type=COLMAP
 
 echo "== Convert sparse model to text =="
 # convert sparse/0 from binary → text in place
@@ -61,3 +61,5 @@ CUDA_VISIBLE_DEVICES=$gpu_id colmap model_converter \
     --input_path "${PROJECT}/sparse" \
     --output_path "${PROJECT}/sparse/points3D.ply" \
     --output_type PLY
+
+echo "== Finished COLMAP reconstruction =="

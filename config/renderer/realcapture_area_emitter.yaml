@@ -2,6 +2,10 @@ type: "path_tracing_realarea_emitter"
 brdf_sampling: False # not actually used
 emitter_sampling: True # not actually used
 indir_depth: 0
+shape_matching:
+  folder_path: "/media/raid/cloth/capture_data/BRDF_recon_Oct31_cloth"
+  num_workers: 32
+  z_outlier_percentile: 5.0
 
 camera:
   linear_factor: 131231480.000000
@@ -28,10 +32,10 @@ camera:
   # intrinsics:
   #   width: 3072
   #   height: 2048
-  #   focal_length: 6713.58
+  #   focal_length: 6721.054
   #   cx: 1536
   #   cy: 1024
-  #   distortion: -0.0647
+  #   distortion: -0.0648
   intrinsics:
     width: 3072
     height: 2048
@@ -58,8 +62,8 @@ mesh:
     center: [0.16, -0.11, -0.0643] # 0.063 is the foam board bottom
     # width: 0.264 # board_size
     # length: 0.31
-    width: 0.08 # sample_size
-    length: 0.08 # sample_size
+    width: 0.16 # sample_size
+    length: 0.20 # sample_size
     # width: 0.08
     # length: 0.08 # colorchecker size
 emitter:
