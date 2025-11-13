@@ -25,26 +25,38 @@ camera:
   # t_c2g: [ 0.02934460753, -0.01619117879, 0.03314509088] # best fit
   # t_c2g: [ 0.05248875021, 0.010789833503, 0.031558542256]
   # t_c2g: [ 0.02634460753, -0.01919117879, 0.03014509088]
+
+  # trained before
   R_c2g: [[-7.17667595e-04,  9.99776474e-01,  2.11302413e-02],
           [-4.42126179e-03,  2.11268680e-02, -9.99767027e-01],
           [-9.99989969e-01, -8.10922726e-04,  4.40511146e-03]]
   t_c2g: [3.26272696e-02, -1.61560433e-02, 2.80920856e-02]
-  # intrinsics:
-  #   width: 3072
-  #   height: 2048
-  #   focal_length: 6721.054
-  #   cx: 1536
-  #   cy: 1024
-  #   distortion: -0.0648
+  # 4x4 camera-to-global transform matrix from calibration (R|t):
+  # R (rotation matrix):
+  # R_c2g: [
+  #   [-0.140815603, -0.323670851, 0.935632484],
+  #   [-0.745845964,  0.656162097, 0.114739277],
+  #   [-0.651064332, -0.681680631, -0.333806459]
+  # ]
+  # # t (translation vector):
+  # t_c2g: [0.388954196, 0.431301385, -0.603334322]
+
   intrinsics:
     width: 3072
     height: 2048
-    # focal_length: 6699.9749607678123 #previous focal length
-    focal_length: 6781.26
+    focal_length: 6721.054
     cx: 1536
     cy: 1024
-    # distortion: -0.057534771756603202 #previous distortion
-    distortion: -0.0386
+    distortion: -0.0648
+  # intrinsics:
+  #   width: 3072
+  #   height: 2048
+  #   # focal_length: 6699.9749607678123 #previous focal length
+  #   focal_length: 6781.26
+  #   cx: 1536
+  #   cy: 1024
+  #   # distortion: -0.057534771756603202 #previous distortion
+  #   distortion: -0.0386
 
   # intrinsics:
   #   width: 3080
@@ -60,10 +72,12 @@ mesh:
   rectangle:
     # center: [0.16, -0.11, -0.058] # 0.06 is the foam board top
     center: [0.16, -0.11, -0.0643] # 0.063 is the foam board bottom
+    # center: [0.16, -0.11, -0.0654] # 0.063 is the foam board bottom
+    # center: [0.16, -0.11, -0.0667] # 0.063 is the foam board bottom
     # width: 0.264 # board_size
     # length: 0.31
-    width: 0.16 # sample_size
-    length: 0.20 # sample_size
+    width: 0.14 # sample_size
+    length: 0.14 # sample_size
     # width: 0.08
     # length: 0.08 # colorchecker size
 emitter:

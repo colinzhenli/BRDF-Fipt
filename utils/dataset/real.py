@@ -132,7 +132,11 @@ def load_metadata(colmap_camera, metadata_path, camera_metadata_path, gt_folder,
     
     # Filter out metadata entries with non-existent image files and filtered_puple_ids
     valid_metadata = []
-    filtered_purple_ids = getattr(cfg.data, 'filtered_purple_ids', [])
+    # Load unmatched_scan_ids from parent folder of gt_folder
+    parent_folder = os.path.dirname(gt_folder)
+    unmatched_scan_ids_path = os.path.join(parent_folder, "unmatched_scan_ids.json")
+    with open(unmatched_scan_ids_path, "r") as f:
+        unmatched_scan_ids = json.load(f)
     
     for item in metadata:
         # Add "masked_" prefix to filename
@@ -154,10 +158,9 @@ def load_metadata(colmap_camera, metadata_path, camera_metadata_path, gt_folder,
             print(f"Warning: Image file {img_path} is 0 bytes, skipping from metadata...")
             continue
             
-        # Skip if overall_id is in filtered_puple_ids
-        
-        if int(overall_id) in filtered_purple_ids:
-            print(f"Warning: overall_id {overall_id} is in filtered_puple_ids, skipping from metadata...")
+        # Skip if overall_id is in unmatched_scan_ids
+        if int(overall_id) in unmatched_scan_ids:
+            print(f"Warning: overall_id {overall_id} is in unmatched_scan_ids, skipping from metadata...")
             continue
             
         valid_metadata.append(item)
@@ -176,7 +179,14 @@ def load_metadata(colmap_camera, metadata_path, camera_metadata_path, gt_folder,
     
     # Use 80% for training
     if debug:
-        selected_metadata = metadata[start_idx:start_idx+debug_num]
+        selected_indices = indices[start_idx:start_idx+debug_num]
+        # For debugging, still split into train/val but use a smaller subset
+        split_idx = int(0.8 * debug_num)
+        # if split == 'train':
+        #     selected_indices = selected_indices[:split_idx]
+        # else:
+        #     selected_indices = selected_indices[split_idx:]
+        selected_metadata = [metadata[i] for i in selected_indices]
     else:
         split_idx = int(0.8 * total_images)
         if split == 'train':

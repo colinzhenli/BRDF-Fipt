@@ -97,9 +97,9 @@ def find_matching_entry(fname, scan_log):
             return i
     raise ValueError(f"No match for scan_id={scan_id}")
 
-def print_unmatched_scan_ids(colmap_c2w_dict, scan_log):
+def save_unmatched_scan_ids(colmap_c2w_dict, scan_log, unmatched_scan_ids_path):
     """
-    Print scan_ids that are in scan_log but not found in any COLMAP filename.
+    Save scan_ids that are in scan_log but not found in any COLMAP filename to a JSON file.
     """
     # Extract all scan_ids from filenames
     matched_scan_ids = set()
@@ -111,12 +111,17 @@ def print_unmatched_scan_ids(colmap_c2w_dict, scan_log):
     
     # Find scan_ids in scan_log that weren't matched
     scan_log_ids = set(int(e["scan_id"]) for e in scan_log)
-    unmatched_ids = scan_log_ids - matched_scan_ids
+    unmatched_ids = sorted(list(scan_log_ids - matched_scan_ids))
+    
+    # Save to JSON file (just the list of IDs)
+    with open(unmatched_scan_ids_path, 'w') as f:
+        json.dump(unmatched_ids, f, indent=2)
     
     if unmatched_ids:
-        print(f"Scan IDs in scan_log but not in COLMAP filenames: {sorted(unmatched_ids)}")
+        print(f"Scan IDs in scan_log but not in COLMAP filenames: {unmatched_ids}")
     else:
         print("All scan_log IDs were matched in COLMAP filenames.")
+    print(f"Saved unmatched scan IDs to: {unmatched_scan_ids_path}")
 
 # -------------------- rotation undo and pose building --------------------
 
@@ -145,7 +150,7 @@ def rotated_c2w(json_entry, R_c2g, t_c2g, rotation_center, rotation_axis):
 
 # -------------------- your matching function (unchanged) --------------------
 
-def load_robot_poses_c2w0(scan_log_path, images, R_c2g, t_c2g, rotation_center, rotation_axis):
+def load_robot_poses_c2w0(scan_log_path, images, R_c2g, t_c2g, rotation_center, rotation_axis, unmatched_scan_ids_path):
     """
     Load robot poses and match to COLMAP poses from images.txt via φ/θ in the filename.
     (Matching uses your scan-(light)-(camera) scheme; not θ.)
@@ -171,7 +176,7 @@ def load_robot_poses_c2w0(scan_log_path, images, R_c2g, t_c2g, rotation_center, 
         robot_poses.append(T)
         scan_id.append(idx)
 
-    print_unmatched_scan_ids(colmap_c2w_dict, scan_log)
+    save_unmatched_scan_ids(colmap_c2w_dict, scan_log, unmatched_scan_ids_path)
     
     print(f"Matched {len(robot_poses)}/{len(colmap_c2w_dict)} frames.")
     return robot_poses, cam_c2w, scan_id
@@ -179,13 +184,13 @@ def load_robot_poses_c2w0(scan_log_path, images, R_c2g, t_c2g, rotation_center, 
 
 # -------------------- world->base estimation (your pipeline kept) --------------------
 
-def estimate_world2base(scan_log_path, images, R_c2g, t_c2g, rotation_center, rotation_axis, solve_center_xy=True):
+def estimate_world2base(scan_log_path, images, R_c2g, t_c2g, rotation_center, rotation_axis, unmatched_scan_ids_path, solve_center_xy=True):
     """
     Returns T_BW: world->base Sim3 mapping COLMAP world to robot base.
     If solve_center_xy=True, first refines ROTATION_CENTER[0:2] from data.
     """
     # Now build your matched robot & colmap poses using the (possibly) updated center
-    robot_T, cam_c2w, scan_id = load_robot_poses_c2w0(scan_log_path, images, R_c2g, t_c2g, rotation_center, rotation_axis)
+    robot_T, cam_c2w, scan_id = load_robot_poses_c2w0(scan_log_path, images, R_c2g, t_c2g, rotation_center, rotation_axis, unmatched_scan_ids_path)
 
     # collect centres
     cam_centres_base, cam_centres_world = [], []
@@ -767,14 +772,14 @@ def save_observations_to_chunks(observations, output_folder, num_chunks=50, num_
     
 # -------------------- main --------------------
 
-def main_process(cfg, cameras, images, points3D=None, scan_log_path=None, mesh_path=None, camera_log_path=None, hdr_path=None, observations_folder=None, pointcloud_path=None, bbox_json_path=None, z_outlier_percentile=5.0, num_workers=32):
+def main_process(cfg, cameras, images, points3D=None, scan_log_path=None, mesh_path=None, camera_log_path=None, hdr_path=None, observations_folder=None, pointcloud_path=None, bbox_json_path=None, unmatched_scan_ids_path=None, z_outlier_percentile=5.0, num_workers=32):
     # Extract parameters from config
     R_c2g = np.array(cfg.camera.R_c2g)
     t_c2g = np.array(cfg.camera.t_c2g)
     rotation_center = np.array(cfg.emitter.turntable.center)
     rotation_axis = np.array(cfg.emitter.turntable.axis)
     
-    T_BW, cam_c2w, scan_id = estimate_world2base(scan_log_path, images, R_c2g, t_c2g, rotation_center, rotation_axis)
+    T_BW, cam_c2w, scan_id = estimate_world2base(scan_log_path, images, R_c2g, t_c2g, rotation_center, rotation_axis, unmatched_scan_ids_path)
     if mesh_path is not None:
         transform_mesh_to_base(mesh_path, T_BW, output_path=str(Path(mesh_path).with_name(Path(mesh_path).stem + "_transformed.ply")))
     
@@ -785,7 +790,7 @@ def main_process(cfg, cameras, images, points3D=None, scan_log_path=None, mesh_p
             pointcloud_path, T_BW, cfg, output_path=output_pcd_path, z_outlier_percentile=z_outlier_percentile
         )
         
-        save_points_pixel_data_reprojection(pcd_filtered, filtered_indices, cameras, images, points3D, hdr_path, observations_folder, num_workers=num_workers)
+        # save_points_pixel_data_reprojection(pcd_filtered, filtered_indices, cameras, images, points3D, hdr_path, observations_folder, num_workers=num_workers)
 
         # Save bounding box info to a JSON file
         bbox_info = {
@@ -818,6 +823,8 @@ def main(cfg: DictConfig) -> None:
     observations_folder = os.path.join(folder_path, "observations")
     camera_log_path = os.path.join(folder_path, "rotated_camera.json")
     bbox_json_path = os.path.join(folder_path, "bbox.json")
+    unmatched_scan_ids_path = os.path.join(folder_path, "unmatched_scan_ids.json")
+    print(f"Unmatched scan ids path: {unmatched_scan_ids_path}")
     print(f"Processing folder: {folder_path}")
     print(f"Number of workers: {num_workers}")
     print(f"Z outlier percentile: {z_outlier_percentile}")
@@ -837,7 +844,7 @@ def main(cfg: DictConfig) -> None:
 
     main_process(cfg, cameras, images, points3D=points3D, scan_log_path=scan_log_path, mesh_path=mesh_path, 
                  camera_log_path=camera_log_path, hdr_path=hdr_path, observations_folder=observations_folder, 
-                 pointcloud_path=pointcloud_path, bbox_json_path=bbox_json_path, z_outlier_percentile=z_outlier_percentile, num_workers=num_workers)
+                 pointcloud_path=pointcloud_path, bbox_json_path=bbox_json_path, unmatched_scan_ids_path=unmatched_scan_ids_path, z_outlier_percentile=z_outlier_percentile, num_workers=num_workers)
     print(f"Finished shape matching for {folder_path}")
 
 if __name__ == "__main__":

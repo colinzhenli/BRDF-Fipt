@@ -27,7 +27,7 @@ ccm: [
 
 
 #load images chunk to memory
-chunk_size: 200 # 0 means no chunking
+chunk_size: 0 # 0 means no chunking
 switch_iters: 3000 # switch chunk every 10000 steps
 random_chunks: True # whether to sample chunks randomly or sequentially with shuffling at wrap
 

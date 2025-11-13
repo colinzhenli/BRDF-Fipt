@@ -42,7 +42,6 @@ def load_camera_turntable_light_metadata(json_path):
         camera_metadata[str(camera_id)] = {
             'position': [pos / 1000.0 for pos in item['position']],
             'rotation_matrix': item['rotation_matrix'],
-            'euler': item['euler']
         }
         
         # # Store emitter metadata (light info)
