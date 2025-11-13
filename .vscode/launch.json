@@ -6,23 +6,38 @@
     // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
     "version": "0.2.0",
     "configurations": [
-        {
-            "name": "Python: Shape Matching",
-            "type": "python",
-            "request": "launch",
-            "program": "./recon/calibration/shape_matching.py",
-            "console": "integratedTerminal",
-            "justMyCode": true,
-            "env": {
-                "CUDA_VISIBLE_DEVICES": "3"
-            },
-            "args": [
-                "shape_matching.folder_path=/media/raid/cloth/capture_data/BRDF_recon_Oct31_cloth",
-                "shape_matching.num_workers=64",
-                "shape_matching.z_outlier_percentile=5.0"
-            ]
-        },
+        // {
+        //     "name": "Python: Shape Matching",
+        //     "type": "python",
+        //     "request": "launch",
+        //     "program": "./recon/calibration/shape_matching.py",
+        //     "console": "integratedTerminal",
+        //     "justMyCode": true,
+        //     "env": {
+        //         "CUDA_VISIBLE_DEVICES": "3"
+        //     },
+        //     "args": [
+        //         "shape_matching.folder_path=/media/raid/cloth/capture_data/BRDF_recon_Oct22_cloth",
+        //         "shape_matching.num_workers=64",
+        //         "shape_matching.z_outlier_percentile=5.0"
+        //     ]
+        // },
 
+        // {
+        //     "name": "Python: Job Scheduler (Streaming Auto-Detect)",
+        //     "type": "python",
+        //     "request": "launch",
+        //     "program": "${workspaceFolder}/recon/scheduler/job_scheduler.py",
+        //     "console": "integratedTerminal",
+        //     "justMyCode": true,
+        //     "args": [
+        //         "--dataset",
+        //         "/media/raid/cloth/capture_data/BRDF_recon_Nov9",
+        //         "--mode",
+        //         "streaming",
+        //         "--auto_detect"
+        //     ]
+        // },
         // {
         //     "name": "Python: Current File",
         //     "type": "python",
@@ -56,28 +71,28 @@
         //     ]
         // },
 
-        // {
-        //     "name": "Python: Current File",
-        //     "type": "python",
-        //     "request": "launch",
-        //     "program": "main.py",
-        //     "console": "integratedTerminal",
-        //     "justMyCode": true,
-        //     "env": {
-        //         "CUDA_VISIBLE_DEVICES": "1"
-        //     },
-        //     "args": [
-        //         "dataset_folder=/media/raid/cloth/capture_data/BRDF_recon_Oct28_close/hdr",
-        //         // "dataset_folder=/media/raid/cloth/capture_data/BRDF_recon_Oct20_white_test/hdr",
-        //         // "dataset_folder=/media/raid/cloth/capture_data/BRDF_recon_Oct21_color_checker_5_distance_grey_center/hdr",
-        //         // "dataset_folder=/media/raid/cloth/No_cable_capture_Sep22/BRDF_recon_Sep30/Controlled_light/hdr",
-        //         "renderer=realcapture_area_emitter",
-        //         "material=mipmap_ani_latent_texture_model",
-        //         "experiment_name=Close-view_Mipmap_debug_1",
-        //         "model.test=False",
-        //         // "model.ckpt_path=/media/raid/cloth/output/BRDF/real/All-images_Correct-height_capture_Camera-factor_Chunk-200-3000_run_1/training/model_0.20_0.20/last.ckpt"
-        //     ]
-        // }
+        {
+            "name": "Python: Current File",
+            "type": "python",
+            "request": "launch",
+            "program": "main.py",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "env": {
+                "CUDA_VISIBLE_DEVICES": "3"
+            },
+            "args": [
+                "dataset_folder=/media/raid/cloth/capture_data/BRDF_recon_Oct22_cloth/hdr",
+                // "dataset_folder=/media/raid/cloth/capture_data/BRDF_recon_Oct20_white_test/hdr",
+                // "dataset_folder=/media/raid/cloth/capture_data/BRDF_recon_Oct21_color_checker_5_distance_grey_center/hdr",
+                // "dataset_folder=/media/raid/cloth/No_cable_capture_Sep22/BRDF_recon_Sep30/Controlled_light/hdr",
+                "renderer=realcapture_area_emitter",
+                "material=ani_latent_texture_model",
+                "experiment_name=Previous_Overfit-Single-image_run_1",
+                "model.test=False",
+                // "model.ckpt_path=/media/raid/cloth/output/BRDF/real/All-images_Correct-height_capture_Camera-factor_Chunk-200-3000_run_1/training/model_0.20_0.20/last.ckpt"
+            ]
+        }
         
         // {
         //     "name": "Debug Color Matrix",

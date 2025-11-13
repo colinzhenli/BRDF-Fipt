@@ -50,11 +50,11 @@ colmap model_converter \
     --output_path  ${PROJECT}/sparse \
     --output_type  TXT
 
-echo "== Convert undistorted sparse model to text =="
-colmap model_converter \
-    --input_path   ${UNDIST_OUT}/sparse \
-    --output_path  ${UNDIST_OUT}/sparse \
-    --output_type  TXT
+# echo "== Convert undistorted sparse model to text =="
+# colmap model_converter \
+#     --input_path   ${UNDIST_OUT}/sparse \
+#     --output_path  ${UNDIST_OUT}/sparse \
+#     --output_type  TXT
 
 echo "== Convert sparse model to ply =="
 CUDA_VISIBLE_DEVICES=$gpu_id colmap model_converter \

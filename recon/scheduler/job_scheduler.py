@@ -23,6 +23,7 @@ from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 import psutil
+import pynvml
 
 # ==================== Configuration ====================
 
@@ -33,8 +34,10 @@ class Config:
     TOTAL_CPU_CORES = 128
     CPU_CORES_PER_COLMAP = 8  # CPU threads allocated per COLMAP job
     MIN_SHAPE_MATCHING_WORKERS = 16  # Minimum workers for shape matching
-    MAX_CONCURRENT_SHAPE_MATCHING = 3  # Maximum concurrent shape matching jobs
-    MIN_GPU_MEMORY_MB = 2048  # Minimum free GPU memory (MB) to launch COLMAP
+    MAX_CONCURRENT_SHAPE_MATCHING = 4  # Maximum concurrent shape matching jobs
+    MIN_GPU_MEMORY_MB = 4096  # Minimum free GPU memory (MB) to launch COLMAP
+    MAX_GPU_UTILIZATION = 80  # Maximum GPU utilization (%) to launch COLMAP
+    MAX_MEMORY_UTILIZATION = 90  # Maximum memory utilization (%) to launch COLMAP
     POLL_INTERVAL_SEC = 10  # How often to check job status
     MATERIAL_SCAN_INTERVAL_SEC = 30  # How often to scan for new materials in auto mode
     STATE_FILE_NAME = "scheduler_state.json"  # State file name (saved in dataset folder)
@@ -51,6 +54,118 @@ class Config:
         else:
             self.STATE_FILE = self.STATE_FILE_NAME
 
+# ==================== GPU Monitor ====================
+
+class GPUMonitor:
+    """
+    Monitor GPU status using NVIDIA Management Library (pynvml).
+    Provides memory, utilization, and temperature information.
+    """
+    
+    def __init__(self):
+        """Initialize NVML."""
+        try:
+            pynvml.nvmlInit()
+            self._initialized = True
+        except Exception as e:
+            print(f"Warning: Failed to initialize NVML: {e}")
+            self._initialized = False
+    
+    def __del__(self):
+        """Cleanup NVML."""
+        if self._initialized:
+            try:
+                pynvml.nvmlShutdown()
+            except:
+                pass
+    
+    def get_gpu_info(self, gpu_id: int) -> Dict[str, any]:
+        """
+        Get comprehensive GPU information.
+        
+        Args:
+            gpu_id: GPU device ID
+        
+        Returns:
+            Dict with keys:
+                - memory_free_mb: Free memory in MB
+                - memory_used_mb: Used memory in MB
+                - memory_total_mb: Total memory in MB
+                - utilization_gpu: GPU utilization percentage (0-100)
+                - utilization_memory: Memory utilization percentage (0-100)
+                - temperature: GPU temperature in Celsius
+                - available: Whether data was successfully retrieved
+        """
+        if not self._initialized:
+            return {"available": False}
+        
+        try:
+            handle = pynvml.nvmlDeviceGetHandleByIndex(gpu_id)
+            
+            # Memory info
+            mem_info = pynvml.nvmlDeviceGetMemoryInfo(handle)
+            memory_free_mb = mem_info.free // (1024 * 1024)
+            memory_used_mb = mem_info.used // (1024 * 1024)
+            memory_total_mb = mem_info.total // (1024 * 1024)
+            
+            # Utilization rates
+            util_rates = pynvml.nvmlDeviceGetUtilizationRates(handle)
+            utilization_gpu = util_rates.gpu
+            utilization_memory = util_rates.memory
+            
+            # Temperature
+            temperature = pynvml.nvmlDeviceGetTemperature(handle, pynvml.NVML_TEMPERATURE_GPU)
+            
+            return {
+                "available": True,
+                "memory_free_mb": memory_free_mb,
+                "memory_used_mb": memory_used_mb,
+                "memory_total_mb": memory_total_mb,
+                "utilization_gpu": utilization_gpu,
+                "utilization_memory": utilization_memory,
+                "temperature": temperature
+            }
+        except Exception as e:
+            print(f"Error getting GPU {gpu_id} info: {e}")
+            return {"available": False}
+    
+    def is_gpu_available(self, gpu_id: int, 
+                         min_memory_mb: int = 2048,
+                         max_gpu_util: int = 80,
+                         max_memory_util: int = 90) -> Tuple[bool, str]:
+        """
+        Check if GPU is available for new job based on multiple criteria.
+        
+        Args:
+            gpu_id: GPU device ID
+            min_memory_mb: Minimum free memory required (MB)
+            max_gpu_util: Maximum GPU utilization allowed (%)
+            max_memory_util: Maximum memory utilization allowed (%)
+        
+        Returns:
+            Tuple of (is_available, reason)
+            - is_available: True if GPU meets all criteria
+            - reason: String explaining why GPU is unavailable (empty if available)
+        """
+        info = self.get_gpu_info(gpu_id)
+        
+        if not info["available"]:
+            return False, "GPU info unavailable"
+        
+        # Check memory
+        if info["memory_free_mb"] < min_memory_mb:
+            return False, f"Low memory ({info['memory_free_mb']} MB < {min_memory_mb} MB)"
+        
+        # Check GPU utilization
+        if info["utilization_gpu"] > max_gpu_util:
+            return False, f"High GPU utilization ({info['utilization_gpu']}% > {max_gpu_util}%)"
+        
+        # Check memory utilization
+        if info["utilization_memory"] > max_memory_util:
+            return False, f"High memory utilization ({info['utilization_memory']}% > {max_memory_util}%)"
+        
+        return True, ""
+
 # ==================== Job Status Enum ====================
 
 class JobStatus:
@@ -64,27 +179,12 @@ class JobStatus:
 
 # ==================== Utility Functions ====================
 
-def check_gpu_memory(gpu_id: int) -> int:
+def get_least_loaded_gpu(state: Dict, config: Config, gpu_monitor: GPUMonitor) -> Optional[int]:
     """
-    Check free GPU memory in MB.
-    Returns: Free memory in MB, or -1 on error
-    """
-    try:
-        result = subprocess.run(
-            ["nvidia-smi", f"--id={gpu_id}", "--query-gpu=memory.free", "--format=csv,noheader,nounits"],
-            capture_output=True,
-            text=True,
-            check=True
-        )
-        return int(result.stdout.strip())
-    except Exception as e:
-        print(f"Error checking GPU {gpu_id} memory: {e}")
-        return -1
-
-def get_least_loaded_gpu(state: Dict, config: Config) -> Optional[int]:
-    """
-    Find GPU with fewest running COLMAP jobs and sufficient memory.
-    Returns: GPU ID or None if all GPUs are at capacity or have insufficient memory
+    Find GPU with fewest running COLMAP jobs and sufficient resources.
+    Checks memory, GPU utilization, and memory utilization.
+    
+    Returns: GPU ID or None if all GPUs are at capacity or unavailable
     """
     gpu_loads = {gpu_id: 0 for gpu_id in config.GPU_IDS}
     
@@ -93,13 +193,22 @@ def get_least_loaded_gpu(state: Dict, config: Config) -> Optional[int]:
         if info["status"] == JobStatus.COLMAP_RUNNING and "gpu" in info:
             gpu_loads[info["gpu"]] += 1
     
-    # Find GPU with lowest load that has capacity and memory
+    # Find GPU with lowest load that has capacity and available resources
     candidates = []
     for gpu_id in config.GPU_IDS:
         if gpu_loads[gpu_id] < config.MAX_COLMAP_PER_GPU:
-            free_mem = check_gpu_memory(gpu_id)
-            if free_mem >= config.MIN_GPU_MEMORY_MB:
+            is_available, reason = gpu_monitor.is_gpu_available(
+                gpu_id,
+                min_memory_mb=config.MIN_GPU_MEMORY_MB,
+                max_gpu_util=config.MAX_GPU_UTILIZATION,
+                max_memory_util=config.MAX_MEMORY_UTILIZATION
+            )
+            
+            if is_available:
                 candidates.append((gpu_id, gpu_loads[gpu_id]))
+            # Optionally log why GPU is unavailable (for debugging)
+            # else:
+            #     print(f"GPU {gpu_id} unavailable: {reason}")
     
     if not candidates:
         return None
@@ -131,10 +240,6 @@ def calculate_shape_matching_workers(state: Dict, config: Config) -> int:
     # Calculate available cores
     colmap_cores = active_colmap * config.CPU_CORES_PER_COLMAP
     
-    # If no shape matching jobs, return default
-    if active_shape == 0:
-        return max(config.MIN_SHAPE_MATCHING_WORKERS, 
-                   config.TOTAL_CPU_CORES - colmap_cores - 8)  # Leave 8 core buffer
     
     # Distribute remaining cores among shape matching jobs
     available_cores = config.TOTAL_CPU_CORES - colmap_cores - 8  # 8 core buffer
@@ -144,9 +249,31 @@ def calculate_shape_matching_workers(state: Dict, config: Config) -> int:
     # Cap at reasonable maximum
     return min(workers_per_job, 48)
 
+def get_available_cpu_cores(config: Config, threshold: float = 80.0) -> int:
+    """
+    Count CPU cores that are NOT heavily loaded based on per-core usage.
+    
+    A core is considered "available" if its usage is below the threshold (80% by default).
+    This accurately reflects which cores can handle new work, regardless of whether
+    the system load is balanced or not.
+    
+    Args:
+        config: Configuration
+        threshold: CPU usage threshold (%). Cores with usage < threshold are available.
+    
+    Returns: Number of cores with usage below threshold
+    """
+    # Get per-core CPU usage (returns list with one value per core)
+    per_core_usage = psutil.cpu_percent(interval=0.1, percpu=True)
+    
+    # Count cores below threshold
+    available_cores = sum(1 for usage in per_core_usage if usage < threshold)
+    
+    return available_cores
+
 def check_cpu_capacity(state: Dict, config: Config, for_shape_matching: bool = False) -> bool:
     """
-    Check if there's CPU capacity for a new job.
+    Check if there's CPU capacity for a new job based on actual CPU usage.
     
     Args:
         state: Current state
@@ -155,31 +282,39 @@ def check_cpu_capacity(state: Dict, config: Config, for_shape_matching: bool = F
     
     Returns: True if capacity available
     """
-    active_colmap = sum(
-        1 for info in state["materials"].values()
-        if info["status"] == JobStatus.COLMAP_RUNNING
-    )
+    # Get actual available CPU cores
+    available_cores = get_available_cpu_cores(config)
     
+    # Count active jobs for other constraints
     active_shape = sum(
         1 for info in state["materials"].values()
         if info["status"] == JobStatus.SHAPE_MATCHING_RUNNING
     )
-    
-    colmap_cores = active_colmap * config.CPU_CORES_PER_COLMAP
     
     if for_shape_matching:
         # Check if we're at max concurrent shape matching jobs
         if active_shape >= config.MAX_CONCURRENT_SHAPE_MATCHING:
             return False
         
-        # Estimate cores needed
+        # Estimate cores needed for new shape matching job
         estimated_workers = calculate_shape_matching_workers(state, config)
-        estimated_total = colmap_cores + (active_shape + 1) * estimated_workers
-        return estimated_total < (config.TOTAL_CPU_CORES - 8)  # Leave 8 core buffer
+        
+        # Require at least the estimated workers + 8 core buffer
+        required_cores = estimated_workers + 8
+        
+        if available_cores >= required_cores:
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] CPU check for shape matching: {available_cores} cores available, {required_cores} required -> OK")
+            return True
+        else:
+            return False
     else:
-        # For COLMAP
-        estimated_total = (active_colmap + 1) * config.CPU_CORES_PER_COLMAP
-        return estimated_total < (config.TOTAL_CPU_CORES - 40)  # Leave room for shape matching
+        # For COLMAP - need at least CPU_CORES_PER_COLMAP + 40 core buffer
+        required_cores = config.CPU_CORES_PER_COLMAP + 40
+        
+        if available_cores >= required_cores:
+            return True
+        else:
+            return False
 
 def is_process_alive(pid: int) -> bool:
     """Check if a process is still running."""
@@ -188,6 +323,55 @@ def is_process_alive(pid: int) -> bool:
         return process.is_running() and process.status() != psutil.STATUS_ZOMBIE
     except (psutil.NoSuchProcess, psutil.AccessDenied):
         return False
+
+def terminate_process(pid: Optional[int], material: str, job_type: str):
+    """
+    Safely terminate a process and all its children.
+    
+    Args:
+        pid: Process ID to terminate (can be None)
+        material: Material name (for logging)
+        job_type: "COLMAP" or "shape matching" (for logging)
+    """
+    if pid is None:
+        return
+    
+    try:
+        if is_process_alive(pid):
+            process = psutil.Process(pid)
+            
+            # Get all child processes
+            children = process.children(recursive=True)
+            
+            # Terminate children first
+            for child in children:
+                try:
+                    child.terminate()
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
+            
+            # Terminate parent
+            process.terminate()
+            
+            # Wait up to 5 seconds for graceful shutdown
+            try:
+                process.wait(timeout=5)
+            except psutil.TimeoutExpired:
+                # Force kill if still alive
+                process.kill()
+                for child in children:
+                    try:
+                        child.kill()
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        pass
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] Force killed {job_type} process {pid} for material {material}")
+            else:
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] Terminated {job_type} process {pid} for material {material}")
+    except psutil.NoSuchProcess:
+        # Process already dead
+        pass
+    except Exception as e:
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] Error terminating {job_type} process {pid} for material {material}: {e}")
 
 def is_material_ready(folder_path: str) -> bool:
     """
@@ -236,7 +420,158 @@ def save_state(state: Dict, state_file: str):
     with open(state_file, 'w') as f:
         json.dump(state, f, indent=2)
 
-def initialize_materials(dataset_root: str, state: Dict, verbose: bool = True) -> Tuple[List[str], int]:
+def fix_material_status_by_timestamps(info: Dict, material: str, verbose: bool = False) -> bool:
+    """
+    Fix material status based on completion timestamps (simple deterministic rules).
+    
+    Rules:
+    1. Has shape_matching_end_time? → COMPLETED
+    2. Has colmap_end_time (but no shape_matching_end_time)? → COLMAP_DONE
+    3. Has neither end time but marked as RUNNING? → Reset to NOT_STARTED
+    
+    Args:
+        info: Material info dict
+        material: Material name (for logging)
+        verbose: Whether to print fix messages
+    
+    Returns: True if status was fixed
+    """
+    current_status = info["status"]
+    shape_end = info.get("shape_matching_end_time")
+    colmap_end = info.get("colmap_end_time")
+    pid = info.get("pid")
+    
+    # Skip if already in final states
+    if current_status in [JobStatus.COMPLETED, JobStatus.NOT_STARTED]:
+        return False
+    
+    # Rule 1: Has shape matching end time → COMPLETED
+    if shape_end and current_status != JobStatus.COMPLETED:
+        terminate_process(pid, material, "shape matching")
+        info["status"] = JobStatus.COMPLETED
+        info["pid"] = None
+        info["gpu"] = None
+        info["workers"] = None
+        if verbose:
+            print(f"  Fixed material {material}: {current_status} → COMPLETED (has shape_matching_end_time)")
+        return True
+    
+    # Rule 2: Has COLMAP end time but not shape matching → COLMAP_DONE
+    elif colmap_end and current_status not in [JobStatus.COLMAP_DONE, JobStatus.COMPLETED]:
+        terminate_process(pid, material, "COLMAP")
+        info["status"] = JobStatus.COLMAP_DONE
+        info["pid"] = None
+        info["gpu"] = None
+        info["workers"] = None
+        if verbose:
+            print(f"  Fixed material {material}: {current_status} → COLMAP_DONE (has colmap_end_time)")
+        return True
+    
+    # Rule 3: No end times but marked as RUNNING → reset to NOT_STARTED
+    elif not colmap_end and current_status in [JobStatus.COLMAP_RUNNING, JobStatus.SHAPE_MATCHING_RUNNING]:
+        job_type = "COLMAP" if current_status == JobStatus.COLMAP_RUNNING else "shape matching"
+        terminate_process(pid, material, job_type)
+        info["status"] = JobStatus.NOT_STARTED
+        info["pid"] = None
+        info["gpu"] = None
+        info["workers"] = None
+        info["colmap_start_time"] = None
+        info["shape_matching_start_time"] = None
+        if verbose:
+            print(f"  Fixed material {material}: {current_status} → NOT_STARTED (no end times)")
+        return True
+    
+    return False
+
+def reset_failed_jobs(state: Dict, verbose: bool = True) -> int:
+    """
+    Reset failed jobs to retry from the failed stage.
+    - If COLMAP failed → reset to NOT_STARTED
+    - If shape matching failed (COLMAP completed) → reset to COLMAP_DONE
+    
+    Args:
+        state: Current scheduler state
+        verbose: Whether to print reset messages
+    
+    Returns: Number of jobs reset
+    """
+    reset_count = 0
+    for material, info in state["materials"].items():
+        if info["status"] == JobStatus.FAILED:
+            folder_path = info["folder_path"]
+            
+            # Determine which stage failed by checking if COLMAP completed
+            colmap_completed = (info.get("colmap_end_time") is not None and 
+                              check_colmap_completion(folder_path))
+            
+            if colmap_completed:
+                # COLMAP succeeded, shape matching failed
+                # Reset to COLMAP_DONE so shape matching will be retried
+                info["status"] = JobStatus.COLMAP_DONE
+                info["pid"] = None
+                info["workers"] = None
+                info["error"] = None
+                # Keep colmap_start_time and colmap_end_time
+                # Keep gpu as None (already released)
+                
+                reset_count += 1
+                if verbose:
+                    print(f"  Reset material {material}: COLMAP OK, will retry shape matching")
+            else:
+                # COLMAP failed or didn't complete
+                # Reset to NOT_STARTED to retry from beginning
+                info["status"] = JobStatus.NOT_STARTED
+                info["pid"] = None
+                info["gpu"] = None
+                info["workers"] = None
+                info["colmap_start_time"] = None
+                info["colmap_end_time"] = None
+                info["shape_matching_start_time"] = None
+                info["shape_matching_end_time"] = None
+                info["error"] = None
+                
+                # Update ready status
+                info["ready"] = is_material_ready(folder_path)
+                
+                reset_count += 1
+                if verbose:
+                    ready_status = "ready" if info["ready"] else "not ready (no scan_log.json)"
+                    print(f"  Reset material {material}: will retry COLMAP ({ready_status})")
+    
+    return reset_count
+
+def load_skip_list(dataset_root: str) -> set:
+    """
+    Load material IDs to skip from skip.txt file in dataset folder.
+    
+    Args:
+        dataset_root: Path to dataset root folder
+    
+    Returns:
+        Set of material IDs (as strings) to skip
+    """
+    skip_file = os.path.join(dataset_root, "skip.txt")
+    skip_list = set()
+    
+    if os.path.exists(skip_file):
+        try:
+            with open(skip_file, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith('#'):  # Skip empty lines and comments
+                        try:
+                            # Parse comma-separated values or single value
+                            ids = [id.strip() for id in line.split(',')]
+                            skip_list.update(ids)
+                        except ValueError:
+                            print(f"Warning: Invalid material ID in skip.txt: {line}")
+            print(f"Loaded skip list from {skip_file}: {sorted(skip_list, key=lambda x: int(x) if x.isdigit() else 0)}")
+        except Exception as e:
+            print(f"Warning: Failed to read skip.txt: {e}")
+    
+    return skip_list
+
+def initialize_materials(dataset_root: str, state: Dict, verbose: bool = True, reset_failed: bool = False) -> Tuple[List[str], int]:
     """
     Scan dataset folder for material subfolders (0, 1, 2, ..., 10, ..., 100, ...).
     Initialize state for new materials.
@@ -245,6 +580,7 @@ def initialize_materials(dataset_root: str, state: Dict, verbose: bool = True) -
         dataset_root: Path to dataset root folder
         state: Current scheduler state
         verbose: Whether to print discovery messages
+        reset_failed: Whether to reset failed jobs to NOT_STARTED
     
     Returns: 
         Tuple of (sorted list of material folder names, count of new materials found)
@@ -253,19 +589,32 @@ def initialize_materials(dataset_root: str, state: Dict, verbose: bool = True) -
     if not dataset_path.exists():
         raise ValueError(f"Dataset root does not exist: {dataset_root}")
     
+    # Load skip list
+    skip_list = load_skip_list(dataset_root)
+    
     # Find all numeric subfolders
     material_folders = []
+    skipped_folders = []
     for item in dataset_path.iterdir():
         if item.is_dir() and item.name.isdigit():
-            material_folders.append(item.name)
+            if item.name in skip_list:
+                skipped_folders.append(item.name)
+            else:
+                material_folders.append(item.name)
+    
+    if skipped_folders and verbose:
+        print(f"Skipping {len(skipped_folders)} material(s) from skip.txt: {sorted(skipped_folders, key=int)}")
     
     # Sort numerically
     material_folders.sort(key=int)
     
-    # Initialize state for new materials
+    # Process materials: initialize new ones and fix existing ones
     new_count = 0
+    fixed_count = 0
+    
     for material in material_folders:
         if material not in state["materials"]:
+            # NEW MATERIAL: Initialize
             folder_path = str(dataset_path / material)
             state["materials"][material] = {
                 "status": JobStatus.NOT_STARTED,
@@ -285,20 +634,34 @@ def initialize_materials(dataset_root: str, state: Dict, verbose: bool = True) -
                 ready_status = "ready" if state["materials"][material]["ready"] else "not ready (no scan_log.json)"
                 print(f"  New material {material}: {ready_status}")
         else:
-            # Update ready status for existing materials
-            if state["materials"][material]["status"] == JobStatus.NOT_STARTED:
-                folder_path = state["materials"][material]["folder_path"]
-                old_ready = state["materials"][material].get("ready", False)
-                new_ready = is_material_ready(folder_path)
-                state["materials"][material]["ready"] = new_ready
-                
-                # Notify if material became ready
-                if not old_ready and new_ready and verbose:
-                    print(f"  Material {material} is now ready (scan_log.json detected)")
+            # EXISTING MATERIAL: Fix status based on timestamps
+            info = state["materials"][material]
+            folder_path = info["folder_path"]
+            
+            # Update ready status
+            old_ready = info.get("ready", False)
+            new_ready = is_material_ready(folder_path)
+            info["ready"] = new_ready
+            
+            # Fix status based on timestamps (simple deterministic rules)
+            if fix_material_status_by_timestamps(info, material, verbose):
+                fixed_count += 1
+            
+            # Notify if material became ready
+            if not old_ready and new_ready and verbose and info["status"] == JobStatus.NOT_STARTED:
+                print(f"  Material {material} is now ready (scan_log.json detected)")
+    
+    # Reset failed jobs if requested (after fixing timestamps)
+    if reset_failed:
+        reset_count = reset_failed_jobs(state, verbose)
+        if reset_count > 0 and verbose:
+            print(f"Reset {reset_count} failed job(s) to retry\n")
     
     if verbose:
         if new_count > 0:
-            print(f"Found {new_count} new material folder(s)")
+            print(f"Found {new_count} new material(s)")
+        if fixed_count > 0:
+            print(f"Fixed {fixed_count} inconsistent state(s) based on timestamps")
         print(f"Total materials tracked: {len(material_folders)}")
     
     return material_folders, new_count
@@ -312,12 +675,13 @@ def launch_colmap(material: str, folder_path: str, gpu_id: int, state: Dict, con
     """
     try:
         # Set environment with CPU limits
+        # Note: NOT setting CUDA_VISIBLE_DEVICES here - the COLMAP script handles it internally
         env = os.environ.copy()
-        env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
         env["OMP_NUM_THREADS"] = str(config.CPU_CORES_PER_COLMAP)
         env["MKL_NUM_THREADS"] = str(config.CPU_CORES_PER_COLMAP)
         
-        # Launch COLMAP script
+        # Launch COLMAP script with physical GPU ID
+        # The script will set CUDA_VISIBLE_DEVICES for each colmap command
         cmd = ["bash", config.COLMAP_SCRIPT, folder_path, str(gpu_id)]
         
         # Redirect output to log file
@@ -450,6 +814,7 @@ def update_job_status(state: Dict, config: Config):
             if colmap_completed or not process_alive:
                 if colmap_completed:
                     print(f"[{datetime.now().strftime('%H:%M:%S')}] COLMAP completed for material {material}")
+                    terminate_process(pid, material, "COLMAP")
                     info["status"] = JobStatus.COLMAP_DONE
                     info["colmap_end_time"] = datetime.now().isoformat()
                     info["pid"] = None
@@ -459,12 +824,14 @@ def update_job_status(state: Dict, config: Config):
                     sparse_path = os.path.join(folder_path, "sparse", "points3D.ply")
                     if os.path.exists(sparse_path):
                         print(f"[{datetime.now().strftime('%H:%M:%S')}] COLMAP completed for material {material} (detected via output file)")
+                        terminate_process(pid, material, "COLMAP")
                         info["status"] = JobStatus.COLMAP_DONE
                         info["colmap_end_time"] = datetime.now().isoformat()
                         info["pid"] = None
                         info["gpu"] = None
                     else:
                         print(f"[{datetime.now().strftime('%H:%M:%S')}] COLMAP failed for material {material} (process died, no completion flag)")
+                        terminate_process(pid, material, "COLMAP")
                         info["status"] = JobStatus.FAILED
                         info["error"] = "COLMAP process died without completion"
                         info["pid"] = None
@@ -482,6 +849,7 @@ def update_job_status(state: Dict, config: Config):
             if shape_completed or not process_alive:
                 if shape_completed:
                     print(f"[{datetime.now().strftime('%H:%M:%S')}] Shape matching completed for material {material}")
+                    terminate_process(pid, material, "shape matching")
                     info["status"] = JobStatus.COMPLETED
                     info["shape_matching_end_time"] = datetime.now().isoformat()
                     info["pid"] = None
@@ -491,12 +859,14 @@ def update_job_status(state: Dict, config: Config):
                     obs_folder = os.path.join(folder_path, "sparse", "observations")
                     if os.path.exists(obs_folder) and len(os.listdir(obs_folder)) > 0:
                         print(f"[{datetime.now().strftime('%H:%M:%S')}] Shape matching completed for material {material} (detected via output folder)")
+                        terminate_process(pid, material, "shape matching")
                         info["status"] = JobStatus.COMPLETED
                         info["shape_matching_end_time"] = datetime.now().isoformat()
                         info["pid"] = None
                         info["workers"] = None
                     else:
                         print(f"[{datetime.now().strftime('%H:%M:%S')}] Shape matching failed for material {material} (process died, no completion flag)")
+                        terminate_process(pid, material, "shape matching")
                         info["status"] = JobStatus.FAILED
                         info["error"] = "Shape matching process died without completion"
                         info["pid"] = None
@@ -521,7 +891,7 @@ def try_launch_shape_matching_jobs(state: Dict, config: Config):
 
 # ==================== Scheduler Modes ====================
 
-def streaming_mode(dataset_root: str, config: Config, auto_detect: bool = False):
+def streaming_mode(dataset_root: str, config: Config, auto_detect: bool = False, retry_failed: bool = True):
     """
     Streaming mode: Continuously schedule jobs as capacity becomes available.
     Runs until all materials are completed.
@@ -530,19 +900,25 @@ def streaming_mode(dataset_root: str, config: Config, auto_detect: bool = False)
         dataset_root: Path to dataset root folder
         config: Scheduler configuration
         auto_detect: If True, periodically scan for new materials and process them automatically
+        retry_failed: If True, reset failed jobs to retry them on startup
     """
     print("\n" + "="*60)
     if auto_detect:
         print("STREAMING MODE: Automatic job scheduling with auto-detection")
     else:
         print("STREAMING MODE: Automatic job scheduling")
+    if retry_failed:
+        print("Failed jobs will be retried")
     print("="*60 + "\n")
+    
+    # Initialize GPU monitor
+    gpu_monitor = GPUMonitor()
     
     state = load_state(config.STATE_FILE)
     state["mode"] = "streaming_auto" if auto_detect else "streaming"
     
-    # Initialize materials
-    materials, new_count = initialize_materials(dataset_root, state)
+    # Initialize materials (with failed job reset if requested)
+    materials, new_count = initialize_materials(dataset_root, state, reset_failed=retry_failed)
     save_state(state, config.STATE_FILE)
     
     if not materials:
@@ -592,7 +968,7 @@ def streaming_mode(dataset_root: str, config: Config, auto_detect: bool = False)
                         continue  # Skip materials that aren't ready yet
                     
                     # Check GPU availability
-                    gpu_id = get_least_loaded_gpu(state, config)
+                    gpu_id = get_least_loaded_gpu(state, config, gpu_monitor)
                     if gpu_id is None:
                         break  # No GPU available
                     
@@ -646,25 +1022,45 @@ def streaming_mode(dataset_root: str, config: Config, auto_detect: bool = False)
             time.sleep(config.POLL_INTERVAL_SEC)
             
     except KeyboardInterrupt:
-        print("\n\nScheduler interrupted by user. State saved.")
+        print("\n\nScheduler interrupted by user. Cleaning up running processes...")
+        
+        # Terminate all running processes
+        for material, info in state["materials"].items():
+            if info["status"] in [JobStatus.COLMAP_RUNNING, JobStatus.SHAPE_MATCHING_RUNNING]:
+                pid = info.get("pid")
+                job_type = "COLMAP" if info["status"] == JobStatus.COLMAP_RUNNING else "shape matching"
+                terminate_process(pid, material, job_type)
+        
         save_state(state, config.STATE_FILE)
+        print("State saved. Exiting.")
         sys.exit(0)
 
-def manual_mode(dataset_root: str, n_folders: int, config: Config):
+def manual_mode(dataset_root: str, n_folders: int, config: Config, retry_failed: bool = True):
     """
     Manual mode: Schedule first N folders and wait for all to complete.
     Balances jobs across GPUs and CPUs upfront.
     Only schedules materials that are ready (have scan_log.json).
+    
+    Args:
+        dataset_root: Path to dataset root folder
+        n_folders: Number of folders to process
+        config: Scheduler configuration
+        retry_failed: If True, reset failed jobs to retry them on startup
     """
     print("\n" + "="*60)
     print(f"MANUAL MODE: Scheduling first {n_folders} folders")
+    if retry_failed:
+        print("Failed jobs will be retried")
     print("="*60 + "\n")
+    
+    # Initialize GPU monitor
+    gpu_monitor = GPUMonitor()
     
     state = load_state(config.STATE_FILE)
     state["mode"] = "manual"
     
-    # Initialize materials
-    materials, new_count = initialize_materials(dataset_root, state)
+    # Initialize materials (with failed job reset if requested)
+    materials, new_count = initialize_materials(dataset_root, state, reset_failed=retry_failed)
     save_state(state, config.STATE_FILE)
     
     if not materials:
@@ -701,14 +1097,24 @@ def manual_mode(dataset_root: str, n_folders: int, config: Config):
             # Round-robin GPU assignment
             gpu_id = config.GPU_IDS[i % len(config.GPU_IDS)]
             
-            # Check GPU memory
-            free_mem = check_gpu_memory(gpu_id)
-            if free_mem < config.MIN_GPU_MEMORY_MB:
-                print(f"Warning: GPU {gpu_id} has low memory ({free_mem} MB), waiting...")
+            # Check GPU availability (memory + utilization)
+            is_available, reason = gpu_monitor.is_gpu_available(
+                gpu_id,
+                min_memory_mb=config.MIN_GPU_MEMORY_MB,
+                max_gpu_util=config.MAX_GPU_UTILIZATION,
+                max_memory_util=config.MAX_MEMORY_UTILIZATION
+            )
+            if not is_available:
+                print(f"Warning: GPU {gpu_id} unavailable ({reason}), waiting...")
                 time.sleep(5)
-                free_mem = check_gpu_memory(gpu_id)
-                if free_mem < config.MIN_GPU_MEMORY_MB:
-                    print(f"Skipping material {material} due to low GPU memory")
+                is_available, reason = gpu_monitor.is_gpu_available(
+                    gpu_id,
+                    min_memory_mb=config.MIN_GPU_MEMORY_MB,
+                    max_gpu_util=config.MAX_GPU_UTILIZATION,
+                    max_memory_util=config.MAX_MEMORY_UTILIZATION
+                )
+                if not is_available:
+                    print(f"Skipping material {material} due to GPU unavailability: {reason}")
                     continue
             
             # Launch COLMAP
@@ -756,8 +1162,17 @@ def manual_mode(dataset_root: str, n_folders: int, config: Config):
             time.sleep(config.POLL_INTERVAL_SEC)
             
     except KeyboardInterrupt:
-        print("\n\nScheduler interrupted by user. State saved.")
+        print("\n\nScheduler interrupted by user. Cleaning up running processes...")
+        
+        # Terminate all running processes
+        for material, info in state["materials"].items():
+            if info["status"] in [JobStatus.COLMAP_RUNNING, JobStatus.SHAPE_MATCHING_RUNNING]:
+                pid = info.get("pid")
+                job_type = "COLMAP" if info["status"] == JobStatus.COLMAP_RUNNING else "shape matching"
+                terminate_process(pid, material, job_type)
+        
         save_state(state, config.STATE_FILE)
+        print("State saved. Exiting.")
         sys.exit(0)
 
 # ==================== Status Display ====================
@@ -838,10 +1253,15 @@ Examples:
     parser.add_argument("--status", action="store_true", help="Show current scheduler status")
     parser.add_argument("--auto_detect", action="store_true", 
                        help="Auto-detect new materials (streaming mode only). Continuously monitors for new material folders.")
+    parser.add_argument("--no_retry_failed", action="store_true",
+                       help="Don't retry failed jobs on restart (default: failed jobs are retried)")
     
     # Optional configuration overrides
     parser.add_argument("--max_colmap_per_gpu", type=int, help=f"Max COLMAP jobs per GPU (default: {Config.MAX_COLMAP_PER_GPU})")
     parser.add_argument("--cpu_per_colmap", type=int, help=f"CPU cores per COLMAP (default: {Config.CPU_CORES_PER_COLMAP})")
+    parser.add_argument("--min_gpu_memory_mb", type=int, help=f"Minimum free GPU memory in MB (default: {Config.MIN_GPU_MEMORY_MB})")
+    parser.add_argument("--max_gpu_util", type=int, help=f"Maximum GPU utilization %% to launch COLMAP (default: {Config.MAX_GPU_UTILIZATION})")
+    parser.add_argument("--max_memory_util", type=int, help=f"Maximum memory utilization %% to launch COLMAP (default: {Config.MAX_MEMORY_UTILIZATION})")
     parser.add_argument("--state_file", type=str, help=f"State file path (default: saved in dataset folder)")
     
     args = parser.parse_args()
@@ -854,6 +1274,12 @@ Examples:
         config.MAX_COLMAP_PER_GPU = args.max_colmap_per_gpu
     if args.cpu_per_colmap:
         config.CPU_CORES_PER_COLMAP = args.cpu_per_colmap
+    if args.min_gpu_memory_mb:
+        config.MIN_GPU_MEMORY_MB = args.min_gpu_memory_mb
+    if args.max_gpu_util:
+        config.MAX_GPU_UTILIZATION = args.max_gpu_util
+    if args.max_memory_util:
+        config.MAX_MEMORY_UTILIZATION = args.max_memory_util
     if args.state_file:
         config.STATE_FILE = args.state_file
     
@@ -876,11 +1302,14 @@ Examples:
     if args.auto_detect and args.mode != "streaming":
         parser.error("--auto_detect can only be used with streaming mode")
     
+    # Determine retry behavior (default is True, unless --no_retry_failed is specified)
+    retry_failed = not args.no_retry_failed
+    
     # Run scheduler
     if args.mode == "streaming":
-        streaming_mode(args.dataset, config, auto_detect=args.auto_detect)
+        streaming_mode(args.dataset, config, auto_detect=args.auto_detect, retry_failed=retry_failed)
     elif args.mode == "manual":
-        manual_mode(args.dataset, args.n_folders, config)
+        manual_mode(args.dataset, args.n_folders, config, retry_failed=retry_failed)
 
 if __name__ == "__main__":
     main()

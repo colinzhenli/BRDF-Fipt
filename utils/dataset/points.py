@@ -14,6 +14,7 @@ import matplotlib.pyplot as plt
 from utils.io import load_camera_turntable_light_metadata, load_camera_metadata, load_camera_metadata_from_robotic_log
 import threading, queue, time
 from dataclasses import dataclass
+import random
 
 def build_4x4(R, t):
     T = np.eye(4, dtype=float)
@@ -227,11 +228,82 @@ class MultiMaterialPointDataset(IterableDataset if True else Dataset):
     - hdr/ (images, not loaded)
     - scan_log.json (emitter metadata)
     - rotated_camera.json (camera poses)
-    - sparse/observations.npz (point observations with [x, y, z, image_id, pixel_x, pixel_y, r, g, b])
+    - observations/ (chunked observation files: observations_chunk_00.npz, observations_chunk_01.npz, ...)
+      OR sparse/observations.npz (legacy single file format)
     
-    This class preloads all observations and generates rays for each observation point.
+    Each observation chunk contains: [x, y, z, image_id, pixel_x, pixel_y, r, g, b]
+    
+    This class uses double buffering to randomly load chunks per material in the background,
+    keeping memory usage constant while providing fresh data every N iterations.
     Supports both training and validation splits from the same data.
     """
+    
+    # ------------------------------
+    # Embedded helper classes
+    # ------------------------------
+    @dataclass
+    class ChunkData:
+        """Container for loaded chunk data."""
+        rays: torch.Tensor
+        rgbs: torch.Tensor
+        xyz: torch.Tensor
+        camera_ids: torch.Tensor
+        emitter_ids: torch.Tensor
+        material_ids: torch.Tensor
+    
+    class _DoubleBuffer:
+        """Two RAM slots with a background thread that fills the inactive slot."""
+        def __init__(self, build_chunk_fn):
+            self.build_chunk_fn = build_chunk_fn           # fn()->ChunkData
+            self.slots = [None, None]
+            self.ready = [threading.Event(), threading.Event()]
+            self.active = 0
+            self._stop = False
+            self._q = queue.Queue(maxsize=2)
+            self._t = threading.Thread(target=self._worker, daemon=True)
+            self._t.start()
+        
+        def _worker(self):
+            while not self._stop:
+                try:
+                    slot_id = self._q.get(timeout=0.1)
+                except queue.Empty:
+                    continue
+                data = self.build_chunk_fn()  # Build new chunk
+                self.slots[slot_id] = data
+                self.ready[slot_id].set()
+        
+        def request_fill(self, slot_id):
+            self.ready[slot_id].clear()
+            try:
+                self._q.put_nowait(slot_id)
+            except queue.Full:
+                # Drop oldest request to keep moving
+                try:
+                    _ = self._q.get_nowait()
+                except queue.Empty:
+                    pass
+                self._q.put_nowait(slot_id)
+        
+        def wait_initial(self):
+            self.ready[self.active].wait()
+        
+        def try_swap(self):
+            nxt = 1 - self.active
+            if self.ready[nxt].is_set():
+                old = self.active
+                self.active = nxt
+                self.ready[old].clear()  # Clear old slot's ready flag
+                return True
+            return False
+        
+        def current(self):
+            self.ready[self.active].wait()
+            return self.slots[self.active]
+        
+        def stop(self):
+            self._stop = True
+            self._t.join(timeout=1.0)
     
     def __init__(self, cfg, root_folder, split='train'):
         """
@@ -253,6 +325,10 @@ class MultiMaterialPointDataset(IterableDataset if True else Dataset):
         self.distortion = self.intrinsics['distortion']
         self.img_hw = (self.intrinsics['height'], self.intrinsics['width'])
         
+        # Double buffer settings
+        self.switch_iters = getattr(cfg.data, 'switch_iters', 1000)  # How often to reload chunks
+        self.step = 0
+        
         # Discover material folders
         self.material_folders = sorted([
             d for d in Path(root_folder).iterdir() 
@@ -264,17 +340,81 @@ class MultiMaterialPointDataset(IterableDataset if True else Dataset):
         print(f"{'='*60}")
         print(f"Found {len(self.material_folders)} material folders: {[int(f.name) for f in self.material_folders]}")
         
-        # Load all material data
-        self._load_all_materials()
+        # Discover chunks and load metadata (lightweight)
+        self._discover_chunks_and_metadata()
         
-        # Split into train/val
-        self._create_split()
+        # Initialize double buffer for training split
+        if split == 'train':
+            print(f"\nInitializing double buffer (chunk reload every {self.switch_iters} iters)...")
+            self._dbuf = MultiMaterialPointDataset._DoubleBuffer(self._build_chunk_fn)
+            # Prefill two chunks: slot 0 (active) and slot 1 (next)
+            self._dbuf.request_fill(0)
+            self._dbuf.request_fill(1)
+            self._dbuf.wait_initial()  # Ensure first active chunk exists
+            print("Double buffer initialized!")
+        else:
+            # For validation, use simple single load
+            self._load_all_materials()
+            self._create_split()
         
-        print(f"\nDataset ready: {len(self.indices)} observations")
+        print(f"\nDataset ready!")
         print(f"{'='*60}\n")
     
-    def _load_all_materials(self):
-        """Load observations, camera metadata, and scan metadata for all materials."""
+    def _discover_chunks_and_metadata(self):
+        """Discover available chunks and load metadata (camera/emitter lookups) for all materials."""
+        self.material_chunks = {}  # material_id -> list of chunk file paths
+        self.camera_lookups = {}   # material_id -> {camera_id -> c2w matrix}
+        self.emitter_lookups = {}  # material_id -> {scan_id -> emitter_id}
+        
+        print("\nDiscovering chunks and loading metadata...")
+        for material_folder in tqdm(self.material_folders, desc="Scanning materials"):
+            material_id = int(material_folder.name)
+            
+            # Discover chunk files in observations/ folder
+            obs_folder = material_folder / "observations"
+            chunk_files = sorted(obs_folder.glob("observations_chunk_*.npz"))
+            self.material_chunks[material_id] = chunk_files
+            print(f"  Material {material_id}: Found {len(chunk_files)} chunks in {obs_folder}")
+            
+            # Load camera metadata (c2w matrices) - small, keep in memory
+            camera_json_path = material_folder / "rotated_camera.json"
+            with open(camera_json_path, 'r') as f:
+                camera_list = json.load(f)
+            
+            camera_lookup = {}
+            for cam_entry in camera_list:
+                cam_id = cam_entry['camera_id']
+                position = np.array(cam_entry['position']) / 1000.0  # mm to m
+                rotation_matrix = np.array(cam_entry['rotation_matrix'])
+                c2w = build_4x4(rotation_matrix, position)
+                camera_lookup[cam_id] = torch.from_numpy(c2w).float()
+            self.camera_lookups[material_id] = camera_lookup
+            
+            # Load scan log for emitter IDs
+            scan_log_path = material_folder / "scan_log.json"
+            with open(scan_log_path, 'r') as f:
+                scan_log = json.load(f)
+            
+            emitter_lookup = {}
+            for scan_entry in scan_log:
+                scan_id = scan_entry['scan_id']
+                emitter_id = scan_entry.get('emitter_id', scan_id)
+                emitter_lookup[scan_id] = emitter_id
+            self.emitter_lookups[material_id] = emitter_lookup
+        
+        print(f"Metadata loaded for {len(self.material_chunks)} materials")
+    
+    def set_step(self, step: int):
+        """Called by training loop to track current step for chunk reloading."""
+        self.step = step
+        # Request next chunk build at boundaries; swap happens lazily in __iter__
+        if hasattr(self, '_dbuf') and step > 0 and step % self.switch_iters == 0:
+            next_slot = 1 - self._dbuf.active
+            print(f"[Step {step}] Requesting new random chunks to load into slot {next_slot}")
+            self._dbuf.request_fill(next_slot)
+    
+    def _build_chunk_fn(self) -> "MultiMaterialPointDataset.ChunkData":
+        """Build a new chunk by randomly loading one chunk per material (thread-safe)."""
         all_rays = []
         all_rgbs = []
         all_xyz = []
@@ -282,45 +422,128 @@ class MultiMaterialPointDataset(IterableDataset if True else Dataset):
         all_camera_ids = []
         all_material_ids = []
         
+        print(f"\n[Background] Loading new random chunks for all materials...")
+        for material_folder in self.material_folders:
+            material_id = int(material_folder.name)
+            
+            # Get metadata (already loaded, thread-safe to read)
+            camera_lookup = self.camera_lookups[material_id]
+            emitter_lookup = self.emitter_lookups[material_id]
+            
+            # Randomly select one chunk file
+            available_chunks = self.material_chunks[material_id]
+            chunk_path = random.choice(available_chunks)
+            
+            # Load observations from selected chunk
+            obs_data = np.load(chunk_path)
+            observations = obs_data['observations']  # (N, 9): [x, y, z, image_id, pixel_x, pixel_y, r, g, b]
+            
+            print(f"  [Background] Material {material_id}: Loaded chunk {chunk_path.name} ({len(observations):,} obs)")
+            
+            # Process observations (same logic as _load_all_materials)
+            xyz = torch.from_numpy(observations[:, :3]).float()
+            image_ids = observations[:, 3].astype(np.int32)
+            pixel_coords = torch.from_numpy(observations[:, 4:6]).float()
+            rgbs = torch.from_numpy(observations[:, 6:9]).float()
+            
+            # Generate rays for each observation
+            rays_list = []
+            xyz_list = []
+            rgbs_list = []
+            emitter_ids_list = []
+            camera_ids_list = []
+            
+            # Group by image_id for efficient processing
+            from collections import defaultdict
+            obs_by_image = defaultdict(list)
+            for obs_idx, img_id in enumerate(image_ids):
+                obs_by_image[img_id].append(obs_idx)
+            
+            for img_id, obs_indices in obs_by_image.items():
+                if img_id not in camera_lookup:
+                    continue
+                
+                c2w_full = camera_lookup[img_id]
+                c2w = c2w_full[:3, :4]
+                
+                obs_indices_t = torch.tensor(obs_indices, dtype=torch.long)
+                pixels = pixel_coords[obs_indices_t]
+                
+                directions = get_ray_directions_for_pixels(
+                    pixels, self.focal, self.cx, self.cy, self.distortion
+                )
+                
+                rays_o, rays_d = get_rays(directions, c2w, focal=None)
+                rays = torch.cat([rays_o, rays_d], dim=-1)
+                
+                rays_list.append(rays)
+                xyz_list.append(xyz[obs_indices_t])
+                rgbs_list.append(rgbs[obs_indices_t])
+                
+                emitter_id = emitter_lookup.get(img_id, 0)
+                emitter_ids_batch = torch.full((len(obs_indices),), emitter_id, dtype=torch.long)
+                emitter_ids_list.append(emitter_ids_batch)
+                
+                camera_ids_batch = torch.full((len(obs_indices),), img_id, dtype=torch.long)
+                camera_ids_list.append(camera_ids_batch)
+            
+            # Concatenate for this material
+            if len(rays_list) > 0:
+                material_rays = torch.cat(rays_list, dim=0)
+                material_xyz = torch.cat(xyz_list, dim=0)
+                material_rgbs = torch.cat(rgbs_list, dim=0)
+                material_emitter_ids = torch.cat(emitter_ids_list, dim=0)
+                material_camera_ids = torch.cat(camera_ids_list, dim=0)
+                material_material_ids = torch.full((material_rays.shape[0],), material_id, dtype=torch.long)
+                
+                all_rays.append(material_rays)
+                all_rgbs.append(material_rgbs)
+                all_xyz.append(material_xyz)
+                all_emitter_ids.append(material_emitter_ids)
+                all_camera_ids.append(material_camera_ids)
+                all_material_ids.append(material_material_ids)
+        
+        # Concatenate across all materials
+        rays = torch.cat(all_rays, dim=0)
+        rgbs = torch.cat(all_rgbs, dim=0)
+        xyz = torch.cat(all_xyz, dim=0)
+        emitter_ids = torch.cat(all_emitter_ids, dim=0)
+        camera_ids = torch.cat(all_camera_ids, dim=0)
+        material_ids = torch.cat(all_material_ids, dim=0)
+        
+        print(f"[Background] Chunk built: {len(rays):,} total observations")
+        
+        return MultiMaterialPointDataset.ChunkData(
+            rays=rays, rgbs=rgbs, xyz=xyz,
+            camera_ids=camera_ids, emitter_ids=emitter_ids, material_ids=material_ids
+        )
+    
+    def _load_all_materials(self):
+        """Load one random chunk per material and process into rays."""
+        all_rays = []
+        all_rgbs = []
+        all_xyz = []
+        all_emitter_ids = []
+        all_camera_ids = []
+        all_material_ids = []
+        
+        print("\nLoading random chunk for each material...")
         for material_folder in tqdm(self.material_folders, desc="Loading materials"):
             material_id = int(material_folder.name)
             
-            # Load camera metadata (c2w matrices)
-            camera_json_path = material_folder / "rotated_camera.json"
-            with open(camera_json_path, 'r') as f:
-                camera_list = json.load(f)
+            # Get metadata (already loaded)
+            camera_lookup = self.camera_lookups[material_id]
+            emitter_lookup = self.emitter_lookups[material_id]
             
-            # Build camera lookup: camera_id -> c2w matrix
-            camera_lookup = {}
-            for cam_entry in camera_list:
-                cam_id = cam_entry['camera_id']
-                # Build c2w from position and rotation_matrix
-                position = np.array(cam_entry['position']) / 1000.0  # mm to m
-                rotation_matrix = np.array(cam_entry['rotation_matrix'])
-                c2w = build_4x4(rotation_matrix, position)
-                camera_lookup[cam_id] = torch.from_numpy(c2w).float()
+            # Randomly select one chunk file
+            available_chunks = self.material_chunks[material_id]
+            chunk_path = random.choice(available_chunks)
             
-            # Load scan log for emitter IDs
-            scan_log_path = material_folder / "scan_log.json"
-            with open(scan_log_path, 'r') as f:
-                scan_log = json.load(f)
-            
-            # Build emitter lookup: scan_id -> emitter_id
-            emitter_lookup = {}
-            for scan_entry in scan_log:
-                scan_id = scan_entry['scan_id']
-                # Derive emitter_id from light configuration
-                # Assuming emitter_id is encoded in the scan log
-                # You may need to adjust this based on your actual data structure
-                emitter_id = scan_entry.get('emitter_id', scan_id)  # fallback to scan_id if not present
-                emitter_lookup[scan_id] = emitter_id
-            
-            # Load observations
-            obs_path = material_folder / "sparse" / "observations.npz"
-            obs_data = np.load(obs_path)
+            # Load observations from selected chunk
+            obs_data = np.load(chunk_path)
             observations = obs_data['observations']  # (N, 9): [x, y, z, image_id, pixel_x, pixel_y, r, g, b]
             
-            print(f"  Material {material_id}: {len(observations)} observations")
+            print(f"  Material {material_id}: Loaded chunk {chunk_path.name} with {len(observations)} observations")
             
             # Process observations
             xyz = torch.from_numpy(observations[:, :3]).float()  # (N, 3)
@@ -430,24 +653,57 @@ class MultiMaterialPointDataset(IterableDataset if True else Dataset):
     
     def __len__(self):
         """Return number of observations in this split."""
-        return len(self.indices)
+        if hasattr(self, 'indices'):
+            return len(self.indices)
+        else:
+            # For training with double buffer, return a large number
+            return 1000000
     
     def __iter__(self):
         """Infinite iterator for training (samples random batches)."""
-        while True:
-            # Random sample rays_num rays from split indices
-            sample_idx = torch.randint(0, len(self.indices), (self.rays_num,), dtype=torch.long)
-            actual_idx = self.indices[sample_idx]
-            
-            yield {
-                'rays': self.all_rays[actual_idx],  # (N, 6)
-                'rgbs': self.all_rgbs[actual_idx],  # (N, 3)
-                'xyz': self.all_xyz[actual_idx],  # (N, 3)
-                'emitter_ids': self.all_emitter_ids[actual_idx],  # (N,)
-                'camera_ids': self.all_camera_ids[actual_idx],  # (N,)
-                'material_ids': self.all_material_ids[actual_idx],  # (N,)
-                'gt_params': torch.zeros(1),
-            }
+        # Training mode with double buffer
+        if hasattr(self, '_dbuf'):
+            while True:
+                # Non-blocking swap if next slot ready
+                if self._dbuf.try_swap():
+                    print(f"[Step {self.step}] ✓ Switched to new chunk (slot {self._dbuf.active})")
+                
+                # Use current active chunk
+                chunk = self._dbuf.current()
+                if chunk is None or chunk.rays.numel() == 0:
+                    time.sleep(0.01)
+                    continue
+                
+                # Random sample rays_num rays from current chunk
+                total_rays = chunk.rays.shape[0]
+                sample_idx = torch.randint(0, total_rays, (self.rays_num,), dtype=torch.long)
+                
+                yield {
+                    'rays': chunk.rays[sample_idx],
+                    'rgbs': chunk.rgbs[sample_idx],
+                    'xyz': chunk.xyz[sample_idx],
+                    'emitter_ids': chunk.emitter_ids[sample_idx],
+                    'camera_ids': chunk.camera_ids[sample_idx],
+                    'material_ids': chunk.material_ids[sample_idx],
+                    'gt_params': torch.zeros(1),
+                }
+        
+        # Validation mode with static data
+        else:
+            while True:
+                # Random sample rays_num rays from split indices
+                sample_idx = torch.randint(0, len(self.indices), (self.rays_num,), dtype=torch.long)
+                actual_idx = self.indices[sample_idx]
+                
+                yield {
+                    'rays': self.all_rays[actual_idx],  # (N, 6)
+                    'rgbs': self.all_rgbs[actual_idx],  # (N, 3)
+                    'xyz': self.all_xyz[actual_idx],  # (N, 3)
+                    'emitter_ids': self.all_emitter_ids[actual_idx],  # (N,)
+                    'camera_ids': self.all_camera_ids[actual_idx],  # (N,)
+                    'material_ids': self.all_material_ids[actual_idx],  # (N,)
+                    'gt_params': torch.zeros(1),
+                }
     
     def __getitem__(self, idx):
         """For validation: return a single batch of rays."""
