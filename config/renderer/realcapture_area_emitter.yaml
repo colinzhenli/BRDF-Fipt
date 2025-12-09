@@ -4,7 +4,7 @@ emitter_sampling: True # not actually used
 indir_depth: 0
 
 camera:
-  linear_factor: 131231480.000000
+  linear_factor: 231435888.000000
   colmap_camera: True # whether to use colmap camera or robotic log camera
   distance: 2.0
   number_of_views: 40 # used to generate reference images
@@ -58,8 +58,8 @@ mesh:
     center: [0.16, -0.11, -0.0643] # 0.063 is the foam board bottom
     # width: 0.264 # board_size
     # length: 0.31
-    width: 0.08 # sample_size
-    length: 0.08 # sample_size
+    width: 0.14 # sample_size
+    length: 0.14 # sample_size
     # width: 0.08
     # length: 0.08 # colorchecker size
 emitter:

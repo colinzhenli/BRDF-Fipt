@@ -2,6 +2,7 @@ ckpt_path:
 
 test: False
 
+emitter_calibration: False
 logger:
   # https://pytorch-lightning.readthedocs.io/en/stable/extensions/generated/pytorch_lightning.loggers.WandbLogger.html
   _target_: pytorch_lightning.loggers.WandbLogger

@@ -1,9 +1,7 @@
 
 # Material-Capture Project
 
-This project trains a neural BRDF model by rendering a sphere with known camera and lighting setups. We use a physically-based rendering model (PBR) as ground truth and try to match it using a neural network. The whole pipeline is differentiable, so we optimize the BRDF via gradient descent. 
-
----
+This is the code to overfit a single material. 
 
 ## 1. Installation
 
@@ -18,133 +16,101 @@ pip install torch-scatter -f https://data.pyg.org/whl/torch-2.0.0+cu118.html
 pip install git+https://github.com/NVlabs/tiny-cuda-nn/#subdirectory=bindings/torch
 pip install -r requirements.txt
 pip install bpy==3.6.0 --extra-index-url https://download.blender.org/pypi/
-pip instlal trimesh
+pip install trimesh
 conda install conda-forge::hydra-core
+pip install viztracer pnoise imageio wandb
 ```
-
-Make sure everything installs properly. After setup, you can run a simple dummy training.
 
 ---
 
-## 2. Run the Training (Direct Illumination)
+## 2. Dataset Structure
 
-Run:
+```
+${dataset_folder}/
+├── hdr/                          # HDR images folder (gt_folder)
+│   ├── image_0000.png            # 16-bit PNG images (or .exr)
+│   ├── image_0001.png
+│   └── ...
+├── scan_log.json                 # Main metadata file (metadata_path)
+├── rotated_camera.json           # Camera poses after rotation alignment (camera_metadata_path)
+└── unmatched_scan_ids.json       # (Optional) List of scan IDs to exclude
+```
+
+---
+
+## 3. WandB Logger Setup
+
+Before training, set up Weights & Biases for experiment tracking:
 
 ```bash
-python main.py renderer=dynamicpoint_emitter outfolder=YOUR_OUTPUT_PATH
-```
-This will start a simple training process using direct lighting:
-
-- The object is a unit sphere.
-- Cameras are sampled on a sphere surface.
-- Each iteration dynamically generates 4 point lights.
-- The ground truth image is rendered using a microfacet PBR model.
-
-After training:
-
-- Rendered output is saved to:  
-  `$outfolder/sphere/$experiment_name/roughness_0.20_metallic_0.20`
-- Checkpoints are stored in:  
-  `$outfolder/sphere/$experiment_name/training`
-- Logs are uploaded via PyTorch Lightning.
-
----
-
-## 3. What You Need to Do
-
-### A. Implement Camera Functions  
-File: `util/dataset/sphere.py`
-
-You need to finish camera setup for the synthetic scene.
-
-- `get_camera_dicts(self)`:  
-  Generate a list of camera dictionaries by uniformly sampling the viewing directions over a sphere.
-
-- `get_ray_directions(H, W, focal)`:  
-  Calculate ray directions from the camera center. Implement a pinhole projection.
-
-- `get_c2w(camera)`:  
-  Construct a proper camera-to-world transformation matrix from position, look_at, and up vector.
-
----
-
-### B. Implement the PBR BRDF  
-File: `model/brdf.py`, class: `PBRBRDF`
-
-Implement the following function:
-
-```python
-def eval_brdf(self, wi, wo, normal)
+pip install wandb
+wandb login
 ```
 
-This is the PBR model based on microfacet theory. The formula is:
+The logger creates a project named `brdf-capture` on your wandb dashboard. Each experiment run is named according to your `experiment_name` argument.
 
-```math
-f(\mathbf{x}, \omega_i, \omega_o) = \frac{\mathbf{k}_d(\mathbf{x})}{\pi} \left( \mathbf{n} \cdot \omega_i \right)_+ + \frac{F(\omega_i, \mathbf{h}, \mathbf{k}_s(\mathbf{x})) \, D(\mathbf{h}, \mathbf{n}, \sigma(\mathbf{x})) \, G(\omega_i, \omega_o, \mathbf{n}, \sigma(\mathbf{x}))}{4 (\mathbf{n} \cdot \omega_o)}
-```
-
-Where:
-
-- \( \omega_i \): incoming light direction  
-- \( \omega_o \): view direction  
-- \( \mathbf{n} \): surface normal  
-- \( \mathbf{h} = \frac{\omega_i + \omega_o}{\|\omega_i + \omega_o\|} \): half vector  
-- \( \sigma(\mathbf{x}) \): roughness  
-- \( \mathbf{k}_d(\mathbf{x}) \): diffuse albedo  
-- \( \mathbf{k}_s(\mathbf{x}) \): specular color
-
-Use the utility functions in `utils.ops`:
-- `D_GGX(...)`  
-- `G_Smith(...)`  
-- `fresnelSchlick(...)`
-
-#### Material Parameter Note:
-
-From the material properties (`a` for albedo, `m` for metallic), compute:
-
-- \( \mathbf{k}_d = \mathbf{a}(1 - m) \)  
-- \( \mathbf{k}_s = 0.04(1 - m) + \mathbf{a} \cdot m \)
+**Logged Metrics:**
+- `train/recon_loss` - Reconstruction loss
+- `train/total_loss` - Total training loss  
+- `train/psnr` - Peak Signal-to-Noise Ratio
+- `val/loss` - Validation loss
+- `val/emitter_radiance` - Learned emitter radiance
+- `val/psnr` - Validation PSNR
 
 ---
 
-### C. Finish the Neural BRDF Model  
-File: `model/brdf.py`, class: `MLPBRDF`
-
-This is the learnable model. Complete the TODOs inside the class, especially the MLP structure and the encoding. You can tweak the architecture and optimization configs in:
-
-- `config/model/base.yaml`
-- `config/data/base.yaml`
-
-After training, rendered outputs will be saved in the same format as the PBR model.
-
----
-
-## 4. Test with Environment Map
-
-After finishing the neural model, you can test it under an environment map:
+## 4. Training
 
 ```bash
-python test.py renderer=envmap_emitter ckpt_path=PATH_TO_CHECKPOINT
+# Specify a GPU
+# Example dataset_folder: New_center_Nov25/0
+CUDA_VISIBLE_DEVICES=0 python main.py \
+    dataset_folder=${DATASET_PATH} \
+    renderer=realcapture_area_emitter \
+    material=ani_latent_texture_model \
+    experiment_name=${EXPERIMENT_NAME} \
+    model.test=False
 ```
 
-You’ll need to implement the following function in `model/emitter.py`:
+**Training Configuration:**
+- **Max epochs:** 1000
+- **Validation frequency:** Every 2 epochs
+- **Training batches per epoch:** 512
 
-- `eval_emitter(position, light_dir)`:  
-  Return radiance and PDF for each light direction based on the environment map.
+---
 
-```python
-Returns:
-    Le: Bx3 radiance
-    pdf: Bx1 PDF
-    valid: B valid sample mask (always True)
+## 5. Testing on Validation Data
+
+```bash
+# Specify a GPU
+# Example dataset_folder: New_center_Nov25/0
+CUDA_VISIBLE_DEVICES=0 python main.py \
+    dataset_folder=${DATASET_PATH} \
+    renderer=realcapture_area_emitter \
+    material=ani_latent_texture_model \
+    experiment_name=${EXPERIMENT_NAME} \
+    model.test=True \
+    model.ckpt_path=${CHECKPOINT_PATH}
 ```
 
 ---
 
-## 5. Rendering and Video Output
+## 6. Output Structure
 
-Once test.py is done, the rendered frames will be saved and you can make a video from them. The camera follows a circular path around the sphere, controlled by:
+**Checkpoints:** `${exp_output_root_path}/training/model_0.20_0.20/`
 
-```yaml
-cfg.renderer.camera.number_of_views
-```
+| File | Description |
+|------|-------------|
+| `epoch={N}.ckpt` | Checkpoint saved at epoch N |
+| `last.ckpt` | Symlink to the latest checkpoint |
+
+**Rendered Images:** `${exp_output_root_path}/images/`
+
+| File | Description |
+|------|-------------|
+| `gt_view_{batch_idx}_{b}.png` | Ground truth 16-bit PNG image |
+| `result_view_{batch_idx}_{b}.png` | Rendered result 16-bit PNG image |
+| `u_offset_{batch_idx}_{b}.png` | U offset grayscale visualization |
+| `v_offset_{batch_idx}_{b}.png` | V offset grayscale visualization |
+| `uv_offset_color_{batch_idx}_{b}.png` | Combined UV offset color visualization (R=U, G=V, B=127) |
+

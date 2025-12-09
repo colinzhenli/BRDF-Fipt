@@ -19,3 +19,7 @@ nerfstudio
 lightning-bolts
 torchviz
 openexr_numpy
+viztracer
+pnoise
+imageio
+wandb
