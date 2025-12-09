@@ -1038,8 +1038,9 @@ class GreyPatchBRDF(nn.Module):
         theta_o = self._angle_from_normal(wo, normal)
 
         # In-range masks
-        inc_ok  = (theta_i - target_inc_deg).abs()  <= self.inc_thresh_deg
-        view_ok = (theta_o - target_view_deg).abs() <= self.view_thresh_deg
+        # inc_ok  = (theta_i - target_inc_deg).abs()  <= self.inc_thresh_deg
+        inc_ok = theta_i < (90.0 - self.inc_thresh_deg)
+        view_ok = theta_o < (90.0 - self.view_thresh_deg)
         angle_ok = inc_ok & view_ok
 
         # Select absolute reflectance (no normalization)
@@ -1051,7 +1052,8 @@ class GreyPatchBRDF(nn.Module):
         # cos_theta_i = torch.clamp((wi * normal).sum(dim=-1), 0.0, 1.0)
         # fr_cos = torch.where(angle_ok, rho, torch.zeros_like(rho))
         if self.lambertian_brdf:
-            rho = torch.where(pidx >= 0, 0.9/math.pi, torch.zeros_like(pidx, dtype=torch.float32))
+            rho = torch.full_like(pidx, 0.9/math.pi, dtype=torch.float32)
 
         pdf = torch.zeros(N, 1, device=device)         # dummy (no sampling here)
+        
         return rho.unsqueeze(-1), pdf, angle_ok, pidx

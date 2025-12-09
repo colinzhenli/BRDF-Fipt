@@ -9,11 +9,8 @@ from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
 from renderer import ForwardRenderer
 from brdf_trainer import BRDFTrainer
 from model.brdf import SvPBRBRDF
-from model.neural_brdf import SvLatentModel, LatentTexturedModel, AnisotropicLatentTexturedModel, LearnableSvPBRBRDF, MipmapAniLatentTexturedModel
-from model.mipmap_brdf import MipmapLearnableSvPBRBRDF
 from torch.utils.data import DataLoader
-from utils.dataset import RealImageDataset, RealValDataset
-from model.brdf import GreyPatchBRDF
+from utils.dataset import RealImageDataset, RealValDataset, MultiMaterialPointDataset
 import hydra
 from omegaconf import DictConfig
 from pytorch_lightning.strategies import DDPStrategy
@@ -49,25 +46,10 @@ def main(cfg):
     output_folder = os.path.join(cfg.exp_output_root_path, f'fabric_pattern_07_4k')
     os.makedirs(output_folder, exist_ok=True)
 
-    # Initialize materials using different configs
-    # material_module = importlib.import_module('model.brdf')
-    # material = getattr(material_module, cfg.material.type)(cfg)
-    if cfg.material.type == "LatentTexturedModel":
-        material = LatentTexturedModel(cfg.material)  # MLP model uses mlp_pbr config
-    elif cfg.material.type == "SvLatentModel":
-        material = SvLatentModel(cfg.material)  # MLP model uses mlp_pbr config
-    elif cfg.material.type == "AnisotropicLatentTexturedModel":
-        material = AnisotropicLatentTexturedModel(cfg.material)  # MLP model uses mlp_pbr config
-    elif cfg.material.type == "LearnableSvPBRBRDF":
-        material = LearnableSvPBRBRDF(cfg.material)  # MLP model uses mlp_pbr config
-    elif cfg.material.type == "MipmapLearnableSvPBRBRDF":
-        material = MipmapLearnableSvPBRBRDF(cfg.material)  # MLP model uses mlp_pbr config
-    elif cfg.material.type == "GreyPatchBRDF":
-        material = GreyPatchBRDF(cfg.material)  # MLP model uses mlp_pbr config
-    elif cfg.material.type == "MipmapAniLatentTexturedModel":
-        material = MipmapAniLatentTexturedModel(cfg.material)  # MLP model uses mlp_pbr config
-    else:
-        raise ValueError(f"Invalid material type: {cfg.material.type}")
+    # Initialize material dynamically from module.type config
+    material_module = importlib.import_module(cfg.material.module)
+    material_class = getattr(material_module, cfg.material.type)
+    material = material_class(cfg.material)
     gt_material = SvPBRBRDF(
         cfg=gt_material_cfg,
         albedo=torch.tensor(albedo)
@@ -84,8 +66,15 @@ def main(cfg):
         model.load_state_dict(model_dict)
         print(f"=> loaded checkpoint successfully. {len(pretrained_dict)}/{len(model_dict)} parameters loaded.")
     print("after trainer init")
-    print("==> initializing data ...")          
-    train_dataset = RealImageDataset(cfg, gt_folder=cfg.gt_folder, split="train")
+    print("==> initializing data ...")   
+    if cfg.data.dataset_name == "real":
+        train_dataset = RealImageDataset(cfg, gt_folder=cfg.gt_folder, split="train")
+        val_dataset = RealValDataset(cfg, gt_folder=cfg.gt_folder)
+    elif cfg.data.dataset_name == "points":
+        train_dataset = MultiMaterialPointDataset(cfg, root_folder=cfg.dataset_folder, split="train")
+        val_dataset = MultiMaterialPointDataset(cfg, root_folder=cfg.dataset_folder, split="val")
+    else:
+        raise ValueError(f"Invalid dataset name: {cfg.data.dataset_name}")
     train_loader = DataLoader(
         train_dataset,
         batch_size=cfg.data.batch_size,
@@ -93,7 +82,6 @@ def main(cfg):
         pin_memory=True,
     )
 
-    val_dataset = RealValDataset(cfg, gt_folder=cfg.gt_folder)
     val_loader = DataLoader(
         val_dataset,
         batch_size=1,

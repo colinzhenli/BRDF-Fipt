@@ -571,7 +571,7 @@ def load_skip_list(dataset_root: str) -> set:
     
     return skip_list
 
-def initialize_materials(dataset_root: str, state: Dict, verbose: bool = True, reset_failed: bool = False) -> Tuple[List[str], int]:
+def initialize_materials(dataset_root: str, state: Dict, verbose: bool = True, reset_failed: bool = False, fix_existing: bool = True) -> Tuple[List[str], int]:
     """
     Scan dataset folder for material subfolders (0, 1, 2, ..., 10, ..., 100, ...).
     Initialize state for new materials.
@@ -581,6 +581,7 @@ def initialize_materials(dataset_root: str, state: Dict, verbose: bool = True, r
         state: Current scheduler state
         verbose: Whether to print discovery messages
         reset_failed: Whether to reset failed jobs to NOT_STARTED
+        fix_existing: Whether to fix inconsistent states for existing materials (should only be done once on startup)
     
     Returns: 
         Tuple of (sorted list of material folder names, count of new materials found)
@@ -634,7 +635,7 @@ def initialize_materials(dataset_root: str, state: Dict, verbose: bool = True, r
                 ready_status = "ready" if state["materials"][material]["ready"] else "not ready (no scan_log.json)"
                 print(f"  New material {material}: {ready_status}")
         else:
-            # EXISTING MATERIAL: Fix status based on timestamps
+            # EXISTING MATERIAL: Fix status based on timestamps (only if fix_existing=True)
             info = state["materials"][material]
             folder_path = info["folder_path"]
             
@@ -643,9 +644,10 @@ def initialize_materials(dataset_root: str, state: Dict, verbose: bool = True, r
             new_ready = is_material_ready(folder_path)
             info["ready"] = new_ready
             
-            # Fix status based on timestamps (simple deterministic rules)
-            if fix_material_status_by_timestamps(info, material, verbose):
-                fixed_count += 1
+            # Fix status based on timestamps (simple deterministic rules) - only on startup
+            if fix_existing:
+                if fix_material_status_by_timestamps(info, material, verbose):
+                    fixed_count += 1
             
             # Notify if material became ready
             if not old_ready and new_ready and verbose and info["status"] == JobStatus.NOT_STARTED:
@@ -947,7 +949,7 @@ def streaming_mode(dataset_root: str, config: Config, auto_detect: bool = False,
             # Periodic material scanning in auto-detect mode
             if auto_detect and (time.time() - last_scan_time) >= config.MATERIAL_SCAN_INTERVAL_SEC:
                 print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Scanning for new materials...")
-                materials, new_count = initialize_materials(dataset_root, state, verbose=True)
+                materials, new_count = initialize_materials(dataset_root, state, verbose=True, fix_existing=False)
                 if new_count > 0:
                     save_state(state, config.STATE_FILE)
                 last_scan_time = time.time()

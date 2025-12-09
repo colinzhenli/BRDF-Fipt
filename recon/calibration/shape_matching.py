@@ -213,7 +213,7 @@ def estimate_world2base(scan_log_path, images, R_c2g, t_c2g, rotation_center, ro
     mean_err = np.mean(np.linalg.norm(W2B - cam_centres_base, axis=1))
     print(f"[umeyama] mean error: {mean_err:.6f} m  (N={len(cam_centres_world)})")
 
-    return T_BW, cam_c2w, scan_id
+    return T_BW, cam_c2w, robot_T, s, scan_id
 
 # -------------------- mesh transform & camera log save (kept) --------------------
 
@@ -335,12 +335,28 @@ def process_pointcloud_to_base(pointcloud_path, T_BW, cfg, output_path=None, z_o
     
     return pcd_filtered, bbox_min, bbox_max, bbox_center, bbox_size, filtered_indices
 
-def save_camera_log_from_colmap(camera_c2w, T_BW, scan_id, output_path):
+def save_camera_log_from_colmap(camera_c2w, robot_T, s, T_BW, scan_id, output_path):
+    """
+    Save camera log and compute alignment errors between COLMAP and robot poses.
+    
+    Args:
+        camera_c2w: List of COLMAP camera-to-world poses
+        robot_T: List of robot camera poses in base frame
+        T_BW: Transformation matrix from COLMAP world to robot base
+        scan_id: List of scan IDs
+        output_path: Path to save camera log JSON
+    """
     camera_log = []
+    translation_errors = []
+    angular_errors = []
+    
+    
     for i, C2W in enumerate(camera_c2w):
+        # Transform COLMAP pose to base frame
         C2B = T_BW @ np.asarray(C2W)
         position = C2B[:3, 3] * 1000.0  # m->mm to match scan_log
         rotation_matrix = C2B[:3, :3]
+        
         camera_entry = {
             "overall_id": scan_id[i],
             "camera_id": scan_id[i],
@@ -348,10 +364,70 @@ def save_camera_log_from_colmap(camera_c2w, T_BW, scan_id, output_path):
             "rotation_matrix": rotation_matrix.tolist()
         }
         camera_log.append(camera_entry)
+        
+        # Compute errors between C2B and robot_T[i]
+        robot_pose = np.asarray(robot_T[i])
+        
+        # Translation error (in meters)
+        trans_error = np.linalg.norm(C2B[:3, 3] - robot_pose[:3, 3])
+        translation_errors.append(trans_error)
+        
+        # Angular error using rotation matrix difference
+        # Method: compute the relative rotation R_rel = R_colmap^T @ R_robot
+        # Then extract the angle from the trace of R_rel
+        R_colmap = C2B[:3, :3]
+        R_robot = robot_pose[:3, :3]
+        R_colmap_rot = R_colmap / s  # now ~ proper rotation
+
+        # Now compute relative rotation and angle
+        R_rel = R_colmap_rot.T @ R_robot
+
+        trace_val = np.trace(R_rel)
+        cos_angle = np.clip((trace_val - 1.0) / 2.0, -1.0, 1.0)
+        angular_error = np.rad2deg(np.arccos(cos_angle))
+        angular_errors.append(angular_error)
+    
+    # Convert to numpy arrays
+    translation_errors = np.array(translation_errors)
+    angular_errors = np.array(angular_errors)
+    
+    # Compute statistics
+    avg_trans_error = np.mean(translation_errors)
+    avg_angular_error = np.mean(angular_errors)
+    
+    # Get top 5 maximum errors
+    top10_trans_idx = np.argsort(translation_errors)[-10:][::-1]
+    top10_angular_idx = np.argsort(angular_errors)[-10:][::-1]
+    
+    # Print results
+    print(f"\n{'='*60}")
+    print(f"Camera Pose Alignment Analysis")
+    print(f"{'='*60}")
+    print(f"Number of camera poses: {len(camera_c2w)}")
+    print(f"\nAverage translation error: {avg_trans_error:.6f} m ({avg_trans_error*1000:.3f} mm)")
+    print(f"Average angular error: {avg_angular_error:.4f} degrees")
+    
+    print(f"\n{'='*60}")
+    print(f"Top 10 Maximum Translation Errors:")
+    print(f"{'='*60}")
+    for rank, idx in enumerate(top10_trans_idx, 1):
+        print(f"  {rank}. Index {idx:4d} (scan_id={scan_id[idx]:4d}): "
+              f"{translation_errors[idx]:.6f} m ({translation_errors[idx]*1000:.3f} mm)")
+    
+    print(f"\n{'='*60}")
+    print(f"Top 10 Maximum Angular Errors:")
+    print(f"{'='*60}")
+    for rank, idx in enumerate(top10_angular_idx, 1):
+        print(f"  {rank}. Index {idx:4d} (scan_id={scan_id[idx]:4d}): "
+              f"{angular_errors[idx]:.4f} degrees")
+    print(f"{'='*60}\n")
+    
+    # Save camera log
     with open(output_path, 'w') as f:
         json.dump(camera_log, f, indent=2)
     print(f"Camera log saved to: {output_path}")
     print(f"Saved {len(camera_log)} camera poses")
+    
     return camera_log
 
 def save_points_pixel_data(pcd_filtered, filtered_indices, images, points3D, hdr_path, output_path):
@@ -368,11 +444,16 @@ def save_points_pixel_data(pcd_filtered, filtered_indices, images, points3D, hdr
     
     Saves:
         observations.npz containing:
-            - observations: (N, 9) array with [x, y, z, image_id, pixel_x, pixel_y, r, g, b]
+            - observations: (N, 10) array with [x, y, z, image_id, pixel_x, pixel_y, r, g, b, point_id]
             - filtered_indices: array mapping to original COLMAP point IDs
+        
+        point_metadata.json in the same folder containing:
+            - num_points: total unique 3D points
+            - num_observations: total observations (points × cameras)
     """
     import cv2
     import os
+    import json
     from tqdm import tqdm
     
     print(f"\n{'='*60}")
@@ -444,6 +525,7 @@ def save_points_pixel_data(pcd_filtered, filtered_indices, images, points3D, hdr
     xyz_array = np.array(xyz_list, dtype=np.float32)  # (N, 3)
     img_id_array = np.array(img_id_list, dtype=np.int32)  # (N,)
     pixel_xy_array = np.array(pixel_xy_list, dtype=np.float32)  # (N, 2)
+    point_id_array = np.array(point_indices_list, dtype=np.int32)  # (N,) - local point ID
     
     actual_observations = len(xyz_array)
     print(f"Collected {actual_observations:,} valid observations")
@@ -480,8 +562,9 @@ def save_points_pixel_data(pcd_filtered, filtered_indices, images, points3D, hdr
         xyz_array,           # (N, 3) - x, y, z
         img_id_array.reshape(-1, 1).astype(np.float32),  # (N, 1) - image_id
         pixel_xy_array,      # (N, 2) - pixel_x, pixel_y
-        rgb_array            # (N, 3) - r, g, b
-    ])  # Final shape: (N, 9)
+        rgb_array,           # (N, 3) - r, g, b
+        point_id_array.reshape(-1, 1).astype(np.float32),  # (N, 1) - point_id
+    ])  # Final shape: (N, 10)
     
     skipped_count = total_observations - actual_observations
     
@@ -491,11 +574,32 @@ def save_points_pixel_data(pcd_filtered, filtered_indices, images, points3D, hdr
     print(f"\nFinal observations extracted: {actual_observations:,}")
     print(f"Unique images loaded: {len(image_cache)}")
     
-    # 7. Calculate storage size
+    # 8. Calculate storage size
     storage_size_mb = (observations.nbytes + filtered_indices.nbytes) / (1024 * 1024)
     print(f"Uncompressed size: {storage_size_mb:.2f} MB")
     
-    # 8. Save compressed
+    # 9. Save point metadata JSON
+    num_points = len(filtered_indices)  # Total unique 3D points
+    num_observations = actual_observations  # Total observations (point-camera pairs)
+    
+    # Get the material folder (parent of output_path)
+    material_folder = os.path.dirname(output_path)
+    metadata_path = os.path.join(material_folder, 'point_metadata.json')
+    
+    point_metadata = {
+        'num_points': int(num_points),
+        'num_observations': int(num_observations),
+        'observations_file': os.path.basename(output_path)
+    }
+    
+    with open(metadata_path, 'w') as f:
+        json.dump(point_metadata, f, indent=2)
+    
+    print(f"\nSaved point metadata to: {metadata_path}")
+    print(f"  - num_points: {num_points:,} (unique 3D points)")
+    print(f"  - num_observations: {num_observations:,} (point-camera pairs)")
+    
+    # 10. Save compressed observations
     print(f"\nSaving to: {output_path}")
     np.savez_compressed(output_path,
                        observations=observations,
@@ -588,8 +692,9 @@ def _process_camera_batch(args):
             np.full(len(valid_indices), float(img_id)),  # image_id (M,)
             pixels_x[valid_indices],              # pixel x (M,)
             pixels_y[valid_indices],              # pixel y (M,)
-            rgb_values                            # rgb (M, 3)
-        ])  # Shape: (M, 9)
+            rgb_values,                           # rgb (M, 3)
+            valid_indices.astype(np.float32)      # point_id (M,) - local point index
+        ])  # Shape: (M, 10)
         batch_observations.append(camera_observations)
     
     return batch_observations
@@ -611,7 +716,9 @@ def save_points_pixel_data_reprojection(pcd_filtered, filtered_indices, cameras,
         num_workers: Number of parallel workers (default: 32)
     
     Saves:
-        50 npz files in observations_folder, each containing a chunk of shuffled observations
+        - 50 npz files in observations_folder, each containing a chunk of shuffled observations
+          with columns: [x, y, z, image_id, pixel_x, pixel_y, r, g, b, point_id]
+        - point_metadata.json in parent folder containing num_points and num_observations
     """
     import cv2
     import os
@@ -670,9 +777,9 @@ def save_points_pixel_data_reprojection(pcd_filtered, filtered_indices, cameras,
     
     # Convert to numpy array by stacking all observation arrays
     if all_observations:
-        observations = np.vstack(all_observations)  # (M, 9)
+        observations = np.vstack(all_observations)  # (M, 10)
     else:
-        observations = np.array([], dtype=np.float32).reshape(0, 9)
+        observations = np.array([], dtype=np.float32).reshape(0, 10)
     total_obs = len(observations)
     
     print(f"\nTotal valid observations: {total_obs:,}")
@@ -685,6 +792,24 @@ def save_points_pixel_data_reprojection(pcd_filtered, filtered_indices, cameras,
     
     # Save to chunks
     save_observations_to_chunks(observations, observations_folder, num_chunks=50)
+    
+    # Save point metadata JSON
+    import json
+    material_folder = os.path.dirname(observations_folder)  # observations_folder is inside material folder
+    metadata_path = os.path.join(material_folder, 'point_metadata.json')
+    
+    point_metadata = {
+        'num_points': int(num_points),
+        'num_observations': int(total_obs),
+        'observations_folder': os.path.basename(observations_folder)
+    }
+    
+    with open(metadata_path, 'w') as f:
+        json.dump(point_metadata, f, indent=2)
+    
+    print(f"\nSaved point metadata to: {metadata_path}")
+    print(f"  num_points: {num_points}")
+    print(f"  num_observations: {total_obs}")
 
 
 def _save_chunk(args):
@@ -779,7 +904,7 @@ def main_process(cfg, cameras, images, points3D=None, scan_log_path=None, mesh_p
     rotation_center = np.array(cfg.emitter.turntable.center)
     rotation_axis = np.array(cfg.emitter.turntable.axis)
     
-    T_BW, cam_c2w, scan_id = estimate_world2base(scan_log_path, images, R_c2g, t_c2g, rotation_center, rotation_axis, unmatched_scan_ids_path)
+    T_BW, cam_c2w, robot_T, s, scan_id = estimate_world2base(scan_log_path, images, R_c2g, t_c2g, rotation_center, rotation_axis, unmatched_scan_ids_path)
     if mesh_path is not None:
         transform_mesh_to_base(mesh_path, T_BW, output_path=str(Path(mesh_path).with_name(Path(mesh_path).stem + "_transformed.ply")))
     
@@ -790,7 +915,7 @@ def main_process(cfg, cameras, images, points3D=None, scan_log_path=None, mesh_p
             pointcloud_path, T_BW, cfg, output_path=output_pcd_path, z_outlier_percentile=z_outlier_percentile
         )
         
-        # save_points_pixel_data_reprojection(pcd_filtered, filtered_indices, cameras, images, points3D, hdr_path, observations_folder, num_workers=num_workers)
+        save_points_pixel_data_reprojection(pcd_filtered, filtered_indices, cameras, images, points3D, hdr_path, observations_folder, num_workers=num_workers)
 
         # Save bounding box info to a JSON file
         bbox_info = {
@@ -804,7 +929,7 @@ def main_process(cfg, cameras, images, points3D=None, scan_log_path=None, mesh_p
             json.dump(bbox_info, f, indent=2)
         print(f"Bounding box info saved to: {bbox_json_path}")
     
-    save_camera_log_from_colmap(cam_c2w, T_BW, scan_id, camera_log_path)
+    save_camera_log_from_colmap(cam_c2w, robot_T, s, T_BW, scan_id, camera_log_path)
 
 @hydra.main(version_base=None, config_path="../../config/renderer", config_name="realcapture_area_emitter")
 def main(cfg: DictConfig) -> None:

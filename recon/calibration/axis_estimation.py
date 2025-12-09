@@ -32,7 +32,6 @@ CU_COLS    = 11           # squares across (chessboard squares, not markers)
 CU_ROWS    = 8           # squares down
 CU_SQUARE  = 15       # square side length in meters
 CU_MARKER  = 11       # marker side length in meters
-CU_COLS_AXIS
 USE_LEGACY = True       # True if your PDF was generated with legacy pattern
 
 # Paths

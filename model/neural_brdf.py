@@ -1976,6 +1976,7 @@ class AnisotropicLatentTexturedModel(LightningModule):
         self.local_wi_wo = cfg.neural_geometry.local_wi_wo
         self.neural_geometry_pos_enc = cfg.neural_geometry.positional_encoding
         self.recompute_frame = cfg.neural_geometry.recompute_frame
+        self.neural_geometry_factor = cfg.neural_geometry.factor
         if self.colorful_texture and self.larger_latent_dim:
             total_latent_dim = self.latent_dim * 3
         else:
@@ -2058,7 +2059,7 @@ class AnisotropicLatentTexturedModel(LightningModule):
                 prev_dim = hidden_dim
                 
             layers.append(nn.Linear(prev_dim, cfg.output_channels))
-            layers.append(nn.LeakyReLU(0.2))
+            layers.append(nn.LeakyReLU())
             
             self.mlp = nn.Sequential(*layers)
 
@@ -2073,7 +2074,7 @@ class AnisotropicLatentTexturedModel(LightningModule):
                 prev_dim = hidden_dim
                 
             layers.append(nn.Linear(prev_dim, cfg.neural_geometry.output_channels))
-            layers.append(nn.LeakyReLU(0.2))
+            layers.append(nn.Tanh())
             
             self.geometry_decoder = nn.Sequential(*layers)
         # Initialize proxy BRDF for importance sampling
@@ -2300,17 +2301,18 @@ class AnisotropicLatentTexturedModel(LightningModule):
                 if self.neural_geometry_pos_enc:
                     wi_local_enc = self.sh_encoder(wi_local)
                     wo_local_enc = self.sh_encoder(wo_local)
-                    uv_offset = self.geometry_decoder(torch.cat([wi_local_enc, wo_local_enc], dim=-1))
+                    uv_offset = self.geometry_decoder(torch.cat([wi_local_enc, wo_local_enc], dim=-1)) * self.neural_geometry_factor
                 else:
-                    uv_offset = self.geometry_decoder(torch.cat([geometry_latent, wi_local, wo_local], dim=-1))
+                    uv_offset = self.geometry_decoder(torch.cat([geometry_latent, wi_local, wo_local], dim=-1)) * self.neural_geometry_factor
             else:
                 if self.neural_geometry_pos_enc:
                     wi_enc = self.sh_encoder(wi)
                     wo_enc = self.sh_encoder(wo)
-                    uv_offset = self.geometry_decoder(torch.cat([wi_enc, wo_enc], dim=-1))
+                    uv_offset = self.geometry_decoder(torch.cat([wi_enc, wo_enc], dim=-1)) * self.neural_geometry_factor
                 else:
-                    uv_offset = self.geometry_decoder(torch.cat([geometry_latent, wi, wo], dim=-1))
+                    uv_offset = self.geometry_decoder(torch.cat([geometry_latent, wi, wo], dim=-1)) * self.neural_geometry_factor
             uv = uv + uv_offset
+            uv = ((uv%1)+1)%1
             latent = self.sample_latent_from_texture(uv, tex)
             
             if self.recompute_frame: # recompute frame use new uv

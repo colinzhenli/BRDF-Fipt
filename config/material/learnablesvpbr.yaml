@@ -1,4 +1,5 @@
 type: "LearnableSvPBRBRDF"
+module: "model.neural_brdf"
 
 
 colorful_texture: True

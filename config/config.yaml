@@ -6,9 +6,9 @@ defaults:
 
 experiment_name: test
 # exp_folder: /media/raid/cloth/No_cable_capture_Sep22/BRDF_recon_Sep30/Controlled_light/hdr
-dataset_folder: /media/raid/cloth/No_cable_capture_Sep22/BRDF_recon_Sep30/
+dataset_folder: /media/raid/cloth/capture_data/BRDF_recon_Oct22_cloth
 output_folder: /media/raid/cloth/output/BRDF
 exp_output_root_path: ${output_folder}/${data.dataset_name}/${experiment_name}
-gt_folder: ${dataset_folder}
+gt_folder: ${dataset_folder}/hdr
 test_on_train: True
 global_train_seed: 42

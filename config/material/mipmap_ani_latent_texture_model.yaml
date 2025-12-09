@@ -1,4 +1,5 @@
 type: "MipmapAniLatentTexturedModel"
+module: "model.neural_brdf"
 latent_dim: 16
 predict_frame: True
 use_nerfstudio_sh: False

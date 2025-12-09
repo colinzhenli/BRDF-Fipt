@@ -13,7 +13,7 @@ import torch.nn.functional as NF
 import pytorch_lightning as pl
 from pytorch_lightning import LightningModule
 import math
-from nerfstudio.field_components import encoding
+# from nerfstudio.field_components import encoding
 from utils.ops import components_from_spherical_harmonics, num_sh_bases
 
 
@@ -231,7 +231,7 @@ class NeuralGeometry(nn.Module):
             prev_dim = hidden_dim
         
         layers.append(nn.Linear(prev_dim, cfg.output_channels))  # 2D UV offset
-        layers.append(nn.LeakyReLU(0.2))
+        layers.append(nn.Tanh())
         
         self.mlp = nn.Sequential(*layers)
     
@@ -323,7 +323,7 @@ class BRDFDecoder(nn.Module):
                 prev_dim = hidden_dim
             
             layers.append(nn.Linear(prev_dim, cfg.output_channels))
-            layers.append(nn.LeakyReLU(0.2))
+            layers.append(nn.ReLU())
             return nn.Sequential(*layers)
         
         if different_decoder:
@@ -765,193 +765,198 @@ class AnisotropicLatentTexturedModel(LightningModule):
 class MultiMaterialLatentBRDF(LightningModule):
     """
     Multi-material BRDF model using auto-decoder architecture.
-    - Per-material latent codes (1000 materials)
-    - Per-point latent codes (1M points per material)
+    - Per-material latent codes (M materials)
+    - Per-point latent codes (sum of points across all materials)
     - Shared MLP decoder across all materials
+    
+    Expected folder structure:
+        data_folder/
+            0/                      # material_id = 0
+                point_metadata.json # contains {"num_points": N, ...}
+            1/                      # material_id = 1
+                point_metadata.json
+            ...
     """
-    def __init__(self, cfg, colmap_metadata_root):
+    def __init__(self, cfg):
         super().__init__()
         
         # Store configuration
         self.cfg = cfg
-        self.colmap_root = colmap_metadata_root
+        data_folder = getattr(cfg, 'data_folder', None)
         
         # Latent dimensions
-        self.material_latent_dim = cfg.material_latent_dim
-        self.point_latent_dim = cfg.point_latent_dim
-        self.total_latent_dim = self.material_latent_dim + self.point_latent_dim
-        
+        self.latent_dim = cfg.latent_dim
+        self.predict_frame = cfg.predict_frame
+        self.total_latent_dim = self.latent_dim + (6 if self.predict_frame else 0)
         # BRDF decoder settings
         self.use_pos_enc = cfg.use_pos_enc
         self.different_decoder = cfg.different_decoder
         
-        # Load all points3D.ply files from material subfolders
-        print(f"Loading COLMAP metadata from {colmap_metadata_root}...")
-        self.metadata = self._load_colmap_metadata(colmap_metadata_root)
+        # Load point metadata from material subfolders
+        print(f"Loading point metadata from {data_folder}...")
+        self.metadata = self._load_point_metadata(data_folder)
         
         num_materials = self.metadata['num_materials']
         total_points = self.metadata['total_points']
         
-        print(f"Loaded {num_materials} materials with {total_points} total points")
-        
-        # Initialize latent banks
-        self.material_latent_bank = nn.Embedding(
-            num_embeddings=num_materials,
-            embedding_dim=self.material_latent_dim
-        )
-        nn.init.normal_(self.material_latent_bank.weight, mean=0.0, std=cfg.init_std)
-        
+        print(f"Loaded {num_materials} materials with {total_points:,} total points")
+
         self.point_latent_bank = nn.Embedding(
             num_embeddings=total_points,
-            embedding_dim=self.point_latent_dim
+            embedding_dim=self.total_latent_dim
         )
         nn.init.normal_(self.point_latent_bank.weight, mean=0.0, std=cfg.init_std)
+        
+        if self.predict_frame:
+            # Last 6 dimensions: normal (0,0,1) and tangent (0,1,0)
+            with torch.no_grad():
+                self.point_latent_bank.weight[:, -6:-3] = torch.tensor([0.0, 0.0, 1.0])  # normal
+                self.point_latent_bank.weight[:, -3:] = torch.tensor([0.0, 1.0, 0.0])    # tangent
         
         # Shared BRDF decoder
         self.decoder = BRDFDecoder(
             cfg=cfg.decoder,
-            latent_dim=self.total_latent_dim,
+            latent_dim=self.latent_dim,
             use_pos_enc=self.use_pos_enc,
             different_decoder=self.different_decoder
         )
         
-        # Build spatial indexing structures for efficient point lookup
-        print("Building spatial index...")
-        self._build_indexing()
         print("Initialization complete!")
     
-    def _load_colmap_metadata(self, root_path):
+    def _load_point_metadata(self, data_folder):
         """
-        Load all points3D.ply files from material subfolders.
+        Load point metadata from material subfolders.
         
         Expected structure:
-        root_path/
-            material_0/
-                points3D.ply
-            material_1/
-                points3D.ply
+        data_folder/
+            0/                      # material_id = 0
+                point_metadata.json # contains {"num_points": N, "num_observations": M, ...}
+            1/                      # material_id = 1
+                point_metadata.json
             ...
         
         Returns:
             metadata: dict with keys:
                 - num_materials: int
-                - total_points: int
-                - materials: List[dict] with material info
-                - point_to_material: Tensor mapping global point_id -> material_id
-                - point_positions: Tensor [total_points, 3]
-                - point_normals: Tensor [total_points, 3] (if available)
-                - point_colors: Tensor [total_points, 3] (if available)
+                - total_points: int (sum across all materials)
+                - materials: List[dict] with material info including point_range
+                - material_point_offsets: dict mapping material_id -> global point offset
         """
-        import open3d as o3d
+        import json
         from pathlib import Path
         
-        root = Path(root_path)
-        material_folders = sorted([d for d in root.iterdir() if d.is_dir()])
+        root = Path(data_folder)
+        
+        # Find material folders (named by material ID: 0, 1, 2, ...)
+        material_folders = sorted([
+            d for d in root.iterdir() 
+            if d.is_dir() and d.name.isdigit()
+        ], key=lambda x: int(x.name))
         
         materials = []
-        all_positions = []
-        all_normals = []
-        all_colors = []
-        point_to_material = []
-        
+        material_point_offsets = {}
         global_point_offset = 0
         
-        for material_id, mat_folder in enumerate(material_folders):
-            ply_path = mat_folder / "points3D.ply"
+        print(f"Found {len(material_folders)} potential material folders")
+        
+        for mat_folder in material_folders:
+            material_id = int(mat_folder.name)
+            metadata_path = mat_folder / "point_metadata.json"
             
-            if not ply_path.exists():
-                print(f"Warning: {ply_path} not found, skipping...")
+            # Skip if metadata file doesn't exist or isn't readable
+            if not metadata_path.exists():
+                print(f"  Warning: {metadata_path} not found, skipping material {material_id}")
                 continue
             
-            # Load point cloud
-            pcd = o3d.io.read_point_cloud(str(ply_path))
-            points = torch.from_numpy(np.asarray(pcd.points)).float()
-            num_points = len(points)
-            
-            # Get normals if available
-            if pcd.has_normals():
-                normals = torch.from_numpy(np.asarray(pcd.normals)).float()
-            else:
-                normals = torch.zeros_like(points)
-            
-            # Get colors if available
-            if pcd.has_colors():
-                colors = torch.from_numpy(np.asarray(pcd.colors)).float()
-            else:
-                colors = torch.ones_like(points) * 0.5
+            try:
+                with open(metadata_path, 'r') as f:
+                    point_meta = json.load(f)
+                
+                num_points = point_meta['num_points']
+                num_observations = point_meta.get('num_observations', 0)
+                
+            except (json.JSONDecodeError, KeyError) as e:
+                print(f"  Warning: Failed to read {metadata_path}: {e}, skipping material {material_id}")
+                continue
             
             # Store material info
             materials.append({
                 'material_id': material_id,
                 'name': mat_folder.name,
                 'num_points': num_points,
+                'num_observations': num_observations,
                 'point_range': (global_point_offset, global_point_offset + num_points),
                 'folder': str(mat_folder)
             })
             
-            # Accumulate data
-            all_positions.append(points)
-            all_normals.append(normals)
-            all_colors.append(colors)
-            point_to_material.extend([material_id] * num_points)
-            
+            material_point_offsets[material_id] = global_point_offset
             global_point_offset += num_points
             
-            print(f"  Loaded material {material_id} ({mat_folder.name}): {num_points} points")
+            print(f"  Material {material_id}: {num_points:,} points, {num_observations:,} observations")
         
-        # Concatenate all data
+        if len(materials) == 0:
+            raise ValueError(f"No valid material folders found in {data_folder}")
+        
         metadata = {
             'num_materials': len(materials),
             'total_points': global_point_offset,
             'materials': materials,
-            'point_to_material': torch.tensor(point_to_material, dtype=torch.long),
-            'point_positions': torch.cat(all_positions, dim=0),
-            'point_normals': torch.cat(all_normals, dim=0),
-            'point_colors': torch.cat(all_colors, dim=0)
+            'material_point_offsets': material_point_offsets,
         }
+        
+        # Build offset tensor for efficient indexing
+        # offset_tensor[material_id] = global point offset for that material
+        offset_tensor = torch.zeros(len(materials), dtype=torch.long)
+        for mat_info in materials:
+            mat_id = mat_info['material_id']
+            offset_tensor[mat_id] = material_point_offsets[mat_id]
+        
+        # Register as buffer so it moves with the model to GPU
+        self.register_buffer('material_offset_tensor', offset_tensor)
         
         return metadata
     
-    def _build_indexing(self):
+    def get_global_point_id(self, material_id, local_point_id):
         """
-        Build spatial indexing structures for efficient point queries.
-        Uses k-d tree for nearest neighbor lookup.
-        """
-        from scipy.spatial import cKDTree
-        
-        # Build k-d tree for 3D position lookup
-        positions_np = self.metadata['point_positions'].cpu().numpy()
-        self.kdtree = cKDTree(positions_np)
-        
-        # Build per-material indices for efficient material-wise queries
-        self.material_point_indices = {}
-        for mat in self.metadata['materials']:
-            mat_id = mat['material_id']
-            start, end = mat['point_range']
-            self.material_point_indices[mat_id] = torch.arange(start, end, dtype=torch.long)
-    
-    def get_point_ids_from_positions(self, positions, k=1):
-        """
-        Find nearest COLMAP point IDs for given 3D positions.
+        Convert local point ID (per-material) to global point ID.
         
         Args:
-            positions: [B, 3] 3D positions
-            k: number of nearest neighbors
+            material_id: (1, N) or int - material indices
+            local_point_id: (1, N) or int - local point indices within material
         
         Returns:
-            point_ids: [B] or [B, k] global point indices
-            distances: [B] or [B, k] distances to nearest points
+            global_point_id: (1, N) or int - global point indices for latent bank lookup
         """
-        positions_np = positions.cpu().detach().numpy()
+        # Use pre-computed offset tensor for vectorized lookup
+        offsets = self.material_offset_tensor[material_id]
+        return local_point_id + offsets
+
+    def extract_frame_from_latent(self, latent: torch.Tensor):
+        """
+        Extract and orthonormalize normal and tangent from latent code.
         
-        if k == 1:
-            distances, point_ids = self.kdtree.query(positions_np, k=1)
-            return torch.from_numpy(point_ids).long().to(positions.device), \
-                   torch.from_numpy(distances).float().to(positions.device)
-        else:
-            distances, point_ids = self.kdtree.query(positions_np, k=k)
-            return torch.from_numpy(point_ids).long().to(positions.device), \
-                   torch.from_numpy(distances).float().to(positions.device)
+        Args:
+            latent: [B, total_dim] latent code with last 6 dims as normal+tangent
+        
+        Returns:
+            normal: [B, 3] normalized normal vector
+            tangent: [B, 3] normalized tangent vector (orthogonal to normal)
+        """
+        predicted_normal = latent[..., -6:-3]
+        predicted_tangent = latent[..., -3:]
+        
+        # Normalize
+        predicted_normal = NF.normalize(predicted_normal, dim=-1)
+        predicted_tangent = NF.normalize(predicted_tangent, dim=-1)
+        
+        # Gram-Schmidt orthogonalization
+        predicted_tangent = predicted_tangent - \
+            torch.sum(predicted_tangent * predicted_normal, dim=-1, keepdim=True) * predicted_normal
+        predicted_tangent = NF.normalize(predicted_tangent, dim=-1)
+        if torch.isnan(predicted_tangent).any():
+            print("predicted_tangent is nan")
+        
+        return predicted_normal, predicted_tangent
     
     def world_to_local(self, v, normal, tangent=None):
         """
@@ -993,74 +998,49 @@ class MultiMaterialLatentBRDF(LightningModule):
     
     def eval_brdf(
         self,
-        gt_params,
         pos,
         wi,
         wo,
         normal,
-        uv=None,
-        TBN=None,
         latent=None,
-        batch_mask=None,
         point_ids=None,
         material_ids=None,
-        footprint_vis=None,
-        dp_du=None,
-        dp_dv=None
     ):
         """
         Evaluate BRDF at given geometry and directions.
         
         Args:
-            gt_params: Ground truth parameters (not used, for API compatibility)
             pos: [B, 3] 3D positions
             wi: [B, 3] incoming light directions (world space)
             wo: [B, 3] outgoing view directions (world space)
             normal: [B, 3] normals (world space)
-            uv: [B, 2] UV coordinates (optional, for API compatibility)
-            TBN: [B, 3, 3] tangent frame (optional)
             latent: Ignored (latents retrieved from banks)
-            batch_mask: Batch mask for batched operations
-            point_ids: [B] global point indices (if None, computed from pos)
-            material_ids: [B] material indices (if None, computed from point_ids)
-            footprint_vis: Footprint for mipmap (not used here)
-            dp_du, dp_dv: Ray differentials (not used here)
+            point_ids: [B] LOCAL point indices (per-material, from dataloader)
+            material_ids: [B] material indices (required for global point ID computation)
         
         Returns:
             brdf: [B, 3] BRDF values
+            normal: [B, 3] normals (local space)
             pdf: [B, 1] probability density
-            uv_offset: [B, 2] zeros (for API compatibility)
         """
-        # Check valid geometry
-        NoL = (wi * normal).sum(-1, keepdim=True)
-        NoV = (wo * normal).sum(-1, keepdim=True)
         
-        # If point_ids not provided, find nearest COLMAP points
-        if point_ids is None:
-            point_ids, _ = self.get_point_ids_from_positions(pos, k=1)
+        # point_ids and material_ids should be provided by the dataloader
+        if point_ids is None or material_ids is None:
+            raise ValueError("point_ids and material_ids must be provided (from dataloader)")
         
-        # If material_ids not provided, look up from point_ids
-        if material_ids is None:
-            material_ids = self.metadata['point_to_material'][point_ids].to(pos.device)
+        # Convert local point IDs to global point IDs
+        global_point_ids = self.get_global_point_id(material_ids, point_ids)
         
         # Retrieve latents from banks
-        mat_latent = self.material_latent_bank(material_ids)      # [B, material_latent_dim]
-        point_latent = self.point_latent_bank(point_ids)          # [B, point_latent_dim]
-        
-        # Combine latents (concatenate)
-        combined_latent = torch.cat([mat_latent, point_latent], dim=-1)  # [B, total_latent_dim]
-        
-        # Transform to local space
-        if TBN is not None:
-            tangent = TBN[:, :, 0]
-            bitangent = TBN[:, :, 1]
-            normal_geo = TBN[:, :, 2]
-        else:
-            tangent = None
-            normal_geo = normal
-        
-        wi_local = self.world_to_local(wi, normal_geo, tangent)
-        wo_local = self.world_to_local(wo, normal_geo, tangent)
+        latent = self.point_latent_bank(global_point_ids)        # [B, latent_dim]
+  
+        if self.predict_frame:
+            predicted_normal, predicted_tangent = self.extract_frame_from_latent(latent)
+                # Check valid geometry
+        NoL = (wi * predicted_normal).sum(-1, keepdim=True)
+        NoV = (wo * predicted_normal).sum(-1, keepdim=True)
+        wi_local = self.world_to_local(wi, predicted_normal, predicted_tangent)
+        wo_local = self.world_to_local(wo, predicted_normal, predicted_tangent)
         normal_local = torch.zeros_like(wi_local)
         normal_local[..., 2] = 1.0  # Normal is always (0,0,1) in local space
         
@@ -1070,22 +1050,22 @@ class MultiMaterialLatentBRDF(LightningModule):
         # Decode BRDF
         if self.different_decoder:
             # Decode each channel separately
-            brdf_r = self.decoder(enc_dir, combined_latent, channel='r')
-            brdf_g = self.decoder(enc_dir, combined_latent, channel='g')
-            brdf_b = self.decoder(enc_dir, combined_latent, channel='b')
+            brdf_r = self.decoder(enc_dir, latent[:,:self.latent_dim], channel='r')
+            brdf_g = self.decoder(enc_dir, latent[:,:self.latent_dim], channel='g')
+            brdf_b = self.decoder(enc_dir, latent[:,:self.latent_dim], channel='b')
             brdf = torch.cat([brdf_r, brdf_g, brdf_b], dim=-1)  # [B, 3]
         else:
-            brdf = self.decoder(enc_dir, combined_latent)  # [B, 1] or [B, 3]
+            brdf = self.decoder(enc_dir, latent[:, :self.latent_dim])  # [B, 1] or [B, 3]
             if brdf.shape[-1] == 1:
                 brdf = brdf.expand(-1, 3)  # Expand to RGB
         
         # Simple diffuse PDF (can be improved with importance sampling)
         pdf = NoL.clamp(min=0) / math.pi
-        
-        # Return zeros for uv_offset (for API compatibility)
-        uv_offset = torch.zeros(pos.shape[0], 2, device=pos.device)
-        
-        return brdf, pdf, uv_offset
+        if torch.isnan(brdf).any():
+            print("brdf is nan")
+        if torch.isnan(predicted_normal).any():
+            print("normal is nan")
+        return brdf, predicted_normal, pdf
     
     def sample_brdf(
         self,
@@ -1112,7 +1092,7 @@ class MultiMaterialLatentBRDF(LightningModule):
             normal: [B, 3] normals (world space)
             latent: Ignored
             batch_mask: Batch mask
-            point_ids: [B] global point indices
+            point_ids: [B] LOCAL point indices (per-material, from dataloader)
             material_ids: [B] material indices
         
         Returns:

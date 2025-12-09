@@ -123,72 +123,6 @@ def get_c2w_from_robot_pose(camera_info, R_c2g, t_c2g):
     c2w = g2w @ c2g
     return torch.from_numpy(c2w[:3, :4]).float()
 
-def load_metadata(colmap_camera, metadata_path, camera_metadata_path, gt_folder, cfg, debug, debug_num, split, turntable_center, turntable_axis, R_c2g, t_c2g, start_idx):
-    metadata, _, _= load_camera_turntable_light_metadata(metadata_path)
-    
-    if colmap_camera:
-        camera_metadata = load_camera_metadata(camera_metadata_path)
-    else:
-        camera_metadata = load_camera_metadata_from_robotic_log(metadata_path, turntable_center, turntable_axis, R_c2g, t_c2g)
-    
-    # Filter out metadata entries with non-existent image files and filtered_puple_ids
-    valid_metadata = []
-    filtered_purple_ids = getattr(cfg.data, 'filtered_purple_ids', [])
-    
-    for item in metadata:
-        # Add "masked_" prefix to filename
-        file_name = item["filename"]
-        # if not file_name.startswith("masked_"):
-        #     file_name = "masked_" + file_name
-        #     item["filename"] = file_name
-        # file_name = item["filename"]
-        img_path = os.path.join(gt_folder, file_name)
-        overall_id = item.get("overall_id")
-        
-        # Skip if image file doesn't exist or is 0 bytes
-        if not os.path.exists(img_path):
-            print(f"Warning: Image file {img_path} does not exist, skipping from metadata...")
-            continue
-        
-        # Skip if image file is 0 bytes
-        if os.path.getsize(img_path) == 0:
-            print(f"Warning: Image file {img_path} is 0 bytes, skipping from metadata...")
-            continue
-            
-        # Skip if overall_id is in filtered_puple_ids
-        
-        if int(overall_id) in filtered_purple_ids:
-            print(f"Warning: overall_id {overall_id} is in filtered_puple_ids, skipping from metadata...")
-            continue
-            
-        valid_metadata.append(item)
-    
-    metadata = valid_metadata
-    # # Filter out images with overall_id >= 1000
-    # metadata = [item for item in metadata if int(item.get("overall_id", 0)) < 1000]
-    # print(f"After filtering overall_id >= 1000: {len(metadata)} images remaining")
-    # print(f"Loaded {len(metadata)} valid images out of {len(metadata) + len([item for item in metadata if not os.path.exists(os.path.join(gt_folder, item['filename']))])} total metadata entries")
-    
-    total_images = len(metadata)
-    
-    # Split metadata into training and validation sets with fixed random seed
-    torch.manual_seed(42)  # Fixed seed for reproducible splits
-    indices = torch.randperm(total_images)
-    
-    # Use 80% for training
-    if debug:
-        selected_metadata = metadata[start_idx:start_idx+debug_num]
-    else:
-        split_idx = int(0.8 * total_images)
-        if split == 'train':
-            selected_indices = indices[:split_idx]
-        else:
-            selected_indices = indices[split_idx:]
-            
-        selected_metadata = [metadata[i] for i in selected_indices] 
-        
-    return selected_metadata, camera_metadata
-
 def get_ray_directions_for_pixels(pixel_coords, focal, cx, cy, distortion):
     """
     Get camera ray directions for specific pixel coordinates with radial distortion correction.
@@ -228,10 +162,12 @@ class MultiMaterialPointDataset(IterableDataset if True else Dataset):
     - hdr/ (images, not loaded)
     - scan_log.json (emitter metadata)
     - rotated_camera.json (camera poses)
+    - point_metadata.json (contains num_points for this material)
     - observations/ (chunked observation files: observations_chunk_00.npz, observations_chunk_01.npz, ...)
       OR sparse/observations.npz (legacy single file format)
     
-    Each observation chunk contains: [x, y, z, image_id, pixel_x, pixel_y, r, g, b]
+    Each observation chunk contains: [x, y, z, image_id, pixel_x, pixel_y, r, g, b, point_id]
+    where point_id is the LOCAL point index (0 to num_points-1) within this material.
     
     This class uses double buffering to randomly load chunks per material in the background,
     keeping memory usage constant while providing fresh data every N iterations.
@@ -250,6 +186,7 @@ class MultiMaterialPointDataset(IterableDataset if True else Dataset):
         camera_ids: torch.Tensor
         emitter_ids: torch.Tensor
         material_ids: torch.Tensor
+        point_ids: torch.Tensor  # LOCAL point IDs (per-material)
     
     class _DoubleBuffer:
         """Two RAM slots with a background thread that fills the inactive slot."""
@@ -325,15 +262,31 @@ class MultiMaterialPointDataset(IterableDataset if True else Dataset):
         self.distortion = self.intrinsics['distortion']
         self.img_hw = (self.intrinsics['height'], self.intrinsics['width'])
         
+        # Color correction matrix
+        self.ccm = np.array(cfg.data.ccm)
+        
+        # Train/val split ratio
+        self.val_ratio = getattr(cfg.data, 'val_ratio', 0.1)
+        
         # Double buffer settings
         self.switch_iters = getattr(cfg.data, 'switch_iters', 1000)  # How often to reload chunks
         self.step = 0
+        
+        # Debug mode settings
+        self.debug = getattr(cfg.data, 'debug', False)
+        self.debug_num_materials = getattr(cfg.data, 'debug_num_materials', 1)
         
         # Discover material folders
         self.material_folders = sorted([
             d for d in Path(root_folder).iterdir() 
             if d.is_dir() and d.name.isdigit()
         ], key=lambda x: int(x.name))
+        
+        # In debug mode, limit to first N materials (sorted by folder name)
+        if self.debug:
+            original_count = len(self.material_folders)
+            self.material_folders = self.material_folders[:self.debug_num_materials]
+            print(f"\n[DEBUG MODE] Limiting materials from {original_count} to {len(self.material_folders)}")
         
         print(f"\n{'='*60}")
         print(f"Loading MultiMaterial Dataset ({split})")
@@ -343,19 +296,27 @@ class MultiMaterialPointDataset(IterableDataset if True else Dataset):
         # Discover chunks and load metadata (lightweight)
         self._discover_chunks_and_metadata()
         
-        # Initialize double buffer for training split
+        # Initialize based on split
         if split == 'train':
             print(f"\nInitializing double buffer (chunk reload every {self.switch_iters} iters)...")
-            self._dbuf = MultiMaterialPointDataset._DoubleBuffer(self._build_chunk_fn)
+            self._dbuf = MultiMaterialPointDataset._DoubleBuffer(lambda: self._load_chunks(split='train')   )
             # Prefill two chunks: slot 0 (active) and slot 1 (next)
             self._dbuf.request_fill(0)
             self._dbuf.request_fill(1)
             self._dbuf.wait_initial()  # Ensure first active chunk exists
             print("Double buffer initialized!")
         else:
-            # For validation, use simple single load
-            self._load_all_materials()
-            self._create_split()
+            # For validation, load all validation observations directly
+            print(f"\nLoading validation data...")
+            chunk_data = self._load_chunks(split='val', load_all=True)
+            self.all_rays = chunk_data.rays
+            self.all_rgbs = chunk_data.rgbs
+            self.all_xyz = chunk_data.xyz
+            self.all_camera_ids = chunk_data.camera_ids
+            self.all_emitter_ids = chunk_data.emitter_ids
+            self.all_material_ids = chunk_data.material_ids
+            self.all_point_ids = chunk_data.point_ids
+            print(f"Validation data loaded: {len(self.all_rays):,} observations")
         
         print(f"\nDataset ready!")
         print(f"{'='*60}\n")
@@ -363,8 +324,8 @@ class MultiMaterialPointDataset(IterableDataset if True else Dataset):
     def _discover_chunks_and_metadata(self):
         """Discover available chunks and load metadata (camera/emitter lookups) for all materials."""
         self.material_chunks = {}  # material_id -> list of chunk file paths
-        self.camera_lookups = {}   # material_id -> {camera_id -> c2w matrix}
-        self.emitter_lookups = {}  # material_id -> {scan_id -> emitter_id}
+        self.camera_lookups = {}   # material_id -> {camera_id (int) -> c2w matrix}
+        self.emitter_lookups = {}  # material_id -> tensor of emitter_ids indexed by overall_id
         
         print("\nDiscovering chunks and loading metadata...")
         for material_folder in tqdm(self.material_folders, desc="Scanning materials"):
@@ -376,31 +337,34 @@ class MultiMaterialPointDataset(IterableDataset if True else Dataset):
             self.material_chunks[material_id] = chunk_files
             print(f"  Material {material_id}: Found {len(chunk_files)} chunks in {obs_folder}")
             
-            # Load camera metadata (c2w matrices) - small, keep in memory
-            camera_json_path = material_folder / "rotated_camera.json"
-            with open(camera_json_path, 'r') as f:
-                camera_list = json.load(f)
+            # Load metadata using existing utility functions (like real.py does)
+            scan_log_path = str(material_folder / "scan_log.json")
+            camera_json_path = str(material_folder / "rotated_camera.json")
             
+            # load_camera_turntable_light_metadata returns:
+            #   metadata: list of dicts with ['overall_id', 'camera_id', 'emitter_id', 'filename', 'turn_angle']
+            #   camera_metadata: not used here (we use rotated_camera.json instead)
+            #   (position already in meters)
+            metadata_list, _, _ = load_camera_turntable_light_metadata(scan_log_path)
+            
+            # load_camera_metadata returns dict {str(camera_id) -> {'position': [...], 'rotation_matrix': [...]}}
+            # (position already in meters)
+            camera_metadata = load_camera_metadata(camera_json_path)
+            
+            # Build camera lookup: camera_id (int) -> c2w (4x4 torch tensor)
             camera_lookup = {}
-            for cam_entry in camera_list:
-                cam_id = cam_entry['camera_id']
-                position = np.array(cam_entry['position']) / 1000.0  # mm to m
-                rotation_matrix = np.array(cam_entry['rotation_matrix'])
+            for cam_id_str, cam_info in camera_metadata.items():
+                position = np.array(cam_info['position'])  # already in meters
+                rotation_matrix = np.array(cam_info['rotation_matrix'])
                 c2w = build_4x4(rotation_matrix, position)
-                camera_lookup[cam_id] = torch.from_numpy(c2w).float()
+                camera_lookup[int(cam_id_str)] = torch.from_numpy(c2w).float()
             self.camera_lookups[material_id] = camera_lookup
             
-            # Load scan log for emitter IDs
-            scan_log_path = material_folder / "scan_log.json"
-            with open(scan_log_path, 'r') as f:
-                scan_log = json.load(f)
-            
-            emitter_lookup = {}
-            for scan_entry in scan_log:
-                scan_id = scan_entry['scan_id']
-                emitter_id = scan_entry.get('emitter_id', scan_id)
-                emitter_lookup[scan_id] = emitter_id
-            self.emitter_lookups[material_id] = emitter_lookup
+            # Build emitter lookup as tensor: index by overall_id to get emitter_id
+            # Sort by overall_id to ensure correct indexing
+            sorted_metadata = sorted(metadata_list, key=lambda x: int(x['overall_id']))
+            emitter_ids = np.array([int(entry['emitter_id']) for entry in sorted_metadata])
+            self.emitter_lookups[material_id] = torch.from_numpy(emitter_ids).long()
         
         print(f"Metadata loaded for {len(self.material_chunks)} materials")
     
@@ -413,95 +377,143 @@ class MultiMaterialPointDataset(IterableDataset if True else Dataset):
             print(f"[Step {step}] Requesting new random chunks to load into slot {next_slot}")
             self._dbuf.request_fill(next_slot)
     
-    def _build_chunk_fn(self) -> "MultiMaterialPointDataset.ChunkData":
-        """Build a new chunk by randomly loading one chunk per material (thread-safe)."""
+    def _load_chunks(self, split='train', load_all=False) -> "MultiMaterialPointDataset.ChunkData":
+        """
+        Load chunks and filter by split at CHUNK level.
+        
+        Args:
+            split: 'train' or 'val' - determines which chunks to use
+                   First (1-val_ratio) chunks for training, last val_ratio chunks for validation
+            load_all: if True, load ALL chunks in the split (for validation); 
+                      if False, load one random chunk from the split (for training)
+        
+        Returns:
+            ChunkData with observations from the selected chunks
+        """
         all_rays = []
         all_rgbs = []
         all_xyz = []
         all_emitter_ids = []
         all_camera_ids = []
         all_material_ids = []
+        all_point_ids = []
         
-        print(f"\n[Background] Loading new random chunks for all materials...")
-        for material_folder in self.material_folders:
+        is_val = (split == 'val')
+        desc = f"Loading {'all' if load_all else 'random'} chunks for {split}"
+        print(f"\n[{'Main' if is_val else 'Background'}] {desc}...")
+        
+        for material_folder in (tqdm(self.material_folders, desc=desc) if load_all else self.material_folders):
             material_id = int(material_folder.name)
             
             # Get metadata (already loaded, thread-safe to read)
             camera_lookup = self.camera_lookups[material_id]
             emitter_lookup = self.emitter_lookups[material_id]
             
-            # Randomly select one chunk file
-            available_chunks = self.material_chunks[material_id]
-            chunk_path = random.choice(available_chunks)
+            # Split chunks: first (1-val_ratio) for training, last val_ratio for validation
+            all_chunks = self.material_chunks[material_id]  # Already sorted
+            n_chunks = len(all_chunks)
+            split_idx = int(n_chunks * (1 - self.val_ratio))
             
-            # Load observations from selected chunk
-            obs_data = np.load(chunk_path)
-            observations = obs_data['observations']  # (N, 9): [x, y, z, image_id, pixel_x, pixel_y, r, g, b]
+            if is_val:
+                split_chunks = all_chunks[split_idx:]  # Last val_ratio chunks for validation
+            else:
+                split_chunks = all_chunks[:split_idx]  # First (1-val_ratio) chunks for training
             
-            print(f"  [Background] Material {material_id}: Loaded chunk {chunk_path.name} ({len(observations):,} obs)")
+            if len(split_chunks) == 0:
+                print(f"  Warning: Material {material_id} has no {split} chunks!")
+                continue
             
-            # Process observations (same logic as _load_all_materials)
-            xyz = torch.from_numpy(observations[:, :3]).float()
-            image_ids = observations[:, 3].astype(np.int32)
-            pixel_coords = torch.from_numpy(observations[:, 4:6]).float()
-            rgbs = torch.from_numpy(observations[:, 6:9]).float()
+            # Determine which chunks to actually load
+            if load_all:
+                chunks_to_load = split_chunks  # Load all chunks in this split
+            else:
+                chunks_to_load = [random.choice(split_chunks)]  # Random single chunk from this split
             
-            # Generate rays for each observation
-            rays_list = []
-            xyz_list = []
-            rgbs_list = []
-            emitter_ids_list = []
-            camera_ids_list = []
-            
-            # Group by image_id for efficient processing
-            from collections import defaultdict
-            obs_by_image = defaultdict(list)
-            for obs_idx, img_id in enumerate(image_ids):
-                obs_by_image[img_id].append(obs_idx)
-            
-            for img_id, obs_indices in obs_by_image.items():
-                if img_id not in camera_lookup:
+            for chunk_path in chunks_to_load:
+                # Load observations from chunk
+                obs_data = np.load(chunk_path)
+                observations = obs_data['observations']  # (N, 10): [x, y, z, image_id, pixel_x, pixel_y, r, g, b, point_id]
+                
+                if len(observations) == 0:
                     continue
                 
-                c2w_full = camera_lookup[img_id]
-                c2w = c2w_full[:3, :4]
+                if not load_all:
+                    print(f"  [Background] Material {material_id}: Loaded {chunk_path.name} ({len(observations):,} obs)")
                 
-                obs_indices_t = torch.tensor(obs_indices, dtype=torch.long)
-                pixels = pixel_coords[obs_indices_t]
+                # Process observations - vectorized
+                xyz = torch.from_numpy(observations[:, :3]).float()
+                image_ids = observations[:, 3].astype(np.int32) - 1 # Colmap starts at 1
+                image_ids_t = torch.from_numpy(image_ids).long()
+                pixel_coords = torch.from_numpy(observations[:, 4:6]).float()
+                # Apply color correction matrix to RGB values
+                rgbs_np = observations[:, 6:9].astype(np.float64) @ self.ccm
+                rgbs_np = rgbs_np.clip(0, None)
+                rgbs = torch.from_numpy(rgbs_np).float()
+                point_ids = torch.from_numpy(observations[:, 9].astype(np.int64)).long()
                 
-                directions = get_ray_directions_for_pixels(
-                    pixels, self.focal, self.cx, self.cy, self.distortion
-                )
+                # Vectorized: emitter_ids and camera_ids via direct tensor indexing
+                chunk_emitter_ids = emitter_lookup[image_ids_t]  # (N,)
+                chunk_camera_ids = image_ids_t.clone()  # (N,)
                 
-                rays_o, rays_d = get_rays(directions, c2w, focal=None)
-                rays = torch.cat([rays_o, rays_d], dim=-1)
+                # Generate rays - requires loop over unique images (get_rays needs single c2w)
+                rays_list = []
+                valid_mask_list = []
                 
-                rays_list.append(rays)
-                xyz_list.append(xyz[obs_indices_t])
-                rgbs_list.append(rgbs[obs_indices_t])
+                # Group by image_id for ray generation
+                unique_image_ids = np.unique(image_ids)
+                for img_id in unique_image_ids:
+                    if img_id not in camera_lookup:
+                        continue
+                    
+                    c2w_full = camera_lookup[img_id]
+                    c2w = c2w_full[:3, :4]
+                    
+                    # Get mask for this image
+                    mask = image_ids_t == img_id
+                    pixels = pixel_coords[mask]
+                    
+                    directions = get_ray_directions_for_pixels(
+                        pixels, self.focal, self.cx, self.cy, self.distortion
+                    )
+                    
+                    rays_o, rays_d = get_rays(directions, c2w, focal=None)
+                    rays = torch.cat([rays_o, rays_d], dim=-1)
+                    
+                    rays_list.append((mask, rays))
+                    valid_mask_list.append(mask)
                 
-                emitter_id = emitter_lookup.get(img_id, 0)
-                emitter_ids_batch = torch.full((len(obs_indices),), emitter_id, dtype=torch.long)
-                emitter_ids_list.append(emitter_ids_batch)
-                
-                camera_ids_batch = torch.full((len(obs_indices),), img_id, dtype=torch.long)
-                camera_ids_list.append(camera_ids_batch)
-            
-            # Concatenate for this material
-            if len(rays_list) > 0:
-                material_rays = torch.cat(rays_list, dim=0)
-                material_xyz = torch.cat(xyz_list, dim=0)
-                material_rgbs = torch.cat(rgbs_list, dim=0)
-                material_emitter_ids = torch.cat(emitter_ids_list, dim=0)
-                material_camera_ids = torch.cat(camera_ids_list, dim=0)
-                material_material_ids = torch.full((material_rays.shape[0],), material_id, dtype=torch.long)
-                
-                all_rays.append(material_rays)
-                all_rgbs.append(material_rgbs)
-                all_xyz.append(material_xyz)
-                all_emitter_ids.append(material_emitter_ids)
-                all_camera_ids.append(material_camera_ids)
-                all_material_ids.append(material_material_ids)
+                # Combine rays back into original order
+                if len(rays_list) > 0:
+                    # Create output tensor and fill in rays at correct positions
+                    valid_mask = torch.zeros(len(image_ids_t), dtype=torch.bool)
+                    for mask, _ in rays_list:
+                        valid_mask |= mask
+                    
+                    chunk_rays = torch.zeros(valid_mask.sum(), 6)
+                    chunk_xyz = xyz[valid_mask]
+                    chunk_rgbs = rgbs[valid_mask]
+                    chunk_point_ids = point_ids[valid_mask]
+                    chunk_emitter_ids = chunk_emitter_ids[valid_mask]
+                    chunk_camera_ids = chunk_camera_ids[valid_mask]
+                    
+                    # Map original indices to valid indices
+                    valid_indices = torch.where(valid_mask)[0]
+                    idx_map = torch.full((len(image_ids_t),), -1, dtype=torch.long)
+                    idx_map[valid_indices] = torch.arange(len(valid_indices))
+                    
+                    for mask, rays in rays_list:
+                        mapped_idx = idx_map[mask]
+                        chunk_rays[mapped_idx] = rays
+                    
+                    chunk_material_ids = torch.full((chunk_rays.shape[0],), material_id, dtype=torch.long)
+                    
+                    all_rays.append(chunk_rays)
+                    all_rgbs.append(chunk_rgbs)
+                    all_xyz.append(chunk_xyz)
+                    all_emitter_ids.append(chunk_emitter_ids)
+                    all_camera_ids.append(chunk_camera_ids)
+                    all_material_ids.append(chunk_material_ids)
+                    all_point_ids.append(chunk_point_ids)
         
         # Concatenate across all materials
         rays = torch.cat(all_rays, dim=0)
@@ -510,151 +522,20 @@ class MultiMaterialPointDataset(IterableDataset if True else Dataset):
         emitter_ids = torch.cat(all_emitter_ids, dim=0)
         camera_ids = torch.cat(all_camera_ids, dim=0)
         material_ids = torch.cat(all_material_ids, dim=0)
+        point_ids = torch.cat(all_point_ids, dim=0)
         
-        print(f"[Background] Chunk built: {len(rays):,} total observations")
+        print(f"[{'Main' if is_val else 'Background'}] Chunk built: {len(rays):,} total {split} observations")
         
         return MultiMaterialPointDataset.ChunkData(
             rays=rays, rgbs=rgbs, xyz=xyz,
-            camera_ids=camera_ids, emitter_ids=emitter_ids, material_ids=material_ids
+            camera_ids=camera_ids, emitter_ids=emitter_ids, material_ids=material_ids,
+            point_ids=point_ids
         )
-    
-    def _load_all_materials(self):
-        """Load one random chunk per material and process into rays."""
-        all_rays = []
-        all_rgbs = []
-        all_xyz = []
-        all_emitter_ids = []
-        all_camera_ids = []
-        all_material_ids = []
-        
-        print("\nLoading random chunk for each material...")
-        for material_folder in tqdm(self.material_folders, desc="Loading materials"):
-            material_id = int(material_folder.name)
-            
-            # Get metadata (already loaded)
-            camera_lookup = self.camera_lookups[material_id]
-            emitter_lookup = self.emitter_lookups[material_id]
-            
-            # Randomly select one chunk file
-            available_chunks = self.material_chunks[material_id]
-            chunk_path = random.choice(available_chunks)
-            
-            # Load observations from selected chunk
-            obs_data = np.load(chunk_path)
-            observations = obs_data['observations']  # (N, 9): [x, y, z, image_id, pixel_x, pixel_y, r, g, b]
-            
-            print(f"  Material {material_id}: Loaded chunk {chunk_path.name} with {len(observations)} observations")
-            
-            # Process observations
-            xyz = torch.from_numpy(observations[:, :3]).float()  # (N, 3)
-            image_ids = observations[:, 3].astype(np.int32)  # (N,)
-            pixel_coords = torch.from_numpy(observations[:, 4:6]).float()  # (N, 2)
-            rgbs = torch.from_numpy(observations[:, 6:9]).float()  # (N, 3)
-            
-            # Generate rays for each observation
-            rays_list = []
-            xyz_list = []
-            rgbs_list = []
-            emitter_ids_list = []
-            camera_ids_list = []
-            
-            # Group by image_id for efficient processing
-            from collections import defaultdict
-            obs_by_image = defaultdict(list)
-            for obs_idx, img_id in enumerate(image_ids):
-                obs_by_image[img_id].append(obs_idx)
-            
-            for img_id, obs_indices in obs_by_image.items():
-                # Get camera c2w
-                if img_id not in camera_lookup:
-                    print(f"    Warning: image_id {img_id} not found in camera_lookup, skipping...")
-                    continue
-                
-                c2w_full = camera_lookup[img_id]  # (4, 4)
-                c2w = c2w_full[:3, :4]  # (3, 4)
-                
-                # Get pixel coordinates for this image's observations
-                obs_indices_t = torch.tensor(obs_indices, dtype=torch.long)
-                pixels = pixel_coords[obs_indices_t]  # (M, 2)
-                
-                # Generate ray directions for these specific pixels (with distortion)
-                directions = get_ray_directions_for_pixels(
-                    pixels, self.focal, self.cx, self.cy, self.distortion
-                )  # (M, 3)
-                
-                # Transform to world space using get_rays (without modification)
-                rays_o, rays_d = get_rays(directions, c2w, focal=None)  # (M, 3), (M, 3)
-                rays = torch.cat([rays_o, rays_d], dim=-1)  # (M, 6)
-                
-                rays_list.append(rays)
-                
-                # Keep xyz and rgbs aligned with rays
-                xyz_list.append(xyz[obs_indices_t])
-                rgbs_list.append(rgbs[obs_indices_t])
-                
-                # Get emitter IDs
-                emitter_id = emitter_lookup.get(img_id, 0)  # default to 0 if not found
-                emitter_ids_batch = torch.full((len(obs_indices),), emitter_id, dtype=torch.long)
-                emitter_ids_list.append(emitter_ids_batch)
-                
-                # Camera IDs
-                camera_ids_batch = torch.full((len(obs_indices),), img_id, dtype=torch.long)
-                camera_ids_list.append(camera_ids_batch)
-            
-            # Concatenate for this material
-            if len(rays_list) > 0:
-                material_rays = torch.cat(rays_list, dim=0)
-                material_xyz = torch.cat(xyz_list, dim=0)
-                material_rgbs = torch.cat(rgbs_list, dim=0)
-                material_emitter_ids = torch.cat(emitter_ids_list, dim=0)
-                material_camera_ids = torch.cat(camera_ids_list, dim=0)
-                
-                # Create material IDs
-                material_material_ids = torch.full((material_rays.shape[0],), material_id, dtype=torch.long)
-                
-                all_rays.append(material_rays)
-                all_rgbs.append(material_rgbs)
-                all_xyz.append(material_xyz)
-                all_emitter_ids.append(material_emitter_ids)
-                all_camera_ids.append(material_camera_ids)
-                all_material_ids.append(material_material_ids)
-        
-        # Concatenate across all materials
-        self.all_rays = torch.cat(all_rays, dim=0)  # (N_total, 6)
-        self.all_rgbs = torch.cat(all_rgbs, dim=0)  # (N_total, 3)
-        self.all_xyz = torch.cat(all_xyz, dim=0)  # (N_total, 3)
-        self.all_emitter_ids = torch.cat(all_emitter_ids, dim=0)  # (N_total,)
-        self.all_camera_ids = torch.cat(all_camera_ids, dim=0)  # (N_total,)
-        self.all_material_ids = torch.cat(all_material_ids, dim=0)  # (N_total,)
-        
-        print(f"\nTotal observations loaded: {len(self.all_rays):,}")
-        print(f"  Materials: {torch.unique(self.all_material_ids).tolist()}")
-        print(f"  Cameras: {len(torch.unique(self.all_camera_ids))}")
-        print(f"  Emitters: {len(torch.unique(self.all_emitter_ids))}")
-    
-    def _create_split(self):
-        """Split data into train/val with fixed random seed."""
-        total = len(self.all_rays)
-        
-        # Shuffle with fixed seed for reproducibility
-        torch.manual_seed(42)
-        all_indices = torch.randperm(total)
-        
-        # 80/20 split
-        split_idx = int(0.8 * total)
-        if self.split == 'train':
-            self.indices = all_indices[:split_idx]
-        else:  # 'val'
-            self.indices = all_indices[split_idx:]
-        
-        print(f"\nSplit: {self.split}")
-        print(f"  Total rays: {total:,}")
-        print(f"  Split rays: {len(self.indices):,} ({100*len(self.indices)/total:.1f}%)")
     
     def __len__(self):
         """Return number of observations in this split."""
-        if hasattr(self, 'indices'):
-            return len(self.indices)
+        if hasattr(self, 'all_rays'):
+            return len(self.all_rays)
         else:
             # For training with double buffer, return a large number
             return 1000000
@@ -685,43 +566,25 @@ class MultiMaterialPointDataset(IterableDataset if True else Dataset):
                     'emitter_ids': chunk.emitter_ids[sample_idx],
                     'camera_ids': chunk.camera_ids[sample_idx],
                     'material_ids': chunk.material_ids[sample_idx],
+                    'point_ids': chunk.point_ids[sample_idx],
                     'gt_params': torch.zeros(1),
                 }
         
-        # Validation mode with static data
+        # Validation mode with static data (all validation observations already loaded)
         else:
             while True:
-                # Random sample rays_num rays from split indices
-                sample_idx = torch.randint(0, len(self.indices), (self.rays_num,), dtype=torch.long)
-                actual_idx = self.indices[sample_idx]
+                # Random sample rays_num rays from all validation data
+                total_rays = self.all_rays.shape[0]
+                sample_idx = torch.randint(0, total_rays, (self.rays_num,), dtype=torch.long)
                 
                 yield {
-                    'rays': self.all_rays[actual_idx],  # (N, 6)
-                    'rgbs': self.all_rgbs[actual_idx],  # (N, 3)
-                    'xyz': self.all_xyz[actual_idx],  # (N, 3)
-                    'emitter_ids': self.all_emitter_ids[actual_idx],  # (N,)
-                    'camera_ids': self.all_camera_ids[actual_idx],  # (N,)
-                    'material_ids': self.all_material_ids[actual_idx],  # (N,)
+                    'rays': self.all_rays[sample_idx],
+                    'rgbs': self.all_rgbs[sample_idx],
+                    'xyz': self.all_xyz[sample_idx],
+                    'emitter_ids': self.all_emitter_ids[sample_idx],
+                    'camera_ids': self.all_camera_ids[sample_idx],
+                    'material_ids': self.all_material_ids[sample_idx],
+                    'point_ids': self.all_point_ids[sample_idx],
                     'gt_params': torch.zeros(1),
                 }
     
-    def __getitem__(self, idx):
-        """For validation: return a single batch of rays."""
-        # For validation, we can return a batch at index `idx`
-        # This allows for validation with DataLoader
-        batch_size = min(self.rays_num, len(self.indices) - idx * self.rays_num)
-        start_idx = idx * self.rays_num
-        end_idx = min(start_idx + self.rays_num, len(self.indices))
-        
-        actual_indices = self.indices[start_idx:end_idx]
-        
-        return {
-            'rays': self.all_rays[actual_indices],
-            'rgbs': self.all_rgbs[actual_indices],
-            'xyz': self.all_xyz[actual_indices],
-            'emitter_ids': self.all_emitter_ids[actual_indices],
-            'camera_ids': self.all_camera_ids[actual_indices],
-            'material_ids': self.all_material_ids[actual_indices],
-            'gt_params': torch.zeros(1),
-        }
-        

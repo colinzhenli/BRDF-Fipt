@@ -1,4 +1,5 @@
 type: "SvPBRBRDF"
+module: "model.brdf"
 
 colorful_texture: True
 anisotropic: False

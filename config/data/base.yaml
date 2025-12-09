@@ -3,12 +3,12 @@ val_num: 9
 test_num: 1
 num_workers: 0
 # batch_num: 2048 #4096 # steps per epoch
-# rays_num: 32768  # pixels per batch
+# rays_num: 131072  # pixels per batch
 rays_num: 65536 # 4 times more rays 
 
 
 # filtered_purple_ids: [0, 9, 45, 109, 189, 675, 684, 850, 1012, 1013, 1014, 1039, 1051, 1052, 1053, 1054, 1064, 1065, 1066, 1077, 1078, 1079, 1080, 1082, 1103, 1104, 1105, 1106, 1117, 1118, 1130, 1131, 1139, 1143, 1144, 1145, 1146, 1155, 1156, 1157, 1168, 1169, 1170, 1181, 1182, 1183, 1196, 1209]
-filtered_purple_ids: [1039, 1051, 1052, 1053, 1054, 1064, 1065, 1066, 1079, 1080, 1103, 1104, 1105, 1106, 1117, 1118, 1130, 1131, 1143, 1144, 1155, 1156, 1157, 1168, 1169, 1170, 1181, 1182, 1183, 1196, 1209]
+# filtered_purple_ids: [1039, 1051, 1052, 1053, 1054, 1064, 1065, 1066, 1079, 1080, 1103, 1104, 1105, 1106, 1117, 1118, 1130, 1131, 1143, 1144, 1155, 1156, 1157, 1168, 1169, 1170, 1181, 1182, 1183, 1196, 1209]
 
 # filtered_purple_ids: []
 
@@ -27,8 +27,8 @@ ccm: [
 
 
 #load images chunk to memory
-chunk_size: 0 # 0 means no chunking
-switch_iters: 3000 # switch chunk every 10000 steps
+chunk_size: 200 # 0 means no chunking
+switch_iters: 1000 # switch chunk every 10000 steps
 random_chunks: True # whether to sample chunks randomly or sequentially with shuffling at wrap
 
 importance_sampling: False
@@ -42,6 +42,9 @@ downsample_iter: [-1, -1]
 
 debug: True # no random permutation when debugging
 debug_num: 1
+debug_num_materials: 10
+val_ratio: 0.05
 visualize_uv: False
 start_idx: 0
 valid_num: -1 # -1 to use all data for validation
+
