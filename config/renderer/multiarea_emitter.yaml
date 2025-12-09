@@ -1,4 +1,4 @@
-type: "path_tracing_realarea_emitter"
+type: "path_tracing_multiarea_emitter"
 brdf_sampling: False # not actually used
 emitter_sampling: True # not actually used
 indir_depth: 0
@@ -86,7 +86,7 @@ mesh:
 emitter:
   direction_json: "/media/raid/cloth/capture_data/Dataset_Nov11/emitter_calibration.json"
   folder_path: "/media/raid/cloth/capture_data/Dataset_Nov11"
-  type: "realarea"
+  type: "multiarea"
   num_lights: 40
   dist: 4.0
   radius: 0.007 # value from specs

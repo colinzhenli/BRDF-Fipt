@@ -8,7 +8,6 @@ import cv2
 from openexr_numpy import imread, imwrite
 import json
 import os
-
 from utils.io import read_light_transforms
 
 class EnvMapEmitter(nn.Module):
@@ -311,7 +310,7 @@ class RealAreaEmitter(nn.Module):
         self.register_buffer('light_radiance', torch.tensor(cfg.get('radiance'), dtype=torch.float32, device='cuda'))
 
         theta_half = math.radians(fwhm_deg * 0.5)
-        m = math.log(0.5) / math.log(max(1e-8, math.cos(theta_half))) - 1.0
+        m = math.log(0.5) / math.log(max(1e-8, math.cos(theta_half)))
         self.register_buffer('m', torch.tensor(m, dtype=torch.float32, device='cuda'))
         self.register_buffer('light_radius', torch.tensor(radius, dtype=torch.float32, device='cuda'))
 
@@ -323,6 +322,45 @@ class RealAreaEmitter(nn.Module):
         light_normals_world = torch.matmul(self.l2w[:, :3, :3], light_normal_local)  # [N, 3]
         light_normals_world = light_normals_world / (light_normals_world.norm(dim=-1, keepdim=True) + 1e-12)
         self.register_buffer('light_normal', light_normals_world)
+        
+        # Load calibrated directional distribution if provided
+        self.calibrated_directional_distribution = False
+        direction_json = cfg.get('direction_json', '')
+        if direction_json:
+            self._load_calibration_table(direction_json)
+    
+    def _load_calibration_table(self, direction_json):
+        """
+        Load the directional distribution calibration table from JSON file.
+        Args:
+            direction_json: path to the JSON file containing the calibration table
+        """
+        import json
+        
+        with open(direction_json, 'r') as f:
+            calibration_data = json.load(f)
+        
+        # Extract table data
+        resolution = calibration_data['resolution_degrees']
+        data_dict = calibration_data['data']
+        max_cam_rad_ratio = calibration_data['max_cam_rad_ratio']
+        
+        # Convert dictionary to sorted arrays for interpolation
+        angles = []
+        ratios = []
+        for angle_str, ratio in sorted(data_dict.items(), key=lambda x: float(x[0])):
+            angles.append(float(angle_str))
+            ratios.append(ratio)
+        
+        # Store as tensors
+        self.register_buffer('calibration_angles', torch.tensor(angles, dtype=torch.float32, device='cuda'))
+        self.register_buffer('calibration_ratios', torch.tensor(ratios, dtype=torch.float32, device='cuda'))
+        self.register_buffer('calibration_resolution', torch.tensor(resolution, dtype=torch.float32, device='cuda'))
+        self.register_buffer('max_cam_rad_ratio', torch.tensor(max_cam_rad_ratio, dtype=torch.float32, device='cuda'))
+        
+        self.calibrated_directional_distribution = True
+        print(f"Loaded directional calibration table from {direction_json}")
+        print(f"  Resolution: {resolution}°, Angles: {len(angles)}, Max ratio: {max_cam_rad_ratio:.6f}")
         
     def _compute_l2w(self, cfg, json_path):
         """
@@ -377,11 +415,12 @@ class RealAreaEmitter(nn.Module):
             self.light_normal = nor_rot
 
                 
-    def _directional_distribution(self, light_dir,light_id):
+    def _directional_distribution(self, light_dir, light_id):
         """
         Compute directional radiance L(θ) for rays headed from the light to the surface.
         Args:
             light_dir: (B, 3) directions from surface -> light (so emission dir is -light_dir)
+            light_id: ID of the light
 
         Returns:
             radiance: (B, 3) directional radiance (RGB) following L = L0 * cos^m(theta).
@@ -394,12 +433,47 @@ class RealAreaEmitter(nn.Module):
         # cos(theta) between light normal and emission direction
         cos_theta = torch.clamp((v * self.light_normal[light_id]).sum(dim=-1, keepdim=True), min=0.0)
 
-        # Cosine-power lobe
-        Lshape = cos_theta.pow(self.m)  # (B,1)
+        if self.calibrated_directional_distribution:
+            # Use calibrated table with linear interpolation
+            # Convert cos(theta) to degrees
+            theta_rad = torch.acos(cos_theta)  # (B, 1)
+            theta_deg = theta_rad * 180.0 / math.pi  # (B, 1)
+            
+            # Linear interpolation in the calibration table
+            theta_deg_flat = theta_deg.squeeze(-1)  # (B,)
+            
+            # Clamp to valid range [0, 90]
+            theta_deg_flat = torch.clamp(theta_deg_flat, 0.0, self.calibration_angles[-1])
 
-        # Use the first light's L0 as the color (assumes one emitter or shared spectrum)
+            # Use searchsorted to find indices for interpolation
+            indices = torch.searchsorted(self.calibration_angles, theta_deg_flat, right=False)
+            indices = torch.clamp(indices, 1, len(self.calibration_angles) - 1)
+            
+            # Get lower and upper bounds for linear interpolation
+            lower_idx = indices - 1
+            upper_idx = indices
+            
+            lower_angle = self.calibration_angles[lower_idx]  # (B,)
+            upper_angle = self.calibration_angles[upper_idx]  # (B,)
+            lower_ratio = self.calibration_ratios[lower_idx]  # (B,)
+            upper_ratio = self.calibration_ratios[upper_idx]  # (B,)
+            
+            # Linear interpolation weight
+            weight = (theta_deg_flat - lower_angle) / (upper_angle - lower_angle + 1e-8)
+            weight = torch.clamp(weight, 0.0, 1.0)
+            
+            interpolated_ratio = lower_ratio + weight * (upper_ratio - lower_ratio)  # (B,)
+            
+            # The calibration table stores relative ratios (normalized to max)
+            Lshape = interpolated_ratio.unsqueeze(-1)  # (B, 1)
+            L0 = self.light_radiance  # (3,) or (1, 3)
+            radiance = Lshape * L0  # (B, 3)
+        else:
+            # Original cosine-power lobe model
+            Lshape = cos_theta.pow(self.m)  # (B,1)
         L0 = self.light_radiance     # (B, 3)
         radiance = Lshape * L0          # (B,3)
+        
         return radiance
     
     def sample_emitter(self, sample, position, light_id):
@@ -587,198 +661,808 @@ class RealAreaEmitter(nn.Module):
             print("Le is nan")
         return Le, pdf, torch.ones_like(pdf, dtype=torch.bool)  # Always valid
     
-class AreaEmitter(nn.Module):
-    """ reference triangle mesh emitters from FIPT paper"""
-    # def __init__(self,emitter_path):
-    #     """ emitter_path file 
-    #     is_emitter: B indicator of whether a triangle is emitter
-    #     emitter_vertices: Kx3x3 triangle vertices of emitters
-    #     emitter_area: K surface areas of emitters
-    #     emitter_radiance: Bx3x3 emitter radiance
-    #     """
-    #     super(AreaEmitter,self).__init__()
-        
-    #     weight = torch.load(emitter_path,map_location='cpu')
-        
-    #     is_emitter = weight['is_emitter']
-    #     emitter_vertices = weight['emitter_vertices']
-    #     emitter_area = weight['emitter_area']
-    #     emitter_radiance = weight['emitter_radiance']
-
-    #     self.register_buffer('is_emitter',is_emitter)
-    #     self.register_buffer('emitter_vertices',emitter_vertices)
-    #     self.register_buffer('emitter_area',emitter_area)
-    #     self.register_buffer('radiance',emitter_radiance)
-        
-    #     # emitter idx mapping, -1 indicates not an emitter
-    #     emitter_idx = torch.full((len(is_emitter),),-1,device=is_emitter.device,dtype=torch.long)
-    #     emitter_idx[is_emitter] = torch.arange(is_emitter.sum(),device=is_emitter.device)
-    #     self.register_buffer('emitter_idx',emitter_idx)
-        
-    #     # emitter idx to triangle idx
-    #     triangle_idx = torch.arange(len(is_emitter))[is_emitter]
-    #     self.register_buffer('triangle_idx',triangle_idx)
-        
-    #     # sample emitters uniformly
-    #     emitter_pdf = NF.normalize(torch.ones_like(emitter_area),dim=-1,p=1)
-    #     emitter_cdf = emitter_pdf.cumsum(-1).contiguous()
-    #     self.register_buffer('emitter_pdf',emitter_pdf)
-    #     self.register_buffer('emitter_cdf',emitter_cdf)
-    def __init__(self, emitter_path):
-        """ emitter_path file 
-        is_emitter: B indicator of whether a triangle is emitter
-        emitter_vertices: Kx3x3 triangle vertices of emitters
-        emitter_area: K surface areas of emitters
-        emitter_radiance: Bx3x3 emitter radiance
+class MultiAreaEmitter(nn.Module):
+    def __init__(self, cfg):
         """
-        super(AreaEmitter, self).__init__()
-
-        weight = torch.load(emitter_path, map_location='cpu')
-
-        is_emitter        = weight['is_emitter']
-        emitter_vertices  = weight['emitter_vertices']   # [K, 3, 3]
-        emitter_area      = weight['emitter_area']       # [K]
-        emitter_radiance  = weight['emitter_radiance']   # [B, 3, 3]
-
-        # ---- Register original buffers (unchanged) ----
-        self.register_buffer('is_emitter', is_emitter)
-        self.register_buffer('emitter_vertices', emitter_vertices)
-        self.register_buffer('emitter_area', emitter_area)
-        self.register_buffer('radiance', emitter_radiance)
-
-        # Emitter idx mapping, -1 indicates not an emitter
-        emitter_idx = torch.full((len(is_emitter),), -1, device=is_emitter.device, dtype=torch.long)
-        emitter_idx[is_emitter] = torch.arange(is_emitter.sum(), device=is_emitter.device)
-        self.register_buffer('emitter_idx', emitter_idx)
-
-        # Emitter idx to triangle idx
-        triangle_idx = torch.arange(len(is_emitter))[is_emitter]
-        self.register_buffer('triangle_idx', triangle_idx)
-
-        # Sample emitters uniformly
-        emitter_pdf = NF.normalize(torch.ones_like(emitter_area), dim=-1, p=1)
-        emitter_cdf = emitter_pdf.cumsum(-1).contiguous()
-        self.register_buffer('emitter_pdf', emitter_pdf)
-        self.register_buffer('emitter_cdf', emitter_cdf)
-
-        # ---- New: generate 60 emitter positions along a 360° trajectory (clockwise) ----
-        # Turntable center (world space)
-        TURNTABLE_CENTER = torch.tensor([0.21056884, -0.1938618, 0.0], dtype=emitter_vertices.dtype)
-
-        # Define a single "emitter position" as the overall centroid of all emitting triangles
-        # centroid of a triangle = mean of its 3 vertices; overall position = area-weighted mean
-        tri_centroids = emitter_vertices.mean(dim=1)                    # [K, 3]
-        areas = emitter_area.clamp_min(1e-12)                           # avoid div-by-zero
-        weighted_sum = (tri_centroids * areas.unsqueeze(-1)).sum(dim=0) # [3]
-        total_area = areas.sum()
-        base_pos = weighted_sum / total_area                            # [3] starting position
-
-        # Build 60 angles from 0 to 2π (clockwise => negative angles)
-        num_steps = 60
-        thetas = torch.linspace(0.0, 2.0 * torch.pi, steps=num_steps, dtype=emitter_vertices.dtype)
-        thetas = -thetas  # clockwise
-
-        # Helper: rotate a 3D point around Z about a center
-        def rotate_around_z(p, center, theta):
-            # p, center: [3]; return: [3]
-            c, s = torch.cos(theta), torch.sin(theta)
-            Rz = torch.tensor([[c, -s, 0.0],
-                            [s,  c, 0.0],
-                            [0.0, 0.0, 1.0]], dtype=p.dtype, device=p.device)
-            return (Rz @ (p - center)) + center
-
-        # Generate trajectory positions
-        # keep everything on the same device as emitter_vertices
-        base_pos = base_pos.to(emitter_vertices.device)
-        TURNTABLE_CENTER = TURNTABLE_CENTER.to(emitter_vertices.device)
-        thetas = thetas.to(emitter_vertices.device)
-
-        positions = []
-        for th in thetas:
-            positions.append(rotate_around_z(base_pos, TURNTABLE_CENTER, th))
-        emitter_positions = torch.stack(positions, dim=0)  # [60, 3]
-
-        # Store center & positions for downstream use
-        self.register_buffer('turntable_center', TURNTABLE_CENTER)
-        self.register_buffer('emitter_positions', emitter_positions)
-
-    
-    def forward(self,triangle_idx):
-        """ get emitter radiance
-        triangle_idx: B triangle indices
-        """
-        vis = triangle_idx != -1 # whether a valid triangle
-
-        is_area = self.is_emitter[triangle_idx]&vis
-        Le = torch.zeros(position.shape[0],3,device=position.device)
-        if is_area.any():
-            e_idx = self.emitter_idx[triangle_idx[is_area]]
-            Le[is_area] = self.radiance[e_idx]
-        
-        # assume zero background lighting
-        Le = Le*vis[...,None]
-        return Le
-    
-    def eval_emitter(self, position,light_dir,triangle_idx,*args):
-        """ evaluate surface emission and pdf
         Args:
-            position: Bx3 intersection location
-            light_dir: Bx3 emission direction
-            triangle_idx: B intersected triangle id
-        Return:
+            cfg: configuration object
+            folder_path: root folder containing material subfolders (0, 1, 2...)
+        """
+        super(MultiAreaEmitter, self).__init__()
+        from pathlib import Path
+        
+        # Extract configuration parameters
+        radius = cfg.get('radius', 0.007)
+        fwhm_deg = cfg.get('fwhm_deg', 115.0)
+        # self.light_radiance = nn.Parameter(torch.tensor(cfg.get('radiance'), dtype=torch.float32, device='cuda'))
+        self.register_buffer('light_radiance', torch.tensor(cfg.get('radiance'), dtype=torch.float32, device='cuda'))
+
+        theta_half = math.radians(fwhm_deg * 0.5)
+        m = math.log(0.5) / math.log(max(1e-8, math.cos(theta_half)))
+        self.register_buffer('m', torch.tensor(m, dtype=torch.float32, device='cuda'))
+        self.register_buffer('light_radius', torch.tensor(radius, dtype=torch.float32, device='cuda'))
+
+        # Discover material folders and load scan_log.json for each
+        folder_path = cfg.get('folder_path', '')
+        root = Path(folder_path)
+        material_folders = sorted([
+            d for d in root.iterdir() 
+            if d.is_dir() and d.name.isdigit()
+        ], key=lambda x: int(x.name))
+        
+        print(f"MultiAreaEmitter: Found {len(material_folders)} material folders.")
+
+        l2w_list = []
+        for d in material_folders:
+            json_path = d / "scan_log.json"
+            if not json_path.exists():
+                # raise FileNotFoundError(f"scan_log.json not found in {d}")
+                print(f"scan_log.json not found in {d}")
+                continue
+            
+            # Compute l2w for this material [N_i, 4, 4]
+            l2w_mat = self._compute_l2w(cfg, str(json_path)) 
+            l2w_list.append(l2w_mat)
+
+        if not l2w_list:
+             raise ValueError(f"No valid material folders found in {folder_path}")
+
+        # Find max emitter count and pad to uniform size
+        num_emitters_list = [l2w.shape[0] for l2w in l2w_list]
+        N_max = max(num_emitters_list)
+        M = len(l2w_list)
+        
+        print(f"MultiAreaEmitter: Emitters per material: {num_emitters_list}, padding to N_max={N_max}")
+        
+        # Pad each l2w to [N_max, 4, 4] and create validity mask
+        padded_l2w_list = []
+        valid_mask = torch.zeros(M, N_max, dtype=torch.bool, device='cuda')
+        for i, l2w in enumerate(l2w_list):
+            N_i = l2w.shape[0]
+            valid_mask[i, :N_i] = True
+            if N_i < N_max:
+                # Pad with identity matrices
+                padding = torch.eye(4, device='cuda', dtype=l2w.dtype).unsqueeze(0).expand(N_max - N_i, 4, 4).clone()
+                l2w = torch.cat([l2w, padding], dim=0)
+            padded_l2w_list.append(l2w)
+
+        # Stack all materials: [M, N_max, 4, 4]
+        self.l2w = torch.stack(padded_l2w_list, dim=0)
+        
+        # Register validity mask and emitter counts
+        self.register_buffer('valid_emitter_mask', valid_mask)  # [M, N_max]
+        self.register_buffer('num_emitters_per_material', torch.tensor(num_emitters_list, dtype=torch.long, device='cuda'))  # [M]
+        
+        # Register buffers with extra material dimension [M, N_max, 3]
+        self.register_buffer('light_positions', self.l2w[..., :3, 3]) 
+        
+        # Add a small tilt along z-axis
+        tilt_angle = math.radians(0)  # 5 degree tilt, adjust as needed
+        light_normal_local = torch.tensor([0.0, -math.cos(tilt_angle), math.sin(tilt_angle)], dtype=torch.float32, device='cuda')
+        
+        # Rotate normal: [M, N_max, 3, 3] @ [3] -> [M, N_max, 3]
+        light_normals_world = torch.matmul(self.l2w[..., :3, :3], light_normal_local)
+        light_normals_world = light_normals_world / (light_normals_world.norm(dim=-1, keepdim=True) + 1e-12)
+        self.register_buffer('light_normal', light_normals_world)
+        
+        # Load calibrated directional distribution if provided
+        self.calibrated_directional_distribution = False
+        direction_json = cfg.get('direction_json', '')
+        if direction_json:
+            self._load_calibration_table(direction_json)
+    
+    def _load_calibration_table(self, direction_json):
+        """
+        Load the directional distribution calibration table from JSON file.
+        Args:
+            direction_json: path to the JSON file containing the calibration table
+        """
+        import json
+        
+        with open(direction_json, 'r') as f:
+            calibration_data = json.load(f)
+        
+        # Extract table data
+        resolution = calibration_data['resolution_degrees']
+        data_dict = calibration_data['data']
+        max_cam_rad_ratio = calibration_data['max_cam_rad_ratio']
+        
+        # Convert dictionary to sorted arrays for interpolation
+        angles = []
+        ratios = []
+        for angle_str, ratio in sorted(data_dict.items(), key=lambda x: float(x[0])):
+            angles.append(float(angle_str))
+            ratios.append(ratio)
+        
+        # Store as tensors
+        self.register_buffer('calibration_angles', torch.tensor(angles, dtype=torch.float32, device='cuda'))
+        self.register_buffer('calibration_ratios', torch.tensor(ratios, dtype=torch.float32, device='cuda'))
+        self.register_buffer('calibration_resolution', torch.tensor(resolution, dtype=torch.float32, device='cuda'))
+        self.register_buffer('max_cam_rad_ratio', torch.tensor(max_cam_rad_ratio, dtype=torch.float32, device='cuda'))
+        
+        self.calibrated_directional_distribution = True
+        print(f"Loaded directional calibration table from {direction_json}")
+        print(f"  Resolution: {resolution}°, Angles: {len(angles)}, Max ratio: {max_cam_rad_ratio:.6f}")
+        
+    def _compute_l2w(self, cfg, json_path):
+        """
+        Compute the world transform for each light.
+        """
+        # Compute light transformation matrix
+        R_l2g = torch.tensor(cfg.get('R_l2g'), dtype=torch.float32, device='cuda')
+        t_l2g = torch.tensor(cfg.get('t_l2g'), dtype=torch.float32, device='cuda')
+        base2_to_base1 = torch.tensor(cfg.get('base2_to_base1'), dtype=torch.float32, device='cuda')
+        g2b0 = read_light_transforms(json_path, cfg.turntable.center, cfg.turntable.axis, base2_to_base1) # [N, 4, 4]
+        # g2b0 = base2_to_base1.unsqueeze(0) @ g2b
+        l2g = torch.eye(4, device='cuda')
+        l2g[:3, :3] = R_l2g
+        l2g[:3, 3] = t_l2g
+        l2w = g2b0 @ l2g
+        return l2w
+    
+    def _update_poses_for_vis(self, turntable_center, steps):
+        turntable_center = turntable_center.to(self.l2w.device)
+        light_normal_local = torch.tensor([0.0, -1.0, 0.0], dtype=torch.float32, device='cuda')
+        p0_world = self.l2w[:3, 3]   # [3]
+        R0_world = self.l2w[:3, :3]  # [3,3]
+        n0_world = (R0_world @ light_normal_local)  # [3]
+        n0_world = n0_world / (n0_world.norm() + 1e-12)
+
+        # Clockwise in right-handed (+Z out) means negative angles
+        angles = torch.arange(steps, device='cuda', dtype=torch.float32) * (-2.0 * math.pi / steps)  # [60]
+
+        c = torch.cos(angles)
+        s = torch.sin(angles)
+        # Batch of Rz(θ): shape [60, 3, 3]
+        Rz = torch.zeros(steps, 3, 3, device='cuda', dtype=torch.float32)
+        Rz[:, 0, 0] =  c
+        Rz[:, 0, 1] = -s
+        Rz[:, 1, 0] =  s
+        Rz[:, 1, 1] =  c
+        Rz[:, 2, 2] =  1.0
+
+        # Rotate the position around the center: p' = Rz*(p0 - center) + center
+        rel = p0_world - turntable_center  # [3]
+        rel = rel.unsqueeze(-1)            # [3,1] for batch matmul
+        pos_rot = (Rz @ rel).squeeze(-1) + turntable_center  # [60,3]
+
+        # Rotate the normal as a direction: n' = Rz * n0
+        n0 = n0_world.unsqueeze(-1)  # [3,1]
+        nor_rot = (Rz @ n0).squeeze(-1)  # [60,3]
+        nor_rot = nor_rot / (nor_rot.norm(dim=-1, keepdim=True) + 1e-12)
+
+        # ---- Register buffers ----
+        with torch.no_grad():
+            self.light_positions = pos_rot
+            self.light_normal = nor_rot
+
+                
+    def _directional_distribution(self, light_dir, light_id, material_id):
+        """
+        Compute directional radiance L(θ) for rays headed from the light to the surface.
+        Args:
+            light_dir: (B, 3) directions from surface -> light (so emission dir is -light_dir)
+            light_id: ID of the light
+            material_id: ID of the material
+
+        Returns:
+            radiance: (B, 3) directional radiance (RGB) following L = L0 * cos^m(theta).
+                      Clamped to zero for back-facing directions.
+        """
+        # Emission direction is from light -> surface
+        v = -light_dir  # (B,3)
+        v = v / (v.norm(dim=-1, keepdim=True) + 1e-12)
+
+        # cos(theta) between light normal and emission direction
+        # light_normal is [M, N, 3], index with material_id and light_id
+        light_n = self.light_normal[material_id, light_id] # (B, 3)
+        cos_theta = torch.clamp((v * light_n).sum(dim=-1, keepdim=True), -1, 1)
+
+        if self.calibrated_directional_distribution:
+            # Use calibrated table with linear interpolation
+            # Convert cos(theta) to degrees
+            theta_rad = torch.acos(cos_theta)  # (B, 1)
+            theta_deg = theta_rad * 180.0 / math.pi  # (B, 1)
+            
+            # Linear interpolation in the calibration table
+            theta_deg_flat = theta_deg.squeeze(-1)  # (B,)
+            
+            # Clamp to valid range [0, 90]
+            theta_deg_flat = torch.clamp(theta_deg_flat, 0.0, self.calibration_angles[-1])
+
+            # Use searchsorted to find indices for interpolation
+            indices = torch.searchsorted(self.calibration_angles, theta_deg_flat, right=False)
+            indices = torch.clamp(indices, 1, len(self.calibration_angles) - 1)
+            
+            # Get lower and upper bounds for linear interpolation
+            lower_idx = indices - 1
+            upper_idx = indices
+            
+            lower_angle = self.calibration_angles[lower_idx]  # (B,)
+            upper_angle = self.calibration_angles[upper_idx]  # (B,)
+            lower_ratio = self.calibration_ratios[lower_idx]  # (B,)
+            upper_ratio = self.calibration_ratios[upper_idx]  # (B,)
+            
+            # Linear interpolation weight
+            weight = (theta_deg_flat - lower_angle) / (upper_angle - lower_angle + 1e-8)
+            weight = torch.clamp(weight, 0.0, 1.0)
+            
+            interpolated_ratio = lower_ratio + weight * (upper_ratio - lower_ratio)  # (B,)
+            
+            # The calibration table stores relative ratios (normalized to max)
+            Lshape = interpolated_ratio.unsqueeze(-1)  # (B, 1)
+            L0 = self.light_radiance  # (3,) or (1, 3)
+            radiance = Lshape * L0  # (B, 3)
+            if torch.isnan(radiance).any():
+                print("radiance is nan")
+        else:
+            # Original cosine-power lobe model
+            Lshape = cos_theta.pow(self.m)  # (B,1)
+        L0 = self.light_radiance     # (B, 3)
+        radiance = Lshape * L0          # (B,3)
+        
+        return radiance
+    
+    def sample_emitter(self, sample, position, light_id, material_id):
+        """
+        Sample a direction(position) from the area light (circular disk).
+        Args:
+            sample: Bx2 uniform samples for disk sampling
+            position: Bx3 surface positions
+            light_id: B light indices
+            material_id: B material indices
+        Returns:
+            wi: Bx3 sampled directions
+            pdf: Bx1 sampling pdf (area pdf)
+            emit_position: Bx3 sampled positions
+            emitter_normal: Bx3 sampled normals
+        """
+        B = position.shape[0]
+        
+        # Get light properties for the specified light indices
+        # light_positions and light_normal are [M, N, 3]
+        light_pos = self.light_positions[material_id, light_id]  # (B, 3)
+        light_r = self.light_radius.expand(B)  # (B,)
+        light_n = self.light_normal[material_id, light_id]  # (B, 3)
+        
+        # Uniform sampling on disk using polar coordinates
+        r_sample = torch.sqrt(sample[..., 0]) * light_r   # (B,)
+        theta = 2.0 * math.pi * sample[..., 1]           # (B,)
+        disk_x = r_sample * torch.cos(theta)             # (B,)
+        disk_y = r_sample * torch.sin(theta)             # (B,)
+        
+        # Create orthonormal basis for each light plane
+        up = torch.tensor([0.0, 1.0, 0.0], device=light_n.device, dtype=light_n.dtype)
+        up = up.unsqueeze(0).expand(B, 3)  # (B, 3)
+        
+        # Check for near-parallel cases and use alternative up vector
+        parallel_mask = torch.abs((light_n * up).sum(dim=-1)) > 0.9  # (B,)
+        alt_up = torch.tensor([1.0, 0.0, 0.0], device=light_n.device, dtype=light_n.dtype)
+        alt_up = alt_up.unsqueeze(0).expand(B, 3)  # (B, 3)
+        up = torch.where(parallel_mask.unsqueeze(-1), alt_up, up)  # (B, 3)
+        
+        # Compute u_axis for each light
+        u_axis = torch.cross(light_n, up, dim=-1)  # (B, 3)
+        u_axis = u_axis / (torch.norm(u_axis, dim=-1, keepdim=True) + 1e-8)  # (B, 3)
+        
+        # Compute v_axis for each light
+        v_axis = torch.cross(light_n, u_axis, dim=-1)  # (B, 3)
+        v_axis = v_axis / (torch.norm(v_axis, dim=-1, keepdim=True) + 1e-8)  # (B, 3)
+        
+        # Compute sampled position on light disk
+        emit_position = (
+            light_pos 
+            + disk_x.unsqueeze(-1) * u_axis 
+            + disk_y.unsqueeze(-1) * v_axis
+        )  # (B, 3)
+        
+        # Calculate direction from surface to light sample
+        wi = emit_position - position  # (B, 3)
+        distance = torch.norm(wi, dim=-1, keepdim=True)  # (B, 1)
+        wi = wi / distance  # (B, 3)
+        
+        # Calculate area-based PDF
+        # PDF = 1 / Area = 1 / (π r^2)
+        light_area = math.pi * light_r * light_r  # (B,)
+        pdf = 1.0 / light_area  # (B,)
+        pdf = pdf.unsqueeze(-1)  # (B, 1)
+        
+        # Emitter normal (same for all sampled points)
+        emitter_normal = light_n  # (B, 3)
+        
+        return wi, pdf, emit_position, emitter_normal
+
+    def intersect(self, position, light_dir, light_id, material_id):
+        """
+        Intersect a ray with the area light (circular disk)
+        Args:
+            position: (B, 3) ray origins
+            light_dir: (B, 3) ray directions (normalized)
+            light_id: (B,) light indices
+            material_id: (B,) material indices
+        Returns:
+            t: (B,) intersection distances (negative if no intersection)
+            hit: (B,) boolean mask for valid intersections
+            hit_pos: (B, 3) intersection positions
+            light_idx: (B,) light indices
+        """
+        B = position.shape[0]
+        
+        # Get light properties for the specified light indices
+        light_pos = self.light_positions[material_id, light_id]  # (B, 3)
+        light_r = self.light_radius.expand(B)  # (B,)
+        light_n = self.light_normal[material_id, light_id]  # (B, 3)
+        
+        # Ray-plane intersection
+        # Ray: p(t) = pos + t * dirs
+        # Plane: (p - light_pos) · light_normal = 0
+        # Substituting: (pos + t*dirs - light_pos) · light_normal = 0
+        # Solving for t: t = (light_pos - pos) · light_normal / (dirs · light_normal)
+        
+        # Compute denominator (ray direction dot plane normal)
+        denom = (light_dir * light_n).sum(dim=-1)  # (B,)
+
+        # Check if ray is parallel to plane (denom ≈ 0)
+        
+        # Compute numerator
+        to_light = light_pos - position  # (B, 3)
+        numer = (to_light * light_n).sum(dim=-1)  # (B,)
+        '''
+        print("position",position)
+        print("light_pos",light_pos)
+        print("to_light",to_light)
+        print("light_n",light_n)
+        
+        print("numer",numer)
+        print("denom",denom)
+        '''
+        # Compute intersection distance
+        t = numer / denom  # (B,)
+        
+        # Check if intersection is in front of ray origin
+        
+        # Compute intersection points
+        hit_pos = position + t.unsqueeze(-1) * light_dir  # (B, 3)
+        
+        # Check if intersection point is within the circular disk
+        # Create orthonormal basis for each light plane
+        up = torch.tensor([0.0, 1.0, 0.0], device=light_n.device, dtype=light_n.dtype)
+        up = up.unsqueeze(0).expand(B, 3)  # (B, 3)
+        
+        # Check for near-parallel cases and use alternative up vector
+        parallel_mask = torch.abs((light_n * up).sum(dim=-1)) > 0.9  # (B,)
+        alt_up = torch.tensor([1.0, 0.0, 0.0], device=light_n.device, dtype=light_n.dtype)
+        alt_up = alt_up.unsqueeze(0).expand(B, 3)  # (B, 3)
+        up = torch.where(parallel_mask.unsqueeze(-1), alt_up, up)  # (B, 3)
+        
+        # Compute u_axis for each light
+        u_axis = torch.cross(light_n, up, dim=-1)  # (B, 3)
+        u_axis = u_axis / (torch.norm(u_axis, dim=-1, keepdim=True) + 1e-8)  # (B, 3)
+        
+        # Compute v_axis for each light
+        v_axis = torch.cross(light_n, u_axis, dim=-1)  # (B, 3)
+        v_axis = v_axis / (torch.norm(v_axis, dim=-1, keepdim=True) + 1e-8)  # (B, 3)
+        
+        # Project intersection point onto the light plane coordinate system
+        to_hit = hit_pos - light_pos  # (B, 3)
+        u_coord = (to_hit * u_axis).sum(dim=-1)  # (B,)
+        v_coord = (to_hit * v_axis).sum(dim=-1)  # (B,)
+        
+        # Check if within circular disk bounds (distance from center <= radius)
+        dist_from_center = torch.sqrt(u_coord * u_coord + v_coord * v_coord)  # (B,)
+        
+        # Final hit mask: valid t, not parallel, and within disk
+        
+        # Set invalid distances to negative
+        #t = torch.where(hit, t, torch.full_like(t, -1.0))
+        hit=True
+        
+        # Light indices for each intersection
+        light_idx = light_id  # (B,)
+        
+        return t, hit, hit_pos, light_idx
+    
+    def eval_emitter(self, position, light_dir, light_id, material_id):
+        """
+        Evaluate environment map radiance along given directions
+        Args:
+            position: Bx3 intersection points 
+            light_dir: Bx3 light directions(from surface to light)
+            light_id: B light indices
+            material_id: B material indices
+        Returns:
             Le: Bx3 radiance
-            emit_pdf: Bx1 emitter pdf
-            valid_next: B valid surface
+            pdf: Bx1 pdf
+            valid: B valid samples (always True for area light)
         """
-        # whether valid intersection
-        vis = triangle_idx != -1
+        t, hit, hit_pos, light_idx=self.intersect(position,light_dir,light_id, material_id)
+        '''
+        print("t",t.shape)
+        print("hit_pos",hit_pos.shape)
+        print("light_dir",light_dir.shape)
+        print("light_normal",self.light_normal[light_id].shape)
+        '''
+        B = position.shape[0]
 
-        # get area light
-        is_area = self.is_emitter[triangle_idx]&vis
+        Le=self._directional_distribution(light_dir,light_id, material_id)
+        if torch.isnan(Le).any():
+            print("Le is nan")
+        # dA_dw=((position-hit_pos)*(position-hit_pos)).sum(dim=-1)/((-light_dir)*self.light_normal[light_id]).sum(dim=-1)
+        pdf=1.0/(self.light_radius.expand(B)*self.light_radius.expand(B)*torch.pi)
+        pdf=pdf.unsqueeze(-1)
 
-        Le = torch.zeros(position.shape[0],3,device=position.device)
-        emit_pdf = torch.zeros(position.shape[0],device=position.device)
-        if is_area.any():
-            e_idx = self.emitter_idx[triangle_idx[is_area]]
-            emit_pdf[is_area] = self.emitter_pdf[e_idx]/self.emitter_area[e_idx].clamp_min(1e-12)
-            Le[is_area] = self.radiance[e_idx]
-
-        # assume zero background lighting
-        Le = Le*vis[...,None]
-
-        # next: not area light or background
-        valid_next = (~is_area)&vis
-        return Le,emit_pdf.unsqueeze(-1),valid_next
+        if torch.isnan(Le).any():
+            print("Le is nan")
+        return Le, pdf, torch.ones_like(pdf, dtype=torch.bool)  # Always valid
     
-    def sample_emitter(self,sample1,sample2,position):
-        """ importance sampling emitters
-        Args:
-            sample1: B uniform samples
-            sample2: Bx2 uniform samples
-            position: Bx3 surfae location
-        Return:
-            wi: Bx3 sampled direction
-            pdf: Bx1 the sampling pdf (in area space)
-            triangle_idx: B the sampled triangle id
+class ConstantEmitter(nn.Module):
+    def __init__(self, cfg, json_path):
         """
-        # pick an emitter
-        emitter_idx = torch.searchsorted(self.emitter_cdf,sample1.clamp_min(1e-12))
-        pdf0 = self.emitter_pdf[emitter_idx]
+        Args:
+            positions: (N, 3) light center
+            radius: (N, 1) light radius
+            radiance: (N, 1) largest radiance
+        """
+        super(ConstantEmitter, self).__init__()
+        # Extract configuration parameters
+        radius = cfg.get('radius', 0.007)
+        fwhm_deg = cfg.get('fwhm_deg', 115.0)
+        # self.light_radiance = nn.Parameter(torch.tensor(cfg.get('radiance'), dtype=torch.float32, device='cuda'))
+        self.register_buffer('light_radiance', torch.tensor(cfg.get('radiance'), dtype=torch.float32, device='cuda'))
 
-        # unifromly sample points on triangles
-        xi1 = sample2[...,0].sqrt()
-        u = (1-xi1).unsqueeze(-1)
-        v = (xi1*sample2[...,1]).unsqueeze(-1)
-        w = 1-u-v
+        theta_half = math.radians(fwhm_deg * 0.5)
+        m = math.log(0.5) / math.log(max(1e-8, math.cos(theta_half)))
+        self.register_buffer('m', torch.tensor(m, dtype=torch.float32, device='cuda'))
+        self.register_buffer('light_radius', torch.tensor(radius, dtype=torch.float32, device='cuda'))
+        self.sampling = False
 
-        # emitter area
-        A1 = self.emitter_area[emitter_idx]
-        # sampled location on triangle
-        p1 = self.emitter_vertices[emitter_idx]
-        p1 = p1[:,0]*u + p1[:,1]*v + p1[:,2]*w
-        wi = NF.normalize(p1-position,dim=-1)
-        triangle_idx = self.triangle_idx[emitter_idx]
+        self.l2w = self._compute_l2w(cfg, json_path)
+        self.register_buffer('light_positions', self.l2w[:, :3, 3])  # [N, 3] - translation part
+        # Add a small tilt along z-axis
+        tilt_angle = math.radians(0)  # 5 degree tilt, adjust as needed
+        light_normal_local = torch.tensor([0.0, -math.cos(tilt_angle), math.sin(tilt_angle)], dtype=torch.float32, device='cuda')
+        light_normals_world = torch.matmul(self.l2w[:, :3, :3], light_normal_local)  # [N, 3]
+        light_normals_world = light_normals_world / (light_normals_world.norm(dim=-1, keepdim=True) + 1e-12)
+        self.register_buffer('light_normal', light_normals_world)
         
-        # pdf in area space
-        pdf = pdf0/A1.clamp_min(1e-12)
-        return wi,pdf.unsqueeze(-1),triangle_idx
+        # Load calibrated directional distribution if provided
+        self.calibrated_directional_distribution = False
+        direction_json = cfg.get('direction_json', '')
+        if direction_json:
+            self._load_calibration_table(direction_json)
+    
+    def _load_calibration_table(self, direction_json):
+        """
+        Load the directional distribution calibration table from JSON file.
+        Args:
+            direction_json: path to the JSON file containing the calibration table
+        """
+        import json
+        
+        with open(direction_json, 'r') as f:
+            calibration_data = json.load(f)
+        
+        # Extract table data
+        resolution = calibration_data['resolution_degrees']
+        data_dict = calibration_data['data']
+        max_cam_rad_ratio = calibration_data['max_cam_rad_ratio']
+        
+        # Convert dictionary to sorted arrays for interpolation
+        angles = []
+        ratios = []
+        for angle_str, ratio in sorted(data_dict.items(), key=lambda x: float(x[0])):
+            angles.append(float(angle_str))
+            ratios.append(ratio)
+        
+        # Store as tensors
+        self.register_buffer('calibration_angles', torch.tensor(angles, dtype=torch.float32, device='cuda'))
+        self.register_buffer('calibration_ratios', torch.tensor(ratios, dtype=torch.float32, device='cuda'))
+        self.register_buffer('calibration_resolution', torch.tensor(resolution, dtype=torch.float32, device='cuda'))
+        self.register_buffer('max_cam_rad_ratio', torch.tensor(max_cam_rad_ratio, dtype=torch.float32, device='cuda'))
+        
+        self.calibrated_directional_distribution = True
+        print(f"Loaded directional calibration table from {direction_json}")
+        print(f"  Resolution: {resolution}°, Angles: {len(angles)}, Max ratio: {max_cam_rad_ratio:.6f}")
+        
+    def _compute_l2w(self, cfg, json_path):
+        """
+        Compute the world transform for each light.
+        """
+        # Compute light transformation matrix
+        R_l2g = torch.tensor(cfg.get('R_l2g'), dtype=torch.float32, device='cuda')
+        t_l2g = torch.tensor(cfg.get('t_l2g'), dtype=torch.float32, device='cuda')
+        base2_to_base1 = torch.tensor(cfg.get('base2_to_base1'), dtype=torch.float32, device='cuda')
+        g2b0 = read_light_transforms(json_path, cfg.turntable.center, cfg.turntable.axis, base2_to_base1) # [N, 4, 4]
+        # g2b0 = base2_to_base1.unsqueeze(0) @ g2b
+        l2g = torch.eye(4, device='cuda')
+        l2g[:3, :3] = R_l2g
+        l2g[:3, 3] = t_l2g
+        l2w = g2b0 @ l2g
+        return l2w
+    
+    def _update_poses_for_vis(self, turntable_center, steps):
+        turntable_center = turntable_center.to(self.l2w.device)
+        light_normal_local = torch.tensor([0.0, -1.0, 0.0], dtype=torch.float32, device='cuda')
+        p0_world = self.l2w[:3, 3]   # [3]
+        R0_world = self.l2w[:3, :3]  # [3,3]
+        n0_world = (R0_world @ light_normal_local)  # [3]
+        n0_world = n0_world / (n0_world.norm() + 1e-12)
+
+        # Clockwise in right-handed (+Z out) means negative angles
+        angles = torch.arange(steps, device='cuda', dtype=torch.float32) * (-2.0 * math.pi / steps)  # [60]
+
+        c = torch.cos(angles)
+        s = torch.sin(angles)
+        # Batch of Rz(θ): shape [60, 3, 3]
+        Rz = torch.zeros(steps, 3, 3, device='cuda', dtype=torch.float32)
+        Rz[:, 0, 0] =  c
+        Rz[:, 0, 1] = -s
+        Rz[:, 1, 0] =  s
+        Rz[:, 1, 1] =  c
+        Rz[:, 2, 2] =  1.0
+
+        # Rotate the position around the center: p' = Rz*(p0 - center) + center
+        rel = p0_world - turntable_center  # [3]
+        rel = rel.unsqueeze(-1)            # [3,1] for batch matmul
+        pos_rot = (Rz @ rel).squeeze(-1) + turntable_center  # [60,3]
+
+        # Rotate the normal as a direction: n' = Rz * n0
+        n0 = n0_world.unsqueeze(-1)  # [3,1]
+        nor_rot = (Rz @ n0).squeeze(-1)  # [60,3]
+        nor_rot = nor_rot / (nor_rot.norm(dim=-1, keepdim=True) + 1e-12)
+
+        # ---- Register buffers ----
+        with torch.no_grad():
+            self.light_positions = pos_rot
+            self.light_normal = nor_rot
+
+                
+    def _directional_distribution(self, light_dir, light_id):
+        """
+        Compute directional radiance L(θ) for rays headed from the light to the surface.
+        Args:
+            light_dir: (B, 3) directions from surface -> light (so emission dir is -light_dir)
+            light_id: ID of the light
+
+        Returns:
+            radiance: (B, 3) directional radiance (RGB) following L = L0 * cos^m(theta).
+                      Clamped to zero for back-facing directions.
+        """
+        # Emission direction is from light -> surface
+        v = -light_dir  # (B,3)
+        v = v / (v.norm(dim=-1, keepdim=True) + 1e-12)
+
+        # cos(theta) between light normal and emission direction
+        cos_theta = torch.clamp((v * self.light_normal[light_id]).sum(dim=-1, keepdim=True), min=0.0)
+
+        if self.calibrated_directional_distribution:
+            # Use calibrated table with linear interpolation
+            # Convert cos(theta) to degrees
+            theta_rad = torch.acos(cos_theta)  # (B, 1)
+            theta_deg = theta_rad * 180.0 / math.pi  # (B, 1)
+            
+            # Linear interpolation in the calibration table
+            theta_deg_flat = theta_deg.squeeze(-1)  # (B,)
+            
+            # Clamp to valid range [0, 90]
+            theta_deg_flat = torch.clamp(theta_deg_flat, 0.0, self.calibration_angles[-1])
+
+            # Use searchsorted to find indices for interpolation
+            indices = torch.searchsorted(self.calibration_angles, theta_deg_flat, right=False)
+            indices = torch.clamp(indices, 1, len(self.calibration_angles) - 1)
+            
+            # Get lower and upper bounds for linear interpolation
+            lower_idx = indices - 1
+            upper_idx = indices
+            
+            lower_angle = self.calibration_angles[lower_idx]  # (B,)
+            upper_angle = self.calibration_angles[upper_idx]  # (B,)
+            lower_ratio = self.calibration_ratios[lower_idx]  # (B,)
+            upper_ratio = self.calibration_ratios[upper_idx]  # (B,)
+            
+            # Linear interpolation weight
+            weight = (theta_deg_flat - lower_angle) / (upper_angle - lower_angle + 1e-8)
+            weight = torch.clamp(weight, 0.0, 1.0)
+            
+            interpolated_ratio = lower_ratio + weight * (upper_ratio - lower_ratio)  # (B,)
+            
+            # The calibration table stores relative ratios (normalized to max)
+            Lshape = interpolated_ratio.unsqueeze(-1)  # (B, 1)
+            L0 = self.light_radiance  # (3,) or (1, 3)
+            radiance = Lshape * L0  # (B, 3)
+        else:
+            # Original cosine-power lobe model
+            Lshape = cos_theta.pow(self.m)  # (B,1)
+        L0 = self.light_radiance     # (B, 3)
+        radiance = Lshape * L0          # (B,3)
+        
+        return radiance
+    
+    def sample_emitter(self, sample, position, light_id):
+        """
+        Sample a direction(position) from the area light (circular disk).
+        Args:
+            sample: Bx2 uniform samples for disk sampling
+            position: Bx3 surface positions
+            light_id: B light indices
+        Returns:
+            wi: Bx3 sampled directions
+            pdf: Bx1 sampling pdf (area pdf)
+            emit_position: Bx3 sampled positions
+            emitter_normal: Bx3 sampled normals
+        """
+        B = position.shape[0]
+        
+        # Get light properties for the specified light indices
+        light_pos = self.light_positions[light_id]  # (B, 3)
+        light_r = self.light_radius.expand(B)  # (B,)
+        light_n = self.light_normal[light_id]  # (B, 3)
+        
+        # Uniform sampling on disk using polar coordinates
+        r_sample = torch.sqrt(sample[..., 0]) * light_r   # (B,)
+        theta = 2.0 * math.pi * sample[..., 1]           # (B,)
+        disk_x = r_sample * torch.cos(theta)             # (B,)
+        disk_y = r_sample * torch.sin(theta)             # (B,)
+        
+        # Create orthonormal basis for each light plane
+        up = torch.tensor([0.0, 1.0, 0.0], device=light_n.device, dtype=light_n.dtype)
+        up = up.unsqueeze(0).expand(B, 3)  # (B, 3)
+        
+        # Check for near-parallel cases and use alternative up vector
+        parallel_mask = torch.abs((light_n * up).sum(dim=-1)) > 0.9  # (B,)
+        alt_up = torch.tensor([1.0, 0.0, 0.0], device=light_n.device, dtype=light_n.dtype)
+        alt_up = alt_up.unsqueeze(0).expand(B, 3)  # (B, 3)
+        up = torch.where(parallel_mask.unsqueeze(-1), alt_up, up)  # (B, 3)
+        
+        # Compute u_axis for each light
+        u_axis = torch.cross(light_n, up, dim=-1)  # (B, 3)
+        u_axis = u_axis / (torch.norm(u_axis, dim=-1, keepdim=True) + 1e-8)  # (B, 3)
+        
+        # Compute v_axis for each light
+        v_axis = torch.cross(light_n, u_axis, dim=-1)  # (B, 3)
+        v_axis = v_axis / (torch.norm(v_axis, dim=-1, keepdim=True) + 1e-8)  # (B, 3)
+        
+        # Compute sampled position on light disk
+        if self.sampling:
+            emit_position = (
+                light_pos 
+                + disk_x.unsqueeze(-1) * u_axis 
+                + disk_y.unsqueeze(-1) * v_axis
+            )  # (B, 3)
+        else:
+            emit_position = light_pos
+        
+        # Calculate direction from surface to light sample
+        wi = emit_position - position  # (B,  3)
+        distance = torch.norm(wi, dim=-1, keepdim=True)  # (B, 1)
+        wi = wi / distance  # (B, 3)
+        
+        # Calculate area-based PDF
+        # PDF = 1 / Area = 1 / (π r^2)
+        light_area = math.pi * light_r * light_r  # (B,)
+        pdf = 1.0 / light_area  # (B,)
+        pdf = pdf.unsqueeze(-1)  # (B, 1)
+        
+        # Emitter normal (same for all sampled points)
+        emitter_normal = light_n  # (B, 3)
+        
+        return wi, pdf, emit_position, emitter_normal
+
+    def intersect(self, position, light_dir, light_id):
+        """
+        Intersect a ray with the area light (circular disk)
+        Args:
+            position: (B, 3) ray origins
+            light_dir: (B, 3) ray directions (normalized)
+            light_id: (B,) light indices
+        Returns:
+            t: (B,) intersection distances (negative if no intersection)
+            hit: (B,) boolean mask for valid intersections
+            hit_pos: (B, 3) intersection positions
+            light_idx: (B,) light indices
+        """
+        B = position.shape[0]
+        
+        # Get light properties for the specified light indices
+        light_pos = self.light_positions[light_id]  # (B, 3)
+        light_r = self.light_radius.expand(B)  # (B,)
+        light_n = self.light_normal[light_id]  # (B, 3)
+        
+        # Ray-plane intersection
+        # Ray: p(t) = pos + t * dirs
+        # Plane: (p - light_pos) · light_normal = 0
+        # Substituting: (pos + t*dirs - light_pos) · light_normal = 0
+        # Solving for t: t = (light_pos - pos) · light_normal / (dirs · light_normal)
+        
+        # Compute denominator (ray direction dot plane normal)
+        denom = (light_dir * light_n).sum(dim=-1)  # (B,)
+
+        # Check if ray is parallel to plane (denom ≈ 0)
+        
+        # Compute numerator
+        to_light = light_pos - position  # (B, 3)
+        numer = (to_light * light_n).sum(dim=-1)  # (B,)
+        '''
+        print("position",position)
+        print("light_pos",light_pos)
+        print("to_light",to_light)
+        print("light_n",light_n)
+        
+        print("numer",numer)
+        print("denom",denom)
+        '''
+        # Compute intersection distance
+        t = numer / denom  # (B,)
+        
+        # Check if intersection is in front of ray origin
+        
+        # Compute intersection points
+        hit_pos = position + t.unsqueeze(-1) * light_dir  # (B, 3)
+        
+        # Check if intersection point is within the circular disk
+        # Create orthonormal basis for each light plane
+        up = torch.tensor([0.0, 1.0, 0.0], device=light_n.device, dtype=light_n.dtype)
+        up = up.unsqueeze(0).expand(B, 3)  # (B, 3)
+        
+        # Check for near-parallel cases and use alternative up vector
+        parallel_mask = torch.abs((light_n * up).sum(dim=-1)) > 0.9  # (B,)
+        alt_up = torch.tensor([1.0, 0.0, 0.0], device=light_n.device, dtype=light_n.dtype)
+        alt_up = alt_up.unsqueeze(0).expand(B, 3)  # (B, 3)
+        up = torch.where(parallel_mask.unsqueeze(-1), alt_up, up)  # (B, 3)
+        
+        # Compute u_axis for each light
+        u_axis = torch.cross(light_n, up, dim=-1)  # (B, 3)
+        u_axis = u_axis / (torch.norm(u_axis, dim=-1, keepdim=True) + 1e-8)  # (B, 3)
+        
+        # Compute v_axis for each light
+        v_axis = torch.cross(light_n, u_axis, dim=-1)  # (B, 3)
+        v_axis = v_axis / (torch.norm(v_axis, dim=-1, keepdim=True) + 1e-8)  # (B, 3)
+        
+        # Project intersection point onto the light plane coordinate system
+        to_hit = hit_pos - light_pos  # (B, 3)
+        u_coord = (to_hit * u_axis).sum(dim=-1)  # (B,)
+        v_coord = (to_hit * v_axis).sum(dim=-1)  # (B,)
+        
+        # Check if within circular disk bounds (distance from center <= radius)
+        dist_from_center = torch.sqrt(u_coord * u_coord + v_coord * v_coord)  # (B,)
+        
+        # Final hit mask: valid t, not parallel, and within disk
+        
+        # Set invalid distances to negative
+        #t = torch.where(hit, t, torch.full_like(t, -1.0))
+        hit=True
+        
+        # Light indices for each intersection
+        light_idx = light_id  # (B,)
+        
+        return t, hit, hit_pos, light_idx
+    
+    def eval_emitter(self, position, light_dir, light_id):
+        """
+        Evaluate environment map radiance along given directions
+        Args:
+            position: Bx3 intersection points 
+            light_dir: Bx3 light directions(from surface to light)
+        Returns:
+            Le: Bx3 radiance
+            pdf: Bx1 pdf
+            valid: B valid samples (always True for area light)
+        """
+        t, hit, hit_pos, light_idx=self.intersect(position,light_dir,light_id)
+        '''
+        print("t",t.shape)
+        print("hit_pos",hit_pos.shape)
+        print("light_dir",light_dir.shape)
+        print("light_normal",self.light_normal[light_id].shape)
+        '''
+        B = position.shape[0]
+
+        Le = self.light_radiance.unsqueeze(0).expand(B, 3)
+        # dA_dw=((position-hit_pos)*(position-hit_pos)).sum(dim=-1)/((-light_dir)*self.light_normal[light_id]).sum(dim=-1)
+        pdf=1.0/(self.light_radius.expand(B)*self.light_radius.expand(B)*torch.pi)
+        pdf=pdf.unsqueeze(-1)
+
+        if torch.isnan(Le).any():
+            print("Le is nan")
+        return Le, pdf, torch.ones_like(pdf, dtype=torch.bool)  # Always valid
+    

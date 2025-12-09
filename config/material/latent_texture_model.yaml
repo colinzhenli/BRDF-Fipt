@@ -1,4 +1,5 @@
 type: "LatentTexturedModel"
+module: "model.neural_brdf"
 latent_dim: 16
 use_gt_normal: False
 predict_normal: True

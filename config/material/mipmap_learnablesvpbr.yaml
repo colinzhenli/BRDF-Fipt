@@ -1,4 +1,5 @@
 type: "MipmapLearnableSvPBRBRDF"
+module: "model.mipmap_brdf"
 
 
 colorful_texture: True

@@ -135,9 +135,12 @@ def load_metadata(colmap_camera, metadata_path, camera_metadata_path, gt_folder,
     # Load unmatched_scan_ids from parent folder of gt_folder
     parent_folder = os.path.dirname(gt_folder)
     unmatched_scan_ids_path = os.path.join(parent_folder, "unmatched_scan_ids.json")
-    with open(unmatched_scan_ids_path, "r") as f:
-        unmatched_scan_ids = json.load(f)
-    
+    if os.path.exists(unmatched_scan_ids_path):
+        with open(unmatched_scan_ids_path, "r") as f:
+            unmatched_scan_ids = json.load(f)
+    else:
+        unmatched_scan_ids = []
+    # unmatched_scan_ids = []
     for item in metadata:
         # Add "masked_" prefix to filename
         file_name = item["filename"]
@@ -175,10 +178,15 @@ def load_metadata(colmap_camera, metadata_path, camera_metadata_path, gt_folder,
     
     # Split metadata into training and validation sets with fixed random seed
     torch.manual_seed(42)  # Fixed seed for reproducible splits
-    indices = torch.randperm(total_images)
+    if debug:
+        indices = list(range(total_images))
+    else:
+        indices = torch.randperm(total_images)
     
     # Use 80% for training
     if debug:
+        if debug_num == -1:
+            debug_num = total_images
         selected_indices = indices[start_idx:start_idx+debug_num]
         # For debugging, still split into train/val but use a smaller subset
         split_idx = int(0.8 * debug_num)
@@ -187,6 +195,7 @@ def load_metadata(colmap_camera, metadata_path, camera_metadata_path, gt_folder,
         # else:
         #     selected_indices = selected_indices[split_idx:]
         selected_metadata = [metadata[i] for i in selected_indices]
+        print(f"Debug mode: {len(selected_metadata)} images selected")
     else:
         split_idx = int(0.8 * total_images)
         if split == 'train':

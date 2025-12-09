@@ -343,8 +343,6 @@ class BRDFTrainer(pl.LightningModule):
         loss = self.loss_function(rgbs, rgbs_gt, vis)
 
         psnr_loss  = torch.nn.functional.mse_loss(rgbs[vis], rgbs_gt.squeeze(0)[vis], reduction='mean')
-        if torch.isnan(psnr_loss).any():
-            print("psnr_loss is nan")
         max_val = torch.max(torch.stack([rgbs.max(), rgbs_gt.squeeze(0).max()])).clamp_min(1e-8)
         psnr       = 10.0 * torch.log10((max_val ** 2) / psnr_loss.clamp_min(1e-5))
 

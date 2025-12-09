@@ -1,7 +1,7 @@
 defaults:
   - base
 
-dataset_name: "real"
+dataset_name: "points"
 pbr_path: 
 shape:
   type: "real"

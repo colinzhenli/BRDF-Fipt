@@ -1,4 +1,5 @@
 type: "GreyPatchBRDF"
+module: "model.brdf"
 
 # Patch layout parameters
 center_x: 0.20
@@ -12,8 +13,8 @@ grid_cols: 5
 
 prefliter: False
 # Angle threshold parameters
-inc_thresh_deg: 50.0
-view_thresh_deg: 50.0
+inc_thresh_deg: 45.0 # incident angle > 30 degree
+view_thresh_deg: 45.0
 
 # pbr_texture_path: '/media/raid/zla247/BRDF-Fipt/fabric_pattern_07_4k/textures'
-# pbr_texture_path: /mnt/data/colin/colin/BRDF-Fipt/denim_fabric_03_4k/textures56
+# pbr_texture_path: /mnt/data/colin/colin/BRDF-Fipt/denim_fabric_03_4k/textures
