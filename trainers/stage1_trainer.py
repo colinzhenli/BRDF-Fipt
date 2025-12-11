@@ -16,13 +16,14 @@ from model.brdf import GreyPatchBRDF
 import os
 from utils.pose_refiner import GlobalHandEyeRefiner
 
-class BRDFTrainer(pl.LightningModule):
+class Stage1Trainer(pl.LightningModule):
     def __init__(self, cfg, material, gt_material, roughness, metallic):
         super().__init__()
         self.cfg = cfg
         self.save_hyperparameters(cfg)
 
         self.material = material
+        self.freeze_decoder = False
         self.gt_material = gt_material
         self.gt_folder = cfg.gt_folder
         self.camera_factor = cfg.renderer.camera.linear_factor
@@ -108,7 +109,17 @@ class BRDFTrainer(pl.LightningModule):
         return x / (1 + x)
     
     def configure_optimizers(self):  
-        params_to_optimize = self.parameters()
+        # Check if we should freeze decoder and only optimize latents
+        
+        if self.freeze_decoder:
+            # Freeze decoder parameters
+            for param in self.material.decoder.parameters():
+                param.requires_grad = False
+            # Only optimize latent bank
+            params_to_optimize = [self.material.point_latent_bank.weight]
+            print("Decoder frozen! Only optimizing latent bank.")
+        else:
+            params_to_optimize = self.parameters()
         
         if self.hparams.model.optimizer.name == "SGD":
             optimizer = torch.optim.SGD(
@@ -338,7 +349,7 @@ class BRDFTrainer(pl.LightningModule):
         if self.handeye_refiner:
             rays, prior = self.handeye_refiner.apply_handeye_delta_to_rays(rays, camera_ids)
         # forward renders
-        rgbs, vis, ray_params, _ = self.renderer.render(self.emitter, rays, xyz, emitter_ids, material_ids, point_ids, self.cfg.renderer.spp.train, None, None, validation=False)
+        rgbs, vis, ray_params, _ = self.renderer.stage1_render(self.emitter, rays, xyz, emitter_ids, material_ids, point_ids, self.cfg.renderer.spp.train, None, None, validation=False)
         rgbs = rgbs * self.camera_factor
         loss = self.loss_function(rgbs, rgbs_gt, vis)
 
@@ -371,7 +382,7 @@ class BRDFTrainer(pl.LightningModule):
         if self.handeye_refiner:
             rays, prior = self.handeye_refiner.apply_handeye_delta_to_rays(rays, camera_ids)
         # forward renders
-        rgbs, vis, ray_params, _ = self.renderer.render(self.emitter, rays, xyz, emitter_ids, material_ids, point_ids, self.cfg.renderer.spp.train, None, None, validation=False)
+        rgbs, vis, ray_params, _ = self.renderer.stage1_render(self.emitter, rays, xyz, emitter_ids, material_ids, point_ids, self.cfg.renderer.spp.train, None, None, validation=False)
         rgbs = rgbs * self.camera_factor
         loss = self.loss_function(rgbs, rgbs_gt, vis)
 
@@ -383,6 +394,7 @@ class BRDFTrainer(pl.LightningModule):
         # 7.  Logging  (now includes diagnostics)
         # ------------------------------------------------------------------
         self.log_dict({
+            'val/loss':         loss,  # Add this line
             'val/recon_loss':   loss,
             'val/total_loss':   loss,
             'val/psnr':         psnr,

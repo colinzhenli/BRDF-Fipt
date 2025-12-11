@@ -727,7 +727,7 @@ def path_tracing_envmap_emitter(scene,emitter_net,material_net,rays_o,rays_d,dx_
     return L
 
 
-def batched_path_tracing_tbn_real_area_emitter(scene,emitter_net,material_net,rays_o,rays_d,dx_du,dy_dv, light_id, material_id, point_ids, spp, brdf_sampling, emitter_sampling, gt_params=None, latent=None):
+def batched_path_tracing_tbn_real_area_emitter(scene,emitter_net,material_net,rays_o,rays_d,dx_du,dy_dv, light_id, spp, brdf_sampling, emitter_sampling, gt_params=None, latent=None):
     """ Path trace with real capture
     Args:
         scene: mitsuba scene
@@ -768,8 +768,6 @@ def batched_path_tracing_tbn_real_area_emitter(scene,emitter_net,material_net,ra
     # Add mask for wi z component
     position = rays_o.repeat_interleave(spp,0)
     light_id = light_id.repeat_interleave(spp,0)
-    material_id = material_id.repeat_interleave(spp,0)
-    point_ids = point_ids.repeat_interleave(spp,0)
     
     # compute first intersection
     # Check if scene is a dictionary (scene parameters) or a Mitsuba scene object
@@ -806,8 +804,6 @@ def batched_path_tracing_tbn_real_area_emitter(scene,emitter_net,material_net,ra
 
     wo = -wi[vis]
     light_id = light_id[vis]
-    material_id = material_id[vis]
-    point_ids = point_ids[vis]
     TBN = TBN[vis]
     
     if is_graypatch:
@@ -818,12 +814,10 @@ def batched_path_tracing_tbn_real_area_emitter(scene,emitter_net,material_net,ra
     
     # deterministic sampling
     if emitter_sampling:
-        wi, emit_pdf, emit_position, emitter_normal= emitter_net.sample_emitter(torch.rand_like(position[..., :2]), position, light_id, material_id)
+        wi, emit_pdf, emit_position, emitter_normal= emitter_net.sample_emitter(torch.rand_like(position[..., :2]), position, light_id)
         # visibility test
-        emit_weight,emit_pdf, _ = emitter_net.eval_emitter(position, wi, light_id, material_id)
-        G = (wi*normal).sum(-1).abs()/ (emit_position-position).pow(2).sum(-1).clamp_min(1e-6) # B, 1
-        # G = (wi*normal).sum(-1).abs() * (-wi*emitter_normal).sum(-1).abs() / (emit_position-position).pow(2).sum(-1).clamp_min(1e-6) # B, 1
-        emit_weight = emit_weight*G[...,None]/emit_pdf.clamp_min(1e-6)
+        emit_weight,emit_pdf, _ = emitter_net.eval_emitter(position, wi, light_id)
+        G = (-wi*emitter_normal).sum(-1).abs() * (wi*normal).sum(-1).abs() / (emit_position-position).pow(2).sum(-1).clamp_min(1e-6) # B, 1
         # emit brdf
         brdf_result = material_net.eval_brdf(
             gt_params=None,
@@ -835,18 +829,18 @@ def batched_path_tracing_tbn_real_area_emitter(scene,emitter_net,material_net,ra
             TBN=TBN,
             latent=latent,
             batch_mask=batch_mask,
-            point_ids=point_ids,
-            material_ids=material_id,
             footprint_vis=footprint_vis,
             dp_du=dp_du,
             dp_dv=dp_dv
         )
         if is_graypatch:
-            emit_brdf, brdf_pdf, angle_ok, _ = brdf_result
+            emit_brdf, normal, brdf_pdf, angle_ok, _ = brdf_result
             angle_ok_all[vis] = angle_ok
             cosine_emitter_angle_all[vis] = (-wi*emitter_normal).sum(-1).abs()
         else:
-            emit_brdf, brdf_pdf, uv_offset[vis] = brdf_result
+            emit_brdf, normal, brdf_pdf, uv_offset[vis] = brdf_result
+
+        emit_weight = emit_weight*G[...,None]/emit_pdf.clamp_min(1e-6)
         w_mis = torch.where((emit_pdf>0)&(~brdf_pdf.isinf()),emit_pdf*emit_pdf/(emit_pdf*emit_pdf+brdf_pdf*brdf_pdf),0)
         w_mis[emit_pdf.isinf()|(brdf_pdf==0)] = 1
         # Avoid in-place indexed operation for cleaner autograd graph

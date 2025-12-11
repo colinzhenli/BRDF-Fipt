@@ -7,7 +7,7 @@ from pytorch_lightning import Trainer
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
 from renderer import ForwardRenderer
-from brdf_trainer import BRDFTrainer
+from trainers import get_trainer_class
 from model.brdf import SvPBRBRDF
 from torch.utils.data import DataLoader
 from utils.dataset import RealImageDataset, RealValDataset, MultiMaterialPointDataset
@@ -55,16 +55,37 @@ def main(cfg):
         albedo=torch.tensor(albedo)
     )  # Ground truth uses pbr config
     print("before trainer init")
-    model = BRDFTrainer(cfg, material, gt_material, roughness, metallic)
+    # Get the appropriate trainer class based on stage
+    stage = cfg.model.get('stage', 1)  # Default to stage 1
+    TrainerClass = get_trainer_class(stage)
+    
+    print(f"Using trainer for stage {stage}: {TrainerClass.__name__}")
+    model = TrainerClass(cfg, material, gt_material, roughness, metallic)
+    
     if cfg.model.ckpt_path is not None and os.path.isfile(cfg.model.ckpt_path):
         print(f"=> loading model checkpoint '{cfg.model.ckpt_path}'")
         checkpoint = torch.load(cfg.model.ckpt_path, map_location='cuda' if torch.cuda.is_available() else 'cpu', weights_only=False)
-        # Load parameters that exist in the checkpoint, keep new parameters as initialized
-        model_dict = model.state_dict()
-        pretrained_dict = {k: v for k, v in checkpoint['state_dict'].items() if k in model_dict}
-        model_dict.update(pretrained_dict)
-        model.load_state_dict(model_dict)
-        print(f"=> loaded checkpoint successfully. {len(pretrained_dict)}/{len(model_dict)} parameters loaded.")
+        
+        if stage == 2:
+            # Stage 2: Only load the decoder weights from checkpoint
+            # Load material.decoder.* weights only (not latent codes)
+            model_dict = model.state_dict()
+            decoder_dict = {}
+            for k, v in checkpoint['state_dict'].items():
+                if 'material.decoder.' in k:
+                    if k in model_dict:
+                        decoder_dict[k] = v
+            
+            model_dict.update(decoder_dict)
+            model.load_state_dict(model_dict)
+            print(f"=> Stage 2: loaded decoder checkpoint successfully. {len(decoder_dict)}/{len([k for k in model_dict if 'material.decoder.' in k])} decoder parameters loaded.")
+        else:
+            # Stage 1: Load all matching parameters
+            model_dict = model.state_dict()
+            pretrained_dict = {k: v for k, v in checkpoint['state_dict'].items() if k in model_dict}
+            model_dict.update(pretrained_dict)
+            model.load_state_dict(model_dict)
+            print(f"=> loaded checkpoint successfully. {len(pretrained_dict)}/{len(model_dict)} parameters loaded.")
     print("after trainer init")
     print("==> initializing data ...")   
     if cfg.data.dataset_name == "real":

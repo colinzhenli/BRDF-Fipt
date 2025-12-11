@@ -75,7 +75,7 @@ mesh:
     # center: [0.16, -0.11, -0.058] # 0.06 is the foam board top
     # center: [0.16, -0.11, -0.0673] # 0.063 is the foam board bottom
     # center: [0.16, -0.11, -0.061] # the hard material
-    center: [0.16, -0.11, -0.061] # 0.06 is the foam board top
+    center: [0.16, -0.11, -0.0654] # 0.06 is the foam board top
     # center: [0.16, -0.11, -0.0625] # 0.063 is the foam board bottom
     # width: 0.125 # board_size
     # length: 0.135
@@ -84,7 +84,8 @@ mesh:
     # width: 0.08
     # length: 0.08 # colorchecker size
 emitter:
-  direction_json: "/media/raid/cloth/capture_data/Dataset_Nov11/emitter_calibration.json"
+  # direction_json: "/media/raid/cloth/capture_data/Dataset_Nov11/emitter_calibration.json"
+  direction_json: None
   folder_path: "/media/raid/cloth/capture_data/Dataset_Nov11"
   type: "realarea"
   num_lights: 40
@@ -112,9 +113,9 @@ emitter:
                   [ 1.64095944e-04,  2.10879262e-02,  9.99777611e-01,  3.93500345e-03],
                   [ 0.00000000e+00,  0.00000000e+00,  0.00000000e+00,  1.00000000e+00]]
 spp:
-  train: 1  
-  val: 1 
-  test: 1  
+  train: 16  
+  val: 16 
+  test: 16  
 SPP_chunk: 4
 
 resolution: [2048, 2048]

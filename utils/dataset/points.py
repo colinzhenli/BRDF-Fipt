@@ -300,7 +300,7 @@ class MultiMaterialPointDataset(IterableDataset if True else Dataset):
         if split == 'train':
             print(f"\nInitializing double buffer (chunk reload every {self.switch_iters} iters)...")
             self._dbuf = MultiMaterialPointDataset._DoubleBuffer(lambda: self._load_chunks(split='train')   )
-            # Prefill two chunks: slot 0 (active) and slot 1 (next)
+            # Prefill two | 91745/335183748ctive) and slot 1 (next)
             self._dbuf.request_fill(0)
             self._dbuf.request_fill(1)
             self._dbuf.wait_initial()  # Ensure first active chunk exists
@@ -533,9 +533,10 @@ class MultiMaterialPointDataset(IterableDataset if True else Dataset):
         )
     
     def __len__(self):
-        """Return number of observations in this split."""
+        """Return number of iterations (batches) in this split."""
         if hasattr(self, 'all_rays'):
-            return len(self.all_rays)
+            # For validation: return number of batches to iterate through all data once
+            return math.ceil(len(self.all_rays) / self.rays_num)
         else:
             # For training with double buffer, return a large number
             return 1000000
@@ -570,21 +571,23 @@ class MultiMaterialPointDataset(IterableDataset if True else Dataset):
                     'gt_params': torch.zeros(1),
                 }
         
-        # Validation mode with static data (all validation observations already loaded)
+        # Validation mode with static data - finite iterator through all data once
         else:
-            while True:
-                # Random sample rays_num rays from all validation data
-                total_rays = self.all_rays.shape[0]
-                sample_idx = torch.randint(0, total_rays, (self.rays_num,), dtype=torch.long)
+            total_rays = self.all_rays.shape[0]
+            num_batches = math.ceil(total_rays / self.rays_num)
+            
+            for batch_idx in range(num_batches):
+                start_idx = batch_idx * self.rays_num
+                end_idx = min(start_idx + self.rays_num, total_rays)
                 
                 yield {
-                    'rays': self.all_rays[sample_idx],
-                    'rgbs': self.all_rgbs[sample_idx],
-                    'xyz': self.all_xyz[sample_idx],
-                    'emitter_ids': self.all_emitter_ids[sample_idx],
-                    'camera_ids': self.all_camera_ids[sample_idx],
-                    'material_ids': self.all_material_ids[sample_idx],
-                    'point_ids': self.all_point_ids[sample_idx],
+                    'rays': self.all_rays[start_idx:end_idx],
+                    'rgbs': self.all_rgbs[start_idx:end_idx],
+                    'xyz': self.all_xyz[start_idx:end_idx],
+                    'emitter_ids': self.all_emitter_ids[start_idx:end_idx],
+                    'camera_ids': self.all_camera_ids[start_idx:end_idx],
+                    'material_ids': self.all_material_ids[start_idx:end_idx],
+                    'point_ids': self.all_point_ids[start_idx:end_idx],
                     'gt_params': torch.zeros(1),
                 }
     

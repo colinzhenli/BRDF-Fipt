@@ -1,5 +1,5 @@
 type: "AnisotropicLatentTexturedModel"
-module: "model.neural_brdf"
+module: "model.neural_brdf_refactored"
 latent_dim: 16
 predict_frame: True
 use_nerfstudio_sh: False
@@ -8,15 +8,18 @@ gt_frame: False
 colorful_texture: True
 leaky_relu: True
 texture_resolution: 3072
-hidden_layers: [128, 128, 64, 32, 16]
-# hidden_layers: [256, 256, 128, 64, 32, 16]
 Gaussian_blur: True
-activation: "relu"
-input_channels: 9
-
+decoder:
+  hidden_layers: [128, 128, 64, 32, 16]
+  activation: "relu"
+  output_channels: 3
+  degree: 3  # SH degree for positional encoding
+  
 # neural geometry 
 neural_geometry:
   enable: True
+  activation: "relu"
+
   latent_dim: 16
   hidden_layers: [16, 16, 8]
   output_channels: 2 # 2D uv offset

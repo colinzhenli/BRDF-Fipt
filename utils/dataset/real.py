@@ -481,6 +481,7 @@ class RealImageDataset(IterableDataset):
                     continue
                 img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
                 img = img @ self.ccm
+                img = img.clip(0, None)
                 img = torch.from_numpy(img).float()
             elif img_path.endswith('.exr'):
                 # Load EXR image (already linear)
@@ -728,6 +729,7 @@ class RealValDataset(Dataset):
             img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
             img = img.astype(np.float64)
             img = img @ self.ccm
+            img = img.clip(0, None)
             img = torch.from_numpy(img).float()
         elif img_path.endswith('.exr'):
             # Load EXR image (already linear)
