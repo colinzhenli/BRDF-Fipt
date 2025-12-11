@@ -70,12 +70,8 @@ class LatentTexture(nn.Module):
         self.latent_dim = latent_dim
         self.predict_frame = predict_frame
         
-        # Calculate total latent dimension
-        total_dim = latent_dim + (6 if predict_frame else 0)
-        self.total_dim = total_dim
-        
-        # Initialize latent grid [1, total_dim, H, W]
-        latent_init = torch.randn(1, total_dim, resolution, resolution) * init_std
+        # Initialize latent grid [1, latent_dim, H, W]
+        latent_init = torch.randn(1, latent_dim, resolution, resolution) * init_std
         
         # Initialize frame components if needed
         if predict_frame:
@@ -439,7 +435,7 @@ class AnisotropicLatentTexturedModel(LightningModule):
         self.local_wi_wo = cfg.neural_geometry.local_wi_wo if self.neural_geometry_enabled else False
         self.neural_geometry_pos_enc = cfg.neural_geometry.positional_encoding if self.neural_geometry_enabled else False
         self.recompute_frame = cfg.neural_geometry.recompute_frame if self.neural_geometry_enabled else False
-        
+        self.neural_geometry_factor = cfg.neural_geometry.factor if self.neural_geometry_enabled else 0.4
         # Calculate total latent dimension
         if self.colorful_texture and self.larger_latent_dim:
             brdf_latent_dim = self.latent_dim * 3
@@ -471,8 +467,8 @@ class AnisotropicLatentTexturedModel(LightningModule):
         )
         
         # 2. Create BRDFDecoder
-        self.brdf_decoder = BRDFDecoder(
-            cfg=cfg,
+        self.decoder = BRDFDecoder(
+            cfg=cfg.decoder,
             latent_dim=self.latent_dim,
             use_pos_enc=True,
             different_decoder=self.different_decoder
@@ -577,6 +573,35 @@ class AnisotropicLatentTexturedModel(LightningModule):
         
         return predicted_normal, predicted_tangent
     
+    def _sample_from_texture(self, uv: torch.Tensor, texture: torch.Tensor):
+        """
+        Sample latent from a given texture at UV coordinates.
+        
+        Args:
+            uv: [B, 2] UV coordinates in [0, 1]
+            texture: [1, D, H, W] texture to sample from
+        
+        Returns:
+            latent: [B, D] sampled latent codes
+        """
+        # Convert UV to grid coordinates for F.grid_sample
+        grid_coords = uv * 2.0 - 1.0  # [B, 2] -> [-1, 1]
+        grid_coords = grid_coords.unsqueeze(1).unsqueeze(0)  # [1, 1, B, 2]
+        
+        # Bilinear sampling
+        latent = NF.grid_sample(
+            texture,  # [1, D, H, W]
+            grid_coords,  # [1, 1, B, 2]
+            mode='bilinear',
+            padding_mode='border',
+            align_corners=False
+        )  # [1, D, 1, B]
+        
+        # Reshape to [B, D]
+        latent = latent.squeeze(0).squeeze(-1).transpose(0, 1)
+        
+        return latent
+    
     # ------------------------------------------------------------------------
     # Main BRDF evaluation API
     # ------------------------------------------------------------------------
@@ -619,11 +644,16 @@ class AnisotropicLatentTexturedModel(LightningModule):
         NoL = (wi * normal).sum(-1, keepdim=True)
         NoV = (wo * normal).sum(-1, keepdim=True)
         
-        # 1. Query latent from texture with optional blur
-        blur_step = self.global_step if (self.training and self.Gaussian_blur) else None
-        latent = self.latent_texture.query(uv, blur_step=blur_step)
+        # 1. Get the (optionally blurred) texture ONCE
+        if self.training and self.Gaussian_blur:
+            tex = self.latent_texture.apply_gaussian_blur(self.global_step)
+        else:
+            tex = self.latent_texture.params
         
-        # 2. Extract frame from latent if predicting frame
+        # 2. Sample latent from the texture
+        latent = self._sample_from_texture(uv, tex)
+        
+        # 3. Extract frame from latent if predicting frame
         if self.predict_frame:
             predicted_normal, predicted_tangent = self.extract_frame_from_latent(latent)
         else:
@@ -647,11 +677,11 @@ class AnisotropicLatentTexturedModel(LightningModule):
                 wo_for_geo = wo
             
             # Predict UV offset
-            uv_offset = self.neural_geometry(wi_for_geo, wo_for_geo, geometry_latent)
-            
-            # Update UV and re-query latent
+            uv_offset = self.neural_geometry(wi_for_geo, wo_for_geo, geometry_latent) * self.neural_geometry_factor
             uv = uv + uv_offset
-            latent = self.latent_texture.query(uv, blur_step=blur_step)
+            uv = ((uv%1)+1)%1
+            # Sample from the SAME blurred texture
+            latent = self._sample_from_texture(uv, tex)
             
             # Recompute frame if needed
             if self.recompute_frame and self.predict_frame:
@@ -664,7 +694,7 @@ class AnisotropicLatentTexturedModel(LightningModule):
         local_normal[..., 2] = 1.0  # (0, 0, 1) in local space
         
         # 5. Encode directions
-        enc_dir = self.brdf_decoder.encode_directions(wi_local, wo_local, local_normal)
+        enc_dir = self.decoder.encode_directions(wi_local, wo_local, local_normal)
         
         # 6. Extract BRDF latent (excluding frame and geometry latents)
         if self.colorful_texture:
@@ -678,20 +708,20 @@ class AnisotropicLatentTexturedModel(LightningModule):
                     latent_g = latent[..., :self.latent_dim]
                     latent_b = latent[..., :self.latent_dim]
                 
-                brdf_r = self.brdf_decoder(enc_dir, latent_r, 'r')
-                brdf_g = self.brdf_decoder(enc_dir, latent_g, 'g')
-                brdf_b = self.brdf_decoder(enc_dir, latent_b, 'b')
+                brdf_r = self.decoder(enc_dir, latent_r, 'r')
+                brdf_g = self.decoder(enc_dir, latent_g, 'g')
+                brdf_b = self.decoder(enc_dir, latent_b, 'b')
                 brdf = torch.cat([brdf_r, brdf_g, brdf_b], dim=-1)
             else:
-                brdf = self.brdf_decoder(enc_dir, latent[..., :self.latent_dim], None)
+                brdf = self.decoder(enc_dir, latent[..., :self.latent_dim], None)
         else:
-            brdf = self.brdf_decoder(enc_dir, latent[..., :self.latent_dim], None)
+            brdf = self.decoder(enc_dir, latent[..., :self.latent_dim], None)
             brdf = brdf.repeat(1, 3)  # Replicate to RGB
         
         # 7. Calculate PDF (cosine-weighted)
         pdf = NoL / math.pi
         
-        return brdf, pdf, uv_offset
+        return brdf, predicted_normal, pdf, uv_offset
     
     def sample_brdf(
         self,

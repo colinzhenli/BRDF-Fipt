@@ -431,7 +431,7 @@ class RealAreaEmitter(nn.Module):
         v = v / (v.norm(dim=-1, keepdim=True) + 1e-12)
 
         # cos(theta) between light normal and emission direction
-        cos_theta = torch.clamp((v * self.light_normal[light_id]).sum(dim=-1, keepdim=True), min=0.0)
+        cos_theta = torch.clamp((v * self.light_normal[light_id]).sum(dim=-1, keepdim=True), -1, 1)
 
         if self.calibrated_directional_distribution:
             # Use calibrated table with linear interpolation
@@ -1233,7 +1233,7 @@ class ConstantEmitter(nn.Module):
         v = v / (v.norm(dim=-1, keepdim=True) + 1e-12)
 
         # cos(theta) between light normal and emission direction
-        cos_theta = torch.clamp((v * self.light_normal[light_id]).sum(dim=-1, keepdim=True), min=0.0)
+        cos_theta = torch.clamp((v * self.light_normal[light_id]).sum(dim=-1, keepdim=True), -1, 1)
 
         if self.calibrated_directional_distribution:
             # Use calibrated table with linear interpolation

@@ -86,27 +86,50 @@
         //     ]
         // },
 
+        // {
+        //     "name": "Python: Auto-decoder Points",
+        //     "type": "python",
+        //     "request": "launch",
+        //     "program": "main.py",
+        //     "console": "integratedTerminal",
+        //     "justMyCode": true,
+        //     "env": {
+        //         "CUDA_VISIBLE_DEVICES": "2"
+        //     },
+        //     "args": [
+        //         "dataset_folder=/media/raid/cloth/capture_data/Dataset_Nov11",
+        //         // "dataset_folder=/media/raid/cloth/capture_data/BRDF_recon_Oct20_white_test/hdr",
+        //         // "dataset_folder=/media/raid/cloth/capture_data/BRDF_recon_Oct21_color_checker_5_distance_grey_center/hdr",
+        //         // "dataset_folder=/media/raid/cloth/No_cable_capture_Sep22/BRDF_recon_Sep30/Controlled_light/hdr",
+        //         "data=points",
+        //         "renderer=multiarea_emitter",
+        //         "material=multi_material_latent",
+        //         "experiment_name=Train-decoder_from-scratch_test",
+        //         "model.test=False",
+        //         // "model.ckpt_path=/media/raid/cloth/output/BRDF/points/10-Materials_Points-training_run_1/training/model_0.20_0.20/last.ckpt"
+        //     ]
+        // }
+
+
         {
-            "name": "Python: Auto-decoder Points",
+            "name": "Python: stage 2",
             "type": "python",
             "request": "launch",
             "program": "main.py",
             "console": "integratedTerminal",
             "justMyCode": true,
             "env": {
-                "CUDA_VISIBLE_DEVICES": "2"
+                "CUDA_VISIBLE_DEVICES": "1"
             },
             "args": [
-                "dataset_folder=/media/raid/cloth/capture_data/Dataset_Nov11",
-                // "dataset_folder=/media/raid/cloth/capture_data/BRDF_recon_Oct20_white_test/hdr",
-                // "dataset_folder=/media/raid/cloth/capture_data/BRDF_recon_Oct21_color_checker_5_distance_grey_center/hdr",
-                // "dataset_folder=/media/raid/cloth/No_cable_capture_Sep22/BRDF_recon_Sep30/Controlled_light/hdr",
-                "data=points",
+                "dataset_folder=/media/raid/cloth/capture_data/Dataset_Nov11/2",
+                "data=real",
                 "renderer=multiarea_emitter",
-                "material=multi_material_latent",
-                "experiment_name=Points_training_debug",
+                "material=ani_latent_texture_model",
+                "experiment_name=Overfit_Stage-2_debug",
+                "model.stage=2",
                 "model.test=False",
-                // "model.ckpt_path=/media/raid/cloth/output/BRDF/real/All-images_Correct-height_capture_Camera-factor_Chunk-200-3000_run_1/training/model_0.20_0.20/last.ckpt"
+                // "model.ckpt_path=/media/raid/cloth/output/BRDF/points/10-Materials_Points-training_run_1/training/model_0.20_0.20/last.ckpt"
             ]
         }
 
