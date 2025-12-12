@@ -11,7 +11,7 @@ camera:
   # linear_factor: 131231480.000000
   # linear_factor: 231435888.000000 # half the resolution
   linear_factor: 259494976.000000 # half the resolution
-  colmap_camera: False # whether to use colmap camera or robotic log camera
+  colmap_camera: True # whether to use colmap camera or robotic log camera
   distance: 2.0
   number_of_views: 40 # used to generate reference images
   number_of_view_test: 10
@@ -74,8 +74,8 @@ mesh:
   rectangle:
     # center: [0.16, -0.11, -0.058] # 0.06 is the foam board top
     # center: [0.16, -0.11, -0.0673] # 0.063 is the foam board bottom
-    # center: [0.16, -0.11, -0.061] # the hard material
-    center: [0.16, -0.11, -0.0654] # 0.06 is the foam board top
+    center: [0.16, -0.11, -0.061] # the hard material
+    # center: [0.16, -0.11, -0.0654] # 0.06 is the foam board top
     # center: [0.16, -0.11, -0.0625] # 0.063 is the foam board bottom
     # width: 0.125 # board_size
     # length: 0.135
@@ -86,7 +86,7 @@ mesh:
 emitter:
   # direction_json: "/media/raid/cloth/capture_data/Dataset_Nov11/emitter_calibration.json"
   direction_json: None
-  folder_path: "/media/raid/cloth/capture_data/Dataset_Nov11"
+  folder_path: ${dataset_folder}
   type: "realarea"
   num_lights: 40
   dist: 4.0

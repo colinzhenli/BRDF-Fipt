@@ -14,11 +14,11 @@
         //     "console": "integratedTerminal",
         //     "justMyCode": true,
         //     "env": {
-        //         "CUDA_VISIBLE_DEVICES": "3"
+        //         "CUDA_VISIBLE_DEVICES": "1"
         //     },
         //     "args": [
-        //         "shape_matching.folder_path=/media/raid/cloth/capture_data/Dataset_Nov11/10_2",
-        //         "shape_matching.num_workers=64",
+        //         "shape_matching.folder_path=/media/raid/cloth/capture_data/Dataset_Nov11/0",
+        //         "shape_matching.num_workers=16",
         //         "shape_matching.z_outlier_percentile=5.0"
         //     ]
         // },
@@ -102,36 +102,37 @@
         //         // "dataset_folder=/media/raid/cloth/capture_data/BRDF_recon_Oct21_color_checker_5_distance_grey_center/hdr",
         //         // "dataset_folder=/media/raid/cloth/No_cable_capture_Sep22/BRDF_recon_Sep30/Controlled_light/hdr",
         //         "data=points",
+        //         "model.stage=1",
         //         "renderer=multiarea_emitter",
         //         "material=multi_material_latent",
-        //         "experiment_name=Train-decoder_from-scratch_test",
+        //         "experiment_name=Stage-1_debug",
         //         "model.test=False",
         //         // "model.ckpt_path=/media/raid/cloth/output/BRDF/points/10-Materials_Points-training_run_1/training/model_0.20_0.20/last.ckpt"
         //     ]
         // }
 
 
-        {
-            "name": "Python: stage 2",
-            "type": "python",
-            "request": "launch",
-            "program": "main.py",
-            "console": "integratedTerminal",
-            "justMyCode": true,
-            "env": {
-                "CUDA_VISIBLE_DEVICES": "1"
-            },
-            "args": [
-                "dataset_folder=/media/raid/cloth/capture_data/Dataset_Nov11/2",
-                "data=real",
-                "renderer=multiarea_emitter",
-                "material=ani_latent_texture_model",
-                "experiment_name=Overfit_Stage-2_debug",
-                "model.stage=2",
-                "model.test=False",
-                // "model.ckpt_path=/media/raid/cloth/output/BRDF/points/10-Materials_Points-training_run_1/training/model_0.20_0.20/last.ckpt"
-            ]
-        }
+        // {
+        //     "name": "Python: stage 2",
+        //     "type": "python",
+        //     "request": "launch",
+        //     "program": "main.py",
+        //     "console": "integratedTerminal",
+        //     "justMyCode": true,
+        //     "env": {
+        //         "CUDA_VISIBLE_DEVICES": "1"
+        //     },
+        //     "args": [
+        //         "dataset_folder=/media/raid/cloth/capture_data/Dataset_Nov11/2",
+        //         "data=real",
+        //         "renderer=multiarea_emitter",
+        //         "material=ani_latent_texture_model",
+        //         "experiment_name=Overfit_Stage-2_debug",
+        //         "model.stage=2",
+        //         "model.test=False",
+        //         // "model.ckpt_path=/media/raid/cloth/output/BRDF/points/10-Materials_Points-training_run_1/training/model_0.20_0.20/last.ckpt"
+        //     ]
+        // }
 
                 // {
         //     "name": "Python: Current File",

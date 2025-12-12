@@ -317,6 +317,20 @@ class MultiMaterialPointDataset(IterableDataset if True else Dataset):
             self.all_material_ids = chunk_data.material_ids
             self.all_point_ids = chunk_data.point_ids
             print(f"Validation data loaded: {len(self.all_rays):,} observations")
+            
+            # Debug visualization: show points with material_id == 0
+            visualize = True
+            if visualize:
+                import open3d as o3d
+                mask = self.all_material_ids == 0
+                xyz = self.all_xyz[mask].cpu().numpy()
+                # Convert int16 RGB to float [0, 1] for open3d
+                rgbs = np.clip(self.all_rgbs[mask].cpu().numpy().astype(np.float32), 0, 65535) / 65535.0
+                pcd = o3d.geometry.PointCloud()
+                pcd.points = o3d.utility.Vector3dVector(xyz)
+                pcd.colors = o3d.utility.Vector3dVector(rgbs)
+                o3d.io.write_point_cloud("/media/raid/cloth/output/visualizaitons/debug_material_0_points.ply", pcd)
+                print(f"Saved debug point cloud to debug_material_0_points.ply ({len(xyz)} points)")
         
         print(f"\nDataset ready!")
         print(f"{'='*60}\n")
@@ -523,6 +537,7 @@ class MultiMaterialPointDataset(IterableDataset if True else Dataset):
         camera_ids = torch.cat(all_camera_ids, dim=0)
         material_ids = torch.cat(all_material_ids, dim=0)
         point_ids = torch.cat(all_point_ids, dim=0)
+        
         
         print(f"[{'Main' if is_val else 'Background'}] Chunk built: {len(rays):,} total {split} observations")
         
