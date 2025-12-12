@@ -70,12 +70,13 @@
                 // "dataset_folder=/media/raid/cloth/No_cable_capture_Sep22/BRDF_recon_Sep30/Controlled_light/hdr",
                 "renderer=realcapture_area_emitter",
                 "material=ani_latent_texture_model",
-                "experiment_name=Debug_1",
+                "experiment_name=Milestone_version_Debug_1",
                 "model.test=False",
                 // "model.ckpt_path=/media/raid/cloth/output/BRDF/real/All-images_Correct-height_capture_Camera-factor_Chunk-200-3000_run_1/training/model_0.20_0.20/last.ckpt"
             ]
         }
-        
+
+
         // {
         //     "name": "Debug Color Matrix",
         //     "type": "python",

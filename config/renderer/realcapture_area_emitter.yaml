@@ -36,11 +36,11 @@ camera:
     width: 3072
     height: 2048
     # focal_length: 6699.9749607678123 #previous focal length
-    focal_length: 6781.26
+    focal_length: 6721
     cx: 1536
     cy: 1024
     # distortion: -0.057534771756603202 #previous distortion
-    distortion: -0.0386
+    distortion: -0.0648
 
   # intrinsics:
   #   width: 3080
@@ -55,7 +55,7 @@ mesh:
   mitsuba_scene: False
   rectangle:
     # center: [0.16, -0.11, -0.058] # 0.06 is the foam board top
-    center: [0.16, -0.11, -0.0643] # 0.063 is the foam board bottom
+    center: [0.16, -0.11, -0.061] # 0.063 is the foam board bottom
     # width: 0.264 # board_size
     # length: 0.31
     width: 0.14 # sample_size

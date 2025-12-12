@@ -41,7 +41,7 @@ multi_resolution: False
 downsample_iter: [-1, -1]
 
 debug: True # no random permutation when debugging
-debug_num: -1
+debug_num: 1
 visualize_uv: False
 start_idx: 0
 valid_num: -1 # -1 to use all data for validation

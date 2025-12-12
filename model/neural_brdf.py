@@ -9,7 +9,7 @@ sys.path.append('..')
 from utils.ops import *
 # from noise import pnoise3
 from pnoise import pnoise
-from nerfstudio.field_components import encodings as encoding
+# from nerfstudio.field_components import encodings as encoding  # Commented out - nerfstudio not required when use_nerfstudio_sh=False
 
 def hemisphere_detection(pos):
     return (pos[:,0] + pos[:,1] + pos[:,2]) > 0
@@ -2059,7 +2059,7 @@ class AnisotropicLatentTexturedModel(LightningModule):
                 prev_dim = hidden_dim
                 
             layers.append(nn.Linear(prev_dim, cfg.output_channels))
-            layers.append(nn.LeakyReLU())
+            layers.append(nn.LeakyReLU(0.2))
             
             self.mlp = nn.Sequential(*layers)
 
