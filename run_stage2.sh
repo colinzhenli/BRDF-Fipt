@@ -3,11 +3,11 @@
 export CUDA_VISIBLE_DEVICES=3
 
 python main.py \
-    dataset_folder=/media/raid/cloth/capture_data/Dataset_Nov11/2 \
+    dataset_folder=/media/raid/cloth/capture_data/New_center_Nov25/0 \
     data=real \
     renderer=multiarea_emitter \
     material=ani_latent_texture_model \
-    experiment_name=No-Gaussian-Blur_Stage-2_from-pretrained-decoder_run_1 \
+    experiment_name=Correct-Spp_Stage-2_from-pretrained-decoder_run_1 \
     model.stage=2 \
     model.test=False \
     model.freeze_decoder=True \

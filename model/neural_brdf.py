@@ -2059,7 +2059,7 @@ class AnisotropicLatentTexturedModel(LightningModule):
                 prev_dim = hidden_dim
                 
             layers.append(nn.Linear(prev_dim, cfg.output_channels))
-            layers.append(nn.LeakyReLU())
+            layers.append(nn.ReLU())
             
             self.mlp = nn.Sequential(*layers)
 

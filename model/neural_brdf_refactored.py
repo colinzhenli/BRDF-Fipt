@@ -319,7 +319,7 @@ class BRDFDecoder(nn.Module):
                 prev_dim = hidden_dim
             
             layers.append(nn.Linear(prev_dim, cfg.output_channels))
-            layers.append(nn.ReLU())
+            layers.append(nn.LeakyReLU(0.2))
             return nn.Sequential(*layers)
         
         if different_decoder:

@@ -3,11 +3,11 @@
 export CUDA_VISIBLE_DEVICES=3
 
 python main.py \
-    dataset_folder=/media/raid/cloth/capture_data/Dataset_Nov11/2 \
+    dataset_folder=/media/raid/cloth/capture_data/New_center_Nov25/0 \
     data=real \
     renderer=multiarea_emitter \
     material=ani_latent_texture_model \
-    experiment_name=No-emitter-calibration_Previous-G-term_Stage-2_Optimize_from-scratch-decoder_run_2 \
+    experiment_name=Leaky-ReLU_Colmap-camera_Correct-Spp_Stage-2_Optimize_from-scratch-decoder_run_2 \
     model.stage=2 \
     model.test=False \
     model.freeze_decoder=False \

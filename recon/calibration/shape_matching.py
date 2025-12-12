@@ -243,8 +243,9 @@ def process_pointcloud_to_base(pointcloud_path, T_BW, cfg, output_path=None, z_o
         z_outlier_percentile: Percentage of points to remove as outliers from top and bottom (default 5%)
     
     Returns:
-        tuple: (filtered_pcd, bbox_min, bbox_max, bbox_center, bbox_size, filtered_indices)
+        tuple: (filtered_pcd, bbox_min, bbox_max, bbox_center, bbox_size, filtered_indices, points_world_filtered)
             filtered_indices: numpy array of indices of filtered points in the original pointcloud
+            points_world_filtered: (N, 3) array of filtered points in COLMAP world frame
     """
     import open3d as o3d
     
@@ -254,6 +255,9 @@ def process_pointcloud_to_base(pointcloud_path, T_BW, cfg, output_path=None, z_o
         raise ValueError(f"Failed to load pointcloud from {pointcloud_path}")
     
     print(f"Loaded {len(pcd.points)} points from {pointcloud_path}")
+    
+    # SAVE WORLD COORDINATES BEFORE TRANSFORMATION
+    points_world_original = np.asarray(pcd.points).copy()  # (N, 3) in COLMAP world frame
     
     # Transform to base frame
     pcd.transform(T_BW)
@@ -301,6 +305,9 @@ def process_pointcloud_to_base(pointcloud_path, T_BW, cfg, output_path=None, z_o
     colors_filtered = colors_cropped[z_mask] if colors_cropped is not None else None
     filtered_indices = indices_after_xy[z_mask]
     
+    # APPLY SAME FILTERING TO WORLD COORDINATES - ensures matching indices
+    points_world_filtered = points_world_original[filtered_indices]
+    
     print(f"After Z outlier removal ({z_outlier_percentile}% top/bottom): {len(points_filtered)} points "
           f"({100*len(points_filtered)/len(points_cropped):.1f}% of cropped)")
     print(f"Z range: [{z_lower:.6f}, {z_upper:.6f}]")
@@ -333,7 +340,7 @@ def process_pointcloud_to_base(pointcloud_path, T_BW, cfg, output_path=None, z_o
             raise RuntimeError(f"Failed to save pointcloud to {output_path}")
         print(f"Filtered pointcloud saved to: {output_path}")
     
-    return pcd_filtered, bbox_min, bbox_max, bbox_center, bbox_size, filtered_indices
+    return pcd_filtered, bbox_min, bbox_max, bbox_center, bbox_size, filtered_indices, points_world_filtered
 
 def save_camera_log_from_colmap(camera_c2w, robot_T, s, T_BW, scan_id, output_path):
     """
@@ -618,7 +625,6 @@ def _process_camera_batch(args):
     """
     import cv2
     img_ids, images, cameras, points_world, points_base, hdr_path = args
-    
     batch_observations = []
     
     for img_id in img_ids:
@@ -627,10 +633,12 @@ def _process_camera_batch(args):
         
         # Load HDR image
         hdr_image_path = os.path.join(hdr_path, image.name)
-        prefix = f'scan-{img_id:04d}'
+        prefix = f'scan-{(img_id-1):04d}' # -1 because colmap indices start from 1
         matching_files = [f for f in os.listdir(hdr_path) if f.startswith(prefix)]
         if matching_files:
             hdr_image_path = os.path.join(hdr_path, matching_files[0])
+        else:
+            raise ValueError(f"No matching file found for {prefix}")
         hdr_img = cv2.imread(hdr_image_path, cv2.IMREAD_UNCHANGED)
         hdr_img = cv2.cvtColor(hdr_img, cv2.COLOR_BGR2RGB)
         
@@ -696,27 +704,48 @@ def _process_camera_batch(args):
             valid_indices.astype(np.float32)      # point_id (M,) - local point index
         ])  # Shape: (M, 10)
         batch_observations.append(camera_observations)
+        
+        # Debug visualization
+        visualize = False
+        if visualize:
+            import open3d as o3d
+            first_img_id = img_id
+            xyz = points_base[valid_indices]
+            rgbs = np.clip(rgb_values.astype(np.float32), 0, 65535) / 65535.0
+            pcd = o3d.geometry.PointCloud()
+            pcd.points = o3d.utility.Vector3dVector(xyz)
+            pcd.colors = o3d.utility.Vector3dVector(rgbs)
+            o3d.io.write_point_cloud(f"/media/raid/cloth/output/visualizaitons_4/debug_points_base_img{first_img_id}.ply", pcd)
+            print(f"Saved debug point cloud to debug_points_base_img{first_img_id}.ply ({len(xyz)} points)")
+            
+            xyz = points_world[valid_indices]
+            pcd = o3d.geometry.PointCloud()
+            pcd.points = o3d.utility.Vector3dVector(xyz)
+            pcd.colors = o3d.utility.Vector3dVector(rgbs)
+            o3d.io.write_point_cloud(f"/media/raid/cloth/output/visualizaitons_4/debug_points_world_img{first_img_id}.ply", pcd)
+            print(f"Saved debug point cloud to debug_points_world_img{first_img_id}.ply ({len(xyz)} points)")
+    
     
     return batch_observations
 
 
-def save_points_pixel_data_reprojection(pcd_filtered, filtered_indices, cameras, images, points3D, hdr_path, observations_folder, num_workers=32):
+def save_points_pixel_data_reprojection(pcd_filtered, points_world_filtered, cameras, images, hdr_path, observations_folder, num_workers=32, num_chunks=50):
     """
     Reproject filtered 3D points to all camera views with SIMPLE_RADIAL distortion.
     Uses multiprocessing to speed up processing.
     
     Args:
         pcd_filtered: Open3D pointcloud (filtered and transformed to base frame) - used for getting base frame coordinates
-        filtered_indices: numpy array of indices mapping filtered points to original COLMAP points
+        points_world_filtered: (N, 3) array of filtered points in COLMAP world frame (same order as pcd_filtered)
         cameras: dict of COLMAP Camera objects (from read_cameras_binary/text)
         images: dict of COLMAP Image objects (from read_images_binary/text)
-        points3D: dict of COLMAP Point3D objects (from read_points3D_binary/text)
         hdr_path: Path to folder containing HDR images
         observations_folder: Path to folder where observation chunks will be saved
-        num_workers: Number of parallel workers (default: 32)
+        num_workers: Number of parallel workers
+        num_chunks: Number of chunks to split observations into
     
     Saves:
-        - 50 npz files in observations_folder, each containing a chunk of shuffled observations
+        - npz files in observations_folder, each containing a chunk of shuffled observations
           with columns: [x, y, z, image_id, pixel_x, pixel_y, r, g, b, point_id]
         - point_metadata.json in parent folder containing num_points and num_observations
     """
@@ -729,30 +758,22 @@ def save_points_pixel_data_reprojection(pcd_filtered, filtered_indices, cameras,
     print(f"Reprojecting Points to All Camera Views (Multiprocessing)")
     print(f"{'='*60}")
     
-    # Get filtered points from COLMAP (in COLMAP world frame)
-    colmap_point_ids = list(points3D.keys())  # ordered list
-    points_base = np.asarray(pcd_filtered.points)  # (N, 3) in base frame for final output
+    # Get points_base and points_world with guaranteed matching indices
+    points_base = np.asarray(pcd_filtered.points).astype(np.float32)  # (N, 3) in base frame
+    points_world = points_world_filtered.astype(np.float32)  # (N, 3) in COLMAP world frame - SAME ORDER!
     
-    # Extract COLMAP 3D coordinates for filtered points
-    points_world = []
-    for filt_idx in filtered_indices:
-        colmap_point_id = colmap_point_ids[filt_idx]
-        point = points3D[colmap_point_id]
-        points_world.append(point.xyz)
-    
-    points_world = np.array(points_world, dtype=np.float32)  # (N, 3) in COLMAP world frame
     num_points = len(points_world)
     
     print(f"Filtered points to reproject: {num_points:,}")
     print(f"Total cameras: {len(images)}")
     print(f"Using {num_workers} parallel workers")
     
-    # Split camera IDs into batches of 10 for better progress tracking
+    # Split camera IDs into batches for better progress tracking
     img_ids = list(images.keys())
-    chunk_size = 10  # Process 10 cameras per batch
-    batches = [img_ids[i:i+chunk_size] for i in range(0, len(img_ids), chunk_size)]
+    camera_batch_size = max(1, len(img_ids) // num_workers)  # Process cameras in batches based on workers
+    batches = [img_ids[i:i+camera_batch_size] for i in range(0, len(img_ids), camera_batch_size)]
     
-    print(f"Split into {len(batches)} batches ({chunk_size} cameras each)")
+    print(f"Split into {len(batches)} batches (~{camera_batch_size} cameras each)")
     
     # Prepare arguments for each batch
     batch_args = [
@@ -765,7 +786,7 @@ def save_points_pixel_data_reprojection(pcd_filtered, filtered_indices, cameras,
     all_observations = []
     
     with Pool(processes=num_workers) as pool:
-        results = list(tqdm(
+         results = list(tqdm(
             pool.imap(_process_camera_batch, batch_args),
             total=len(batch_args),
             desc="Processing batches"
@@ -778,8 +799,7 @@ def save_points_pixel_data_reprojection(pcd_filtered, filtered_indices, cameras,
     # Convert to numpy array by stacking all observation arrays
     if all_observations:
         observations = np.vstack(all_observations)  # (M, 10)
-    else:
-        observations = np.array([], dtype=np.float32).reshape(0, 10)
+
     total_obs = len(observations)
     
     print(f"\nTotal valid observations: {total_obs:,}")
@@ -791,7 +811,7 @@ def save_points_pixel_data_reprojection(pcd_filtered, filtered_indices, cameras,
     print(f"Uncompressed size: {storage_size_mb:.2f} MB")
     
     # Save to chunks
-    save_observations_to_chunks(observations, observations_folder, num_chunks=50)
+    save_observations_to_chunks(observations, observations_folder, num_chunks=num_chunks, num_workers=num_workers)
     
     # Save point metadata JSON
     import json
@@ -897,7 +917,7 @@ def save_observations_to_chunks(observations, output_folder, num_chunks=50, num_
     
 # -------------------- main --------------------
 
-def main_process(cfg, cameras, images, points3D=None, scan_log_path=None, mesh_path=None, camera_log_path=None, hdr_path=None, observations_folder=None, pointcloud_path=None, bbox_json_path=None, unmatched_scan_ids_path=None, z_outlier_percentile=5.0, num_workers=32):
+def main_process(cfg, cameras, images, points3D=None, scan_log_path=None, mesh_path=None, camera_log_path=None, hdr_path=None, observations_folder=None, pointcloud_path=None, bbox_json_path=None, unmatched_scan_ids_path=None, z_outlier_percentile=5.0, num_workers=32, num_chunks=50):
     # Extract parameters from config
     R_c2g = np.array(cfg.camera.R_c2g)
     t_c2g = np.array(cfg.camera.t_c2g)
@@ -911,11 +931,11 @@ def main_process(cfg, cameras, images, points3D=None, scan_log_path=None, mesh_p
     # Process pointcloud if path provided
     if pointcloud_path is not None:
         output_pcd_path = str(Path(pointcloud_path).with_name(Path(pointcloud_path).stem + "_transformed_filtered.ply"))
-        pcd_filtered, bbox_min, bbox_max, bbox_center, bbox_size, filtered_indices = process_pointcloud_to_base(
+        pcd_filtered, bbox_min, bbox_max, bbox_center, bbox_size, filtered_indices, points_world_filtered = process_pointcloud_to_base(
             pointcloud_path, T_BW, cfg, output_path=output_pcd_path, z_outlier_percentile=z_outlier_percentile
         )
         
-        save_points_pixel_data_reprojection(pcd_filtered, filtered_indices, cameras, images, points3D, hdr_path, observations_folder, num_workers=num_workers)
+        save_points_pixel_data_reprojection(pcd_filtered, points_world_filtered, cameras, images, hdr_path, observations_folder, num_workers=num_workers, num_chunks=num_chunks)
 
         # Save bounding box info to a JSON file
         bbox_info = {
@@ -936,6 +956,7 @@ def main(cfg: DictConfig) -> None:
     # Get parameters from Hydra config (can be overridden via command line)
     folder_path = cfg.shape_matching.folder_path
     num_workers = cfg.shape_matching.num_workers
+    num_chunks = 50
     z_outlier_percentile = cfg.shape_matching.z_outlier_percentile
     
     # Build paths from folder_path
@@ -952,6 +973,7 @@ def main(cfg: DictConfig) -> None:
     print(f"Unmatched scan ids path: {unmatched_scan_ids_path}")
     print(f"Processing folder: {folder_path}")
     print(f"Number of workers: {num_workers}")
+    print(f"Number of chunks: {num_chunks}")
     print(f"Z outlier percentile: {z_outlier_percentile}")
 
     # Load COLMAP data (cameras, images, points3D)
@@ -969,7 +991,7 @@ def main(cfg: DictConfig) -> None:
 
     main_process(cfg, cameras, images, points3D=points3D, scan_log_path=scan_log_path, mesh_path=mesh_path, 
                  camera_log_path=camera_log_path, hdr_path=hdr_path, observations_folder=observations_folder, 
-                 pointcloud_path=pointcloud_path, bbox_json_path=bbox_json_path, unmatched_scan_ids_path=unmatched_scan_ids_path, z_outlier_percentile=z_outlier_percentile, num_workers=num_workers)
+                 pointcloud_path=pointcloud_path, bbox_json_path=bbox_json_path, unmatched_scan_ids_path=unmatched_scan_ids_path, z_outlier_percentile=z_outlier_percentile, num_workers=num_workers, num_chunks=num_chunks)
     print(f"Finished shape matching for {folder_path}")
 
 if __name__ == "__main__":
