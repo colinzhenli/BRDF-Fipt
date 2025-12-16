@@ -319,7 +319,7 @@ class MultiMaterialPointDataset(IterableDataset if True else Dataset):
             print(f"Validation data loaded: {len(self.all_rays):,} observations")
             
             # Debug visualization: show points with material_id == 0
-            visualize = True
+            visualize = False
             if visualize:
                 import open3d as o3d
                 mask = self.all_material_ids == 0
@@ -554,7 +554,7 @@ class MultiMaterialPointDataset(IterableDataset if True else Dataset):
             return math.ceil(len(self.all_rays) / self.rays_num)
         else:
             # For training with double buffer, return a large number
-            return 1000000
+            return 100
     
     def __iter__(self):
         """Infinite iterator for training (samples random batches)."""

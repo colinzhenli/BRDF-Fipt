@@ -80,12 +80,12 @@ def main(cfg):
             model.load_state_dict(model_dict)
             print(f"=> Stage 2: loaded decoder checkpoint successfully. {len(decoder_dict)}/{len([k for k in model_dict if 'material.decoder.' in k])} decoder parameters loaded.")
         else:
-            # Stage 1: Load all matching parameters
+            # Stage 1: Only load material parameters
             model_dict = model.state_dict()
-            pretrained_dict = {k: v for k, v in checkpoint['state_dict'].items() if k in model_dict}
+            pretrained_dict = {k: v for k, v in checkpoint['state_dict'].items() if k in model_dict and k.startswith('material.')}
             model_dict.update(pretrained_dict)
             model.load_state_dict(model_dict)
-            print(f"=> loaded checkpoint successfully. {len(pretrained_dict)}/{len(model_dict)} parameters loaded.")
+            print(f"=> loaded material checkpoint successfully. {len(pretrained_dict)}/{len([k for k in model_dict if k.startswith('material.')])} material parameters loaded.")
     print("after trainer init")
     print("==> initializing data ...")   
     if cfg.data.dataset_name == "real":
@@ -93,7 +93,10 @@ def main(cfg):
         val_dataset = RealValDataset(cfg, gt_folder=cfg.gt_folder)
     elif cfg.data.dataset_name == "points":
         train_dataset = MultiMaterialPointDataset(cfg, root_folder=cfg.dataset_folder, split="train")
-        val_dataset = MultiMaterialPointDataset(cfg, root_folder=cfg.dataset_folder, split="val")
+        if cfg.data.debug & cfg.data.valid_on_train_set:
+            val_dataset = MultiMaterialPointDataset(cfg, root_folder=cfg.dataset_folder, split="train")
+        else:
+            val_dataset = MultiMaterialPointDataset(cfg, root_folder=cfg.dataset_folder, split="val")
     else:
         raise ValueError(f"Invalid dataset name: {cfg.data.dataset_name}")
     train_loader = DataLoader(

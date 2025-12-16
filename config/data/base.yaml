@@ -42,7 +42,8 @@ downsample_iter: [-1, -1]
 
 debug: True # no random permutation when debugging
 debug_num: 1
-debug_num_materials: 3
+debug_num_materials: 1
+valid_on_train_set: True
 val_ratio: 0.05
 visualize_uv: False
 start_idx: 0

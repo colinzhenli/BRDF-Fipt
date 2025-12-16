@@ -7,7 +7,7 @@ python main.py \
     data=real \
     renderer=multiarea_emitter \
     material=ani_latent_texture_model \
-    experiment_name=Leaky-ReLU_Colmap-camera_Correct-Spp_Stage-2_Optimize_from-scratch-decoder_run_2 \
+    experiment_name=Stage-2_ReLU_Optimize_from-scratch-decoder_run_2 \
     model.stage=2 \
     model.test=False \
     model.freeze_decoder=False \

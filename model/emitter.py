@@ -855,6 +855,17 @@ class MultiAreaEmitter(nn.Module):
 
         # cos(theta) between light normal and emission direction
         # light_normal is [M, N, 3], index with material_id and light_id
+        # Validate light_id is within valid range for each material
+        max_light_ids = self.num_emitters_per_material[material_id]  # (B,)
+        invalid_mask = light_id >= max_light_ids
+        if invalid_mask.any():
+            invalid_indices = torch.where(invalid_mask)[0]
+            raise ValueError(
+                f"Invalid light_id detected: light_id[{invalid_indices.tolist()}]="
+                f"{light_id[invalid_mask].tolist()} >= max_emitters="
+                f"{max_light_ids[invalid_mask].tolist()} for material_id="
+                f"{material_id[invalid_mask].tolist()}"
+            )
         light_n = self.light_normal[material_id, light_id] # (B, 3)
         cos_theta = torch.clamp((v * light_n).sum(dim=-1, keepdim=True), -1, 1)
 

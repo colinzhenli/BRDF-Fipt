@@ -817,7 +817,6 @@ def batched_path_tracing_tbn_real_area_emitter(scene,emitter_net,material_net,ra
         wi, emit_pdf, emit_position, emitter_normal= emitter_net.sample_emitter(torch.rand_like(position[..., :2]), position, light_id)
         # visibility test
         emit_weight,emit_pdf, _ = emitter_net.eval_emitter(position, wi, light_id)
-        G = (wi*normal).sum(-1).abs() * (-wi*emitter_normal).sum(-1).abs() / (emit_position-position).pow(2).sum(-1).clamp_min(1e-6) # B, 1
         # emit brdf
         brdf_result = material_net.eval_brdf(
             gt_params=None,
@@ -840,6 +839,7 @@ def batched_path_tracing_tbn_real_area_emitter(scene,emitter_net,material_net,ra
         else:
             emit_brdf, normal, brdf_pdf, uv_offset[vis] = brdf_result
 
+        G = (wi*normal).sum(-1).abs() / (emit_position-position).pow(2).sum(-1).clamp_min(1e-6) # B, 1
         emit_weight = emit_weight*G[...,None]/emit_pdf.clamp_min(1e-6)
         w_mis = torch.where((emit_pdf>0)&(~brdf_pdf.isinf()),emit_pdf*emit_pdf/(emit_pdf*emit_pdf+brdf_pdf*brdf_pdf),0)
         w_mis[emit_pdf.isinf()|(brdf_pdf==0)] = 1
