@@ -17,7 +17,7 @@
         //         "CUDA_VISIBLE_DEVICES": "1"
         //     },
         //     "args": [
-        //         "shape_matching.folder_path=/media/raid/cloth/capture_data/Dataset_Nov11/0",
+        //         "shape_matching.folder_path=/media/raid/cloth/capture_data/Dataset_Nov11/2",
         //         "shape_matching.num_workers=16",
         //         "shape_matching.z_outlier_percentile=5.0"
         //     ]
@@ -94,20 +94,24 @@
             "console": "integratedTerminal",
             "justMyCode": true,
             "env": {
-                "CUDA_VISIBLE_DEVICES": "1"
+                "CUDA_VISIBLE_DEVICES": "3"
             },
             "args": [
                 "dataset_folder=/media/raid/cloth/capture_data/Dataset_Nov11",
-                // "dataset_folder=/media/raid/cloth/capture_data/BRDF_recon_Oct20_white_test/hdr",
-                // "dataset_folder=/media/raid/cloth/capture_data/BRDF_recon_Oct21_color_checker_5_distance_grey_center/hdr",
-                // "dataset_folder=/media/raid/cloth/No_cable_capture_Sep22/BRDF_recon_Sep30/Controlled_light/hdr",
                 "data=points",
-                "model.stage=1",
                 "renderer=multiarea_emitter",
                 "material=multi_material_latent",
-                "experiment_name=Stage-1_debug_valid-on-train-set",
-                "model.test=True",
-                "model.ckpt_path=/media/raid/cloth/output/BRDF/points/Stage-1_Overfit-material-0_run_1/training/model_0.20_0.20/last.ckpt"
+                "experiment_name=Grad-clip_Stage-1_Material-0_No-skip-connection_debug",
+                "model.stage=1",
+                "model.test=False",
+                "model.trainer.limit_train_batches=512",
+                "material.decoder.use_skip_connection=False",
+                "data.switch_iters=2000",
+                "data.filter_observations=False",
+                "data.debug=True",
+                "data.val_ratio=0.2",
+                "data.num_materials=1",
+                "data.start_material_id=0"
             ]
         }
 
@@ -120,17 +124,20 @@
         //     "console": "integratedTerminal",
         //     "justMyCode": true,
         //     "env": {
-        //         "CUDA_VISIBLE_DEVICES": "1"
+        //         "CUDA_VISIBLE_DEVICES": "0"
         //     },
         //     "args": [
-        //         "dataset_folder=/media/raid/cloth/capture_data/Dataset_Nov11/2",
+        //         "dataset_folder=/media/raid/cloth/capture_data/New_center_Nov25/0",
         //         "data=real",
+        //         "data.debug=False",
         //         "renderer=multiarea_emitter",
         //         "material=ani_latent_texture_model",
-        //         "experiment_name=Overfit_Stage-2_debug",
+        //         "experiment_name=Correct-PNSR_Test_1",
         //         "model.stage=2",
-        //         "model.test=False",
-        //         // "model.ckpt_path=/media/raid/cloth/output/BRDF/points/10-Materials_Points-training_run_1/training/model_0.20_0.20/last.ckpt"
+        //         "material.use_latent_bank=False",
+        //         "model.test=True",
+        //         "model.freeze_decoder=True",
+        //         "model.ckpt_path=/media/raid/cloth/output/BRDF/real/Stage-2_ReLU_Optimize_from-scratch-decoder_run_2/training/model_0.20_0.20/last.ckpt"
         //     ]
         // }
 

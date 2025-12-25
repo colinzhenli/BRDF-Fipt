@@ -813,9 +813,20 @@ def save_points_pixel_data_reprojection(pcd_filtered, points_world_filtered, cam
     # Save to chunks
     save_observations_to_chunks(observations, observations_folder, num_chunks=num_chunks, num_workers=num_workers)
     
-    # Save point metadata JSON
+    # Extract unique point_id -> xyz mapping from observations
     import json
-    material_folder = os.path.dirname(observations_folder)  # observations_folder is inside material folder
+    point_ids = observations[:, 9].astype(np.int64)
+    unique_pids, first_idx = np.unique(point_ids, return_index=True)
+    unique_xyz = observations[first_idx, :3].astype(np.float32)
+    
+    # Save as (num_unique, 4): [point_id, x, y, z]
+    material_folder = os.path.dirname(observations_folder)
+    positions_path = os.path.join(material_folder, 'point_positions.npz')
+    np.savez(positions_path, point_ids=unique_pids, positions=unique_xyz)
+    print(f"\nSaved point positions to: {positions_path}")
+    print(f"  Unique points: {len(unique_pids)} / {num_points}")
+    
+    # Save point metadata JSON
     metadata_path = os.path.join(material_folder, 'point_metadata.json')
     
     point_metadata = {

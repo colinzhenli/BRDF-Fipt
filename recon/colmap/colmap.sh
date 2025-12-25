@@ -1,9 +1,28 @@
 PROJECT="${1:?usage: $0 <project_dir>}"
 gpu_id="${2:?usage: $0 <gpu_id>}"
-IMG_DIR="${PROJECT}/ldr"
-DB="${PROJECT}/database.db"
-OUT_SPARSE="${PROJECT}/sparse"         # triangulated sparse model goes here
-UNDIST_OUT="${PROJECT}/undistorted"          # undistorted workspace (optional)
+
+# === LOCAL STORAGE SETUP (avoid slow NFS I/O) ===
+TMP_BASE="/mnt/data/colin/colin/colmap_tmp"
+PROJECT_NAME=$(basename "${PROJECT}")
+TMP_PROJECT="${TMP_BASE}/${PROJECT_NAME}_$$"  # $$ = PID for uniqueness
+
+echo "== Setting up local storage =="
+echo "Original project: ${PROJECT}"
+echo "Temp project: ${TMP_PROJECT}"
+
+# Create tmp project directory
+mkdir -p "${TMP_PROJECT}"
+
+# Copy images to local storage
+echo "== Copying images to local storage =="
+cp -r "${PROJECT}/ldr" "${TMP_PROJECT}/ldr"
+echo "Images copied to ${TMP_PROJECT}/ldr"
+
+# Define paths using local storage
+IMG_DIR="${TMP_PROJECT}/ldr"
+DB="${TMP_PROJECT}/database.db"
+OUT_SPARSE="${TMP_PROJECT}/sparse"
+UNDIST_OUT="${TMP_PROJECT}/undistorted"
 
 echo "== Feature extraction =="
 CUDA_VISIBLE_DEVICES=$gpu_id colmap feature_extractor \
@@ -15,51 +34,48 @@ echo "== Sequential matching =="
 CUDA_VISIBLE_DEVICES=$gpu_id colmap sequential_matcher --database_path "$DB"
 
 echo "== Mapping =="
-mkdir -p ${PROJECT}/sparse
+mkdir -p ${TMP_PROJECT}/sparse
 CUDA_VISIBLE_DEVICES=$gpu_id colmap mapper \
-    --database_path=${PROJECT}/database.db \
+    --database_path=${TMP_PROJECT}/database.db \
     --image_path=${IMG_DIR} \
-    --output_path=${PROJECT}/sparse
+    --output_path=${TMP_PROJECT}/sparse
 
 echo "== Bundle adjust =="
-cp ${PROJECT}/sparse/0/*.bin ${PROJECT}/sparse/
-for path in ${PROJECT}/sparse/*/; do
+cp ${TMP_PROJECT}/sparse/0/*.bin ${TMP_PROJECT}/sparse/
+for path in ${TMP_PROJECT}/sparse/*/; do
     m=$(basename ${path})
     if [ ${m} != "0" ]; then
         colmap model_merger \
-            --input_path1=${PROJECT}/sparse \
-            --input_path2=${PROJECT}/sparse/${m} \
-            --output_path=${PROJECT}/sparse
+            --input_path1=${TMP_PROJECT}/sparse \
+            --input_path2=${TMP_PROJECT}/sparse/${m} \
+            --output_path=${TMP_PROJECT}/sparse
         colmap bundle_adjuster \
-            --input_path=${PROJECT}/sparse \
-            --output_path=${PROJECT}/sparse
+            --input_path=${TMP_PROJECT}/sparse \
+            --output_path=${TMP_PROJECT}/sparse
     fi
 done
 
-# echo "== Undistort images =="
-# colmap image_undistorter \
-#     --image_path=${IMG_DIR} \
-#     --input_path=${PROJECT}/sparse \
-#     --output_path=${UNDIST_OUT} \
-#     --output_type=COLMAP
-
 echo "== Convert sparse model to text =="
-# convert sparse/0 from binary → text in place
 colmap model_converter \
-    --input_path   ${PROJECT}/sparse \
-    --output_path  ${PROJECT}/sparse \
+    --input_path   ${TMP_PROJECT}/sparse \
+    --output_path  ${TMP_PROJECT}/sparse \
     --output_type  TXT
-
-# echo "== Convert undistorted sparse model to text =="
-# colmap model_converter \
-#     --input_path   ${UNDIST_OUT}/sparse \
-#     --output_path  ${UNDIST_OUT}/sparse \
-#     --output_type  TXT
 
 echo "== Convert sparse model to ply =="
 CUDA_VISIBLE_DEVICES=$gpu_id colmap model_converter \
-    --input_path "${PROJECT}/sparse" \
-    --output_path "${PROJECT}/sparse/points3D.ply" \
+    --input_path "${TMP_PROJECT}/sparse" \
+    --output_path "${TMP_PROJECT}/sparse/points3D.ply" \
     --output_type PLY
+
+# === MOVE RESULTS BACK TO NFS ===
+echo "== Moving sparse output back to original project =="
+rm -rf "${PROJECT}/sparse" 2>/dev/null
+mv "${TMP_PROJECT}/sparse" "${PROJECT}/sparse"
+echo "Sparse output moved to ${PROJECT}/sparse"
+
+# === CLEANUP ===
+echo "== Cleaning up temporary files =="
+rm -rf "${TMP_PROJECT}"
+echo "Temporary directory removed: ${TMP_PROJECT}"
 
 echo "== Finished COLMAP reconstruction =="

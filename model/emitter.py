@@ -687,12 +687,13 @@ class MultiAreaEmitter(nn.Module):
         root = Path(folder_path)
         material_folders = sorted([
             d for d in root.iterdir() 
-            if d.is_dir() and d.name.isdigit()
+            if d.is_dir() and d.name.isdigit() and (d / "observations").is_dir()
         ], key=lambda x: int(x.name))
-        
+        material_folders = material_folders[cfg.start_material_id:cfg.start_material_id+cfg.num_materials]
         print(f"MultiAreaEmitter: Found {len(material_folders)} material folders.")
 
         l2w_list = []
+        mat_ids = []
         for d in material_folders:
             json_path = d / "scan_log.json"
             if not json_path.exists():
@@ -703,9 +704,16 @@ class MultiAreaEmitter(nn.Module):
             # Compute l2w for this material [N_i, 4, 4]
             l2w_mat = self._compute_l2w(cfg, str(json_path)) 
             l2w_list.append(l2w_mat)
+            mat_ids.append(int(d.name))
 
         if not l2w_list:
              raise ValueError(f"No valid material folders found in {folder_path}")
+
+        # Build mapping from material_id -> list index (to handle non-contiguous IDs like 0,1,3,5)
+        mat_id_to_idx = torch.zeros(max(mat_ids) + 1, dtype=torch.long, device='cuda')
+        for idx, mat_id in enumerate(mat_ids):
+            mat_id_to_idx[mat_id] = idx
+        self.register_buffer('mat_id_to_idx', mat_id_to_idx)
 
         # Find max emitter count and pad to uniform size
         num_emitters_list = [l2w.shape[0] for l2w in l2w_list]
@@ -855,8 +863,11 @@ class MultiAreaEmitter(nn.Module):
 
         # cos(theta) between light normal and emission direction
         # light_normal is [M, N, 3], index with material_id and light_id
+        # Map material_id to tensor index (handles non-contiguous IDs)
+        idx = self.mat_id_to_idx[material_id]
+        
         # Validate light_id is within valid range for each material
-        max_light_ids = self.num_emitters_per_material[material_id]  # (B,)
+        max_light_ids = self.num_emitters_per_material[idx]  # (B,)
         invalid_mask = light_id >= max_light_ids
         if invalid_mask.any():
             invalid_indices = torch.where(invalid_mask)[0]
@@ -866,7 +877,7 @@ class MultiAreaEmitter(nn.Module):
                 f"{max_light_ids[invalid_mask].tolist()} for material_id="
                 f"{material_id[invalid_mask].tolist()}"
             )
-        light_n = self.light_normal[material_id, light_id] # (B, 3)
+        light_n = self.light_normal[idx, light_id] # (B, 3)
         cos_theta = torch.clamp((v * light_n).sum(dim=-1, keepdim=True), -1, 1)
 
         if self.calibrated_directional_distribution:
@@ -930,11 +941,14 @@ class MultiAreaEmitter(nn.Module):
         """
         B = position.shape[0]
         
+        # Map material_id to tensor index (handles non-contiguous IDs)
+        idx = self.mat_id_to_idx[material_id]
+        
         # Get light properties for the specified light indices
         # light_positions and light_normal are [M, N, 3]
-        light_pos = self.light_positions[material_id, light_id]  # (B, 3)
+        light_pos = self.light_positions[idx, light_id]  # (B, 3)
         light_r = self.light_radius.expand(B)  # (B,)
-        light_n = self.light_normal[material_id, light_id]  # (B, 3)
+        light_n = self.light_normal[idx, light_id]  # (B, 3)
         
         # Uniform sampling on disk using polar coordinates
         r_sample = torch.sqrt(sample[..., 0]) * light_r   # (B,)
@@ -999,10 +1013,13 @@ class MultiAreaEmitter(nn.Module):
         """
         B = position.shape[0]
         
+        # Map material_id to tensor index (handles non-contiguous IDs)
+        idx = self.mat_id_to_idx[material_id]
+        
         # Get light properties for the specified light indices
-        light_pos = self.light_positions[material_id, light_id]  # (B, 3)
+        light_pos = self.light_positions[idx, light_id]  # (B, 3)
         light_r = self.light_radius.expand(B)  # (B,)
-        light_n = self.light_normal[material_id, light_id]  # (B, 3)
+        light_n = self.light_normal[idx, light_id]  # (B, 3)
         
         # Ray-plane intersection
         # Ray: p(t) = pos + t * dirs

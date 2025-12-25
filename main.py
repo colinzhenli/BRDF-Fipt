@@ -1,4 +1,5 @@
 import torch
+import torch.nn as nn
 import torchvision
 import json
 import os
@@ -79,6 +80,20 @@ def main(cfg):
             model_dict.update(decoder_dict)
             model.load_state_dict(model_dict)
             print(f"=> Stage 2: loaded decoder checkpoint successfully. {len(decoder_dict)}/{len([k for k in model_dict if 'material.decoder.' in k])} decoder parameters loaded.")
+            
+            # If use_latent_bank is enabled, also load the latent bank from checkpoint
+            use_latent_bank = getattr(cfg.material, 'use_latent_bank', False)
+            if use_latent_bank:
+                latent_bank_key = 'material.point_latent_bank.weight'
+                if latent_bank_key in checkpoint['state_dict']:
+                    latent_weights = checkpoint['state_dict'][latent_bank_key]
+                    num_points, latent_dim = latent_weights.shape
+                    # Create embedding from checkpoint weights directly
+                    model.material.point_latent_bank = nn.Embedding(num_points, latent_dim)
+                    model.material.point_latent_bank.weight.data = latent_weights
+                    print(f"=> Stage 2: loaded latent bank from checkpoint: {num_points} x {latent_dim}")
+                else:
+                    print(f"=> Stage 2: use_latent_bank=True but no latent bank weights found in checkpoint.")
         else:
             # Stage 1: Only load material parameters
             model_dict = model.state_dict()
@@ -130,7 +145,10 @@ def main(cfg):
     print("==> initializing trainer ...")
 
     trainer = pl.Trainer(
-        callbacks=[checkpoint_callback, lr_monitor], logger=logger, **cfg.model.trainer
+        callbacks=[checkpoint_callback, lr_monitor], logger=logger, 
+        track_grad_norm=2,  # Log L2 norm of gradients
+        gradient_clip_val=1.0,  # Optional: clip gradients
+        **cfg.model.trainer
     )
     # tracer = VizTracer()
     # tracer.start()

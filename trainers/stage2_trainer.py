@@ -307,6 +307,8 @@ class Stage2Trainer(pl.LightningModule):
             per_pix = torch.abs(rgbs[vis] - rgbs_gt.squeeze(0)[vis]).mean(dim=-1)
         elif self.hparams.model.loss.recon_loss.name == "l2":  # "l2"
             per_pix = torch.pow(rgbs[vis] - rgbs_gt.squeeze(0)[vis], 2).mean(dim=-1)
+        elif self.hparams.model.loss.recon_loss.name == "normalized_l1":  # "normalized_l1"
+            per_pix = torch.abs(rgbs[vis] - rgbs_gt.squeeze(0)[vis]).mean(dim=-1) / 65535.0
         else:  # "logrel" from paper
             rho_ref = getattr(
                 self.hparams.model.loss.recon_loss.log_space, "logrel_ref", 0.5
@@ -351,7 +353,7 @@ class Stage2Trainer(pl.LightningModule):
         loss = self.loss_function(rgbs, rgbs_gt, vis)
 
         psnr_loss  = torch.nn.functional.mse_loss(rgbs[vis], rgbs_gt.squeeze(0)[vis], reduction='mean')
-        max_val = torch.max(torch.stack([rgbs.max(), rgbs_gt.squeeze(0).max()])).clamp_min(1e-8)
+        max_val = torch.max(torch.stack([rgbs[vis].max(), rgbs_gt.squeeze(0)[vis].max()])).clamp_min(1e-8)
         psnr       = 10.0 * torch.log10((max_val ** 2) / psnr_loss.clamp_min(1e-5))
 
         # ------------------------------------------------------------------
@@ -382,7 +384,7 @@ class Stage2Trainer(pl.LightningModule):
             uv_offset = extra_output
         rgbs = rgbs * self.camera_factor
         psnr_loss = torch.nn.functional.mse_loss(rgbs[vis], rgbs_gt.squeeze(0)[vis], reduction='mean')
-        max_val = torch.max(torch.stack([rgbs.max(), rgbs_gt.squeeze(0).max()])).clamp_min(1e-8)
+        max_val = torch.max(torch.stack([rgbs[vis].max(), rgbs_gt.squeeze(0)[vis].max()])).clamp_min(1e-8)
         psnr = 10.0 * torch.log10((max_val ** 2) / psnr_loss.clamp_min(1e-5))
         
         loss = self.loss_function(rgbs, rgbs_gt, vis)

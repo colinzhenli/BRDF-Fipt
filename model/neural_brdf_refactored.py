@@ -288,6 +288,11 @@ class BRDFDecoder(nn.Module):
         self.use_pos_enc = use_pos_enc
         self.different_decoder = different_decoder
         
+        # Skip connection config
+        self.use_skip_connection = getattr(cfg, 'use_skip_connection', False)
+        # skip_layer: which layer index to inject skip connection (default: middle layer)
+        self.skip_layer = getattr(cfg, 'skip_layer', None)
+        
         # Setup positional encoding
         if use_pos_enc:
             self.degree = getattr(cfg, 'degree', 3)
@@ -305,22 +310,52 @@ class BRDFDecoder(nn.Module):
             encoded_input_dim = cfg.input_channels  # 9 (wi + wo + normal)
         
         input_dim = encoded_input_dim + latent_dim
+        self.input_dim = input_dim  # Store for skip connection
+        
+        # Determine skip layer index (default to middle)
+        num_hidden = len(cfg.hidden_layers)
+        if self.skip_layer is None:
+            self.skip_layer = num_hidden // 2
         
         # Build MLP(s)
         def build_mlp():
-            layers = []
-            prev_dim = input_dim
-            for hidden_dim in cfg.hidden_layers:
-                layers.append(nn.Linear(prev_dim, hidden_dim))
-                if cfg.activation.lower() == "relu":
-                    layers.append(nn.ReLU())
-                else:
-                    layers.append(nn.LeakyReLU(0.2))
-                prev_dim = hidden_dim
-            
-            layers.append(nn.Linear(prev_dim, cfg.output_channels))
-            layers.append(nn.ReLU())
-            return nn.Sequential(*layers)
+            if not self.use_skip_connection:
+                # Original sequential MLP
+                layers = []
+                prev_dim = input_dim
+                for hidden_dim in cfg.hidden_layers:
+                    layers.append(nn.Linear(prev_dim, hidden_dim))
+                    if cfg.activation.lower() == "relu":
+                        layers.append(nn.ReLU())
+                    else:
+                        layers.append(nn.LeakyReLU(0.2))
+                    prev_dim = hidden_dim
+                
+                layers.append(nn.Linear(prev_dim, cfg.output_channels))
+                layers.append(nn.ReLU())
+                return nn.Sequential(*layers)
+            else:
+                # MLP with skip connection - use ModuleList for manual forward
+                layers = nn.ModuleList()
+                prev_dim = input_dim
+                for i, hidden_dim in enumerate(cfg.hidden_layers):
+                    # At skip layer, input dimension includes the original input
+                    if i == self.skip_layer:
+                        prev_dim = prev_dim + input_dim
+                    layers.append(nn.Linear(prev_dim, hidden_dim))
+                    prev_dim = hidden_dim
+                
+                # Output layer
+                layers.append(nn.Linear(prev_dim, cfg.output_channels))
+                return layers
+        
+        # Store activation for skip connection forward pass
+        if self.use_skip_connection:
+            if cfg.activation.lower() == "relu":
+                self.activation = nn.ReLU()
+            else:
+                self.activation = nn.LeakyReLU(0.2)
+            self.output_activation = nn.ReLU()
         
         if different_decoder:
             self.mlp_r = build_mlp()
@@ -354,6 +389,26 @@ class BRDFDecoder(nn.Module):
         else:
             return torch.cat([wi_local, wo_local, normal_local], dim=-1)
     
+    def _forward_with_skip(self, mlp_input: torch.Tensor, layers: nn.ModuleList):
+        """Forward pass with skip connection for ModuleList-based MLP."""
+        x = mlp_input
+        num_layers = len(layers)
+        
+        for i, layer in enumerate(layers):
+            # Inject skip connection at specified layer
+            if i == self.skip_layer:
+                x = torch.cat([x, mlp_input], dim=-1)
+            
+            x = layer(x)
+            
+            # Apply activation (except for output layer)
+            if i < num_layers - 1:
+                x = self.activation(x)
+            else:
+                x = self.output_activation(x)
+        
+        return x
+    
     def forward(
         self,
         enc_dir: torch.Tensor,
@@ -373,15 +428,28 @@ class BRDFDecoder(nn.Module):
         """
         mlp_input = torch.cat([enc_dir, latent], dim=-1)
         
-        if self.different_decoder:
-            if channel == 'r':
-                return self.mlp_r(mlp_input)
-            elif channel == 'g':
-                return self.mlp_g(mlp_input)
-            else:  # 'b'
-                return self.mlp_b(mlp_input)
+        if self.use_skip_connection:
+            # Use manual forward with skip connection
+            if self.different_decoder:
+                if channel == 'r':
+                    return self._forward_with_skip(mlp_input, self.mlp_r)
+                elif channel == 'g':
+                    return self._forward_with_skip(mlp_input, self.mlp_g)
+                else:  # 'b'
+                    return self._forward_with_skip(mlp_input, self.mlp_b)
+            else:
+                return self._forward_with_skip(mlp_input, self.mlp)
         else:
-            return self.mlp(mlp_input)
+            # Original sequential forward
+            if self.different_decoder:
+                if channel == 'r':
+                    return self.mlp_r(mlp_input)
+                elif channel == 'g':
+                    return self.mlp_g(mlp_input)
+                else:  # 'b'
+                    return self.mlp_b(mlp_input)
+            else:
+                return self.mlp(mlp_input)
 
 
 # ============================================================================
@@ -487,6 +555,30 @@ class AnisotropicLatentTexturedModel(LightningModule):
         
         # 4. Proxy BRDF for importance sampling
         self.proxy_brdf = ProxyPBRBRDF()
+        
+        # 5. Latent bank mode (alternative to texture-based sampling)
+        self.use_latent_bank = getattr(cfg, 'use_latent_bank', False)
+        
+        if self.use_latent_bank:
+            observations_folder = cfg.observations_folder
+            
+            # Compute global point offset for this material
+            self.global_point_offset = self._compute_global_point_offset(observations_folder)
+            
+            # Load point positions from observations
+            self.point_positions = self._load_point_positions(observations_folder)
+            num_points = self.point_positions.shape[0]
+            print(f"[LatentBank] Loaded {num_points:,} point positions from {observations_folder}")
+            
+            # Build KD-tree for efficient nearest neighbor lookup
+            from scipy.spatial import cKDTree
+            self.kdtree = cKDTree(self.point_positions.numpy())
+            print(f"[LatentBank] Built KD-tree for {num_points:,} points")
+            
+            # Latent bank will be loaded from checkpoint - don't initialize here
+            self.point_latent_bank = None
+            self.bank_latent_dim = brdf_latent_dim + (6 if self.predict_frame else 0)
+            print(f"[LatentBank] Latent bank will be loaded from checkpoint (latent_dim={self.bank_latent_dim})")
     
     # ------------------------------------------------------------------------
     # Utility functions
@@ -603,6 +695,125 @@ class AnisotropicLatentTexturedModel(LightningModule):
         return latent
     
     # ------------------------------------------------------------------------
+    # Latent Bank Methods (for use_latent_bank mode)
+    # ------------------------------------------------------------------------
+    def _compute_global_point_offset(self, observations_folder: str) -> int:
+        """
+        Compute the global point offset for this material based on folder path.
+        
+        The observations folder path contains the material ID (e.g., 'data/0/observations/').
+        The offset is the sum of num_points from all materials with ID < current material ID.
+        
+        Args:
+            observations_folder: Path to observations folder (e.g., 'data/0/observations/')
+        
+        Returns:
+            offset: int, global point offset for indexing into the latent bank
+        """
+        import json
+        from pathlib import Path
+        
+        obs_folder = Path(observations_folder)
+        material_folder = obs_folder.parent
+        data_folder = material_folder.parent
+        
+        # Extract current material ID from folder name
+        current_material_id = int(material_folder.name)
+        
+        # Find all material folders with ID < current material ID
+        offset = 0
+        for mat_id in range(current_material_id):
+            mat_folder = data_folder / str(mat_id)
+            metadata_path = mat_folder / "point_metadata.json"
+            
+            if not metadata_path.exists():
+                print(f"[LatentBank] Warning: {metadata_path} not found, skipping material {mat_id}")
+                continue
+            
+            try:
+                with open(metadata_path, 'r') as f:
+                    point_meta = json.load(f)
+                num_points = point_meta['num_points']
+                offset += num_points
+            except (json.JSONDecodeError, KeyError) as e:
+                print(f"[LatentBank] Warning: Failed to read {metadata_path}: {e}, skipping material {mat_id}")
+                continue
+        
+        print(f"[LatentBank] Material {current_material_id}: global point offset = {offset:,}")
+        return offset
+    
+    def _load_point_positions(self, observations_folder: str) -> torch.Tensor:
+        """
+        Load point positions from point_positions.npz file.
+        
+        Args:
+            observations_folder: Path to folder containing observation chunks
+        
+        Returns:
+            point_positions: [num_unique_points, 3] tensor of unique point positions
+        """
+        import numpy as np
+        from pathlib import Path
+        
+        obs_folder = Path(observations_folder)
+        material_folder = obs_folder.parent
+        positions_path = material_folder / "point_positions.npz"
+        
+        data = np.load(positions_path)
+        point_positions = torch.from_numpy(data['positions']).float()
+        print(f"[LatentBank] Loaded point positions: {point_positions.shape}")
+        
+        return point_positions
+    
+    def _find_nearest_point_ids(self, pos: torch.Tensor, k: int = 1) -> tuple:
+        """
+        Find K nearest point IDs for query positions using KD-tree.
+        
+        Args:
+            pos: [B, 3] query positions
+            k: number of nearest neighbors
+        
+        Returns:
+            distances: [B, k] distances to nearest points
+            point_ids: [B, k] tensor of nearest point IDs
+        """
+        # Query KD-tree (CPU operation)
+        distances, point_ids = self.kdtree.query(pos.detach().cpu().numpy(), k=k)
+        distances = torch.from_numpy(distances).to(pos.device).float()
+        point_ids = torch.from_numpy(point_ids).to(pos.device)
+        return distances, point_ids
+    
+    def _sample_from_latent_bank(self, pos: torch.Tensor, k: int = 8) -> torch.Tensor:
+        """
+        Sample latent codes from point bank using K-NN with inverse distance weighting.
+        
+        Args:
+            pos: [B, 3] query positions
+            k: number of nearest neighbors for interpolation
+        
+        Returns:
+            latent: [B, latent_dim] interpolated latent codes
+        """
+        # Find K nearest point IDs and distances (local indices for this material)
+        distances, local_point_ids = self._find_nearest_point_ids(pos, k=k)  # [B, k], [B, k]
+        
+        # Convert local point IDs to global point IDs for latent bank lookup
+        global_point_ids = local_point_ids + self.global_point_offset
+        
+        # Lookup latents for all K neighbors using global IDs
+        latents = self.point_latent_bank(global_point_ids)  # [B, k, latent_dim]
+        
+        # Inverse distance weighting
+        eps = 1e-8
+        weights = 1.0 / (distances + eps)  # [B, k]
+        weights = weights / weights.sum(dim=-1, keepdim=True)  # normalize to sum to 1
+        
+        # Weighted sum of latents
+        latent = (weights.unsqueeze(-1) * latents).sum(dim=1)  # [B, latent_dim]
+        
+        return latent
+    
+    # ------------------------------------------------------------------------
     # Main BRDF evaluation API
     # ------------------------------------------------------------------------
     def eval_brdf(
@@ -644,50 +855,76 @@ class AnisotropicLatentTexturedModel(LightningModule):
         NoL = (wi * normal).sum(-1, keepdim=True)
         NoV = (wo * normal).sum(-1, keepdim=True)
         
-        # 1. Get the (optionally blurred) texture ONCE
-        if self.training and self.Gaussian_blur:
-            tex = self.latent_texture.apply_gaussian_blur(self.global_step)
-        else:
-            tex = self.latent_texture.params
-        
-        # 2. Sample latent from the texture
-        latent = self._sample_from_texture(uv, tex)
-        
-        # 3. Extract frame from latent if predicting frame
-        if self.predict_frame:
-            predicted_normal, predicted_tangent = self.extract_frame_from_latent(latent)
-        else:
-            # Use geometry normal and tangent
-            predicted_normal = normal
-            predicted_tangent = TBN[:, :, 0] if TBN is not None else None
-        
-        # 3. Predict UV offset if neural geometry is enabled
+        # Initialize uv_offset (used in return, always needed)
         uv_offset = torch.zeros_like(uv)
-        if self.neural_geometry_enabled:
-            # Extract geometry latent
-            geometry_latent = latent[..., -6-self.geometry_latent_dim:-6] if self.predict_frame else \
-                             latent[..., -self.geometry_latent_dim:]
+        
+        # =====================================================================
+        # LATENT BANK MODE: Sample latent from point bank using position
+        # =====================================================================
+        if self.use_latent_bank:
+            # Sample latent from latent bank using nearest neighbor lookup
+            latent = self._sample_from_latent_bank(pos)
             
-            # Get directions for geometry network
-            if self.local_wi_wo:
-                wi_for_geo = self.world_to_local(wi, predicted_normal, predicted_tangent)
-                wo_for_geo = self.world_to_local(wo, predicted_normal, predicted_tangent)
+            # Extract frame from latent if predicting frame
+            if self.predict_frame:
+                predicted_normal, predicted_tangent = self.extract_frame_from_latent(latent)
             else:
-                wi_for_geo = wi
-                wo_for_geo = wo
+                # Use geometry normal and tangent
+                predicted_normal = normal
+                predicted_tangent = TBN[:, :, 0] if TBN is not None else None
             
-            # Predict UV offset
-            uv_offset = self.neural_geometry(wi_for_geo, wo_for_geo, geometry_latent) * self.neural_geometry_factor
-            uv = uv + uv_offset
-            uv = ((uv%1)+1)%1
-            # Sample from the SAME blurred texture
+            # No neural geometry in latent bank mode
+        
+        # =====================================================================
+        # TEXTURE MODE: Sample latent from texture using UV coordinates
+        # =====================================================================
+        else:
+            # 1. Get the (optionally blurred) texture ONCE
+            if self.training and self.Gaussian_blur:
+                tex = self.latent_texture.apply_gaussian_blur(self.global_step)
+            else:
+                tex = self.latent_texture.params
+            
+            # 2. Sample latent from the texture
             latent = self._sample_from_texture(uv, tex)
             
-            # Recompute frame if needed
-            if self.recompute_frame and self.predict_frame:
+            # 3. Extract frame from latent if predicting frame
+            if self.predict_frame:
                 predicted_normal, predicted_tangent = self.extract_frame_from_latent(latent)
+            else:
+                # Use geometry normal and tangent
+                predicted_normal = normal
+                predicted_tangent = TBN[:, :, 0] if TBN is not None else None
+            
+            # 4. Predict UV offset if neural geometry is enabled
+            if self.neural_geometry_enabled:
+                # Extract geometry latent
+                geometry_latent = latent[..., -6-self.geometry_latent_dim:-6] if self.predict_frame else \
+                                 latent[..., -self.geometry_latent_dim:]
+                
+                # Get directions for geometry network
+                if self.local_wi_wo:
+                    wi_for_geo = self.world_to_local(wi, predicted_normal, predicted_tangent)
+                    wo_for_geo = self.world_to_local(wo, predicted_normal, predicted_tangent)
+                else:
+                    wi_for_geo = wi
+                    wo_for_geo = wo
+                
+                # Predict UV offset
+                uv_offset = self.neural_geometry(wi_for_geo, wo_for_geo, geometry_latent) * self.neural_geometry_factor
+                uv = uv + uv_offset
+                uv = ((uv%1)+1)%1
+                # Sample from the SAME blurred texture
+                latent = self._sample_from_texture(uv, tex)
+                
+                # Recompute frame if needed
+                if self.recompute_frame and self.predict_frame:
+                    predicted_normal, predicted_tangent = self.extract_frame_from_latent(latent)
         
-        # 4. Transform directions to local space
+        # =====================================================================
+        # Common code path for both modes
+        # =====================================================================
+        # 5. Transform directions to local space
         wi_local = self.world_to_local(wi, predicted_normal, predicted_tangent)
         wo_local = self.world_to_local(wo, predicted_normal, predicted_tangent)
         local_normal = torch.zeros_like(wi_local)
@@ -812,8 +1049,9 @@ class MultiMaterialLatentBRDF(LightningModule):
         
         # Store configuration
         self.cfg = cfg
+        self.num_materials = cfg.num_materials
         data_folder = getattr(cfg, 'data_folder', None)
-        
+        self.start_material_id = cfg.start_material_id
         # Latent dimensions
         self.latent_dim = cfg.latent_dim
         self.predict_frame = cfg.predict_frame
@@ -880,9 +1118,9 @@ class MultiMaterialLatentBRDF(LightningModule):
         # Find material folders (named by material ID: 0, 1, 2, ...)
         material_folders = sorted([
             d for d in root.iterdir() 
-            if d.is_dir() and d.name.isdigit()
+            if d.is_dir() and d.name.isdigit() and (d / "observations").is_dir()
         ], key=lambda x: int(x.name))
-        
+        material_folders = material_folders[self.start_material_id:self.start_material_id+self.num_materials]
         materials = []
         material_point_offsets = {}
         global_point_offset = 0
@@ -936,7 +1174,9 @@ class MultiMaterialLatentBRDF(LightningModule):
         
         # Build offset tensor for efficient indexing
         # offset_tensor[material_id] = global point offset for that material
-        offset_tensor = torch.zeros(len(materials), dtype=torch.long)
+        # Use max material ID + 1 to handle non-contiguous material IDs (e.g., 0, 1, 3, 5)
+        max_mat_id = max(mat_info['material_id'] for mat_info in materials)
+        offset_tensor = torch.zeros(max_mat_id + 1, dtype=torch.long)
         for mat_info in materials:
             mat_id = mat_info['material_id']
             offset_tensor[mat_id] = material_point_offsets[mat_id]
