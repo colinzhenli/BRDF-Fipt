@@ -16,7 +16,7 @@ trainer:
   devices: 1
   num_nodes: 1
   max_epochs: 1000          # ← will be respected
-  check_val_every_n_epoch: 1
+  check_val_every_n_epoch: 50
   limit_train_batches: 512 # 200 iterations per epoch
   num_sanity_val_steps: 2    # ← number of validation batches before training starts (default is 2)
 
@@ -31,7 +31,7 @@ checkpoint_monitor:
 
 optimizer:
   name: Adam # SGD or Adam
-  weight_decay: 0.0 # 0.001
+  weight_decay: 1e-4 # 0.001
   # lr: 0.001 
   lr: 0.001 # used for initial mesh optimization
   inference_lr: 0.001
@@ -40,7 +40,7 @@ optimizer:
 
 loss:
   recon_loss:
-    name: l1 # l1 or l2 or logrel
+    name: normalized_l1 # l1 or l2 or logrel or normalized_l1
     weight: 1.0
     log_space:
       logrel_ref: 30000

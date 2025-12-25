@@ -265,6 +265,16 @@ class MultiMaterialPointDataset(IterableDataset if True else Dataset):
         # Color correction matrix
         self.ccm = np.array(cfg.data.ccm)
         
+        # XY filter bounds from mesh.rectangle config (filter to half the region)
+        self.filter_observations = getattr(cfg.data, 'filter_observations', True)
+        rect_cfg = cfg.renderer.mesh.rectangle
+        self.filter_center = rect_cfg.center  # [x, y, z]
+        # Half of the original width/length gives the new region dimensions
+        self.filter_half_width = rect_cfg.width / 4  # half of (width/2)
+        self.filter_half_length = rect_cfg.length / 4  # half of (length/2)
+        print(f"XY filter enabled: center=({self.filter_center[0]:.4f}, {self.filter_center[1]:.4f}), "
+              f"half_width={self.filter_half_width:.4f}, half_length={self.filter_half_length:.4f}")
+        
         # Train/val split ratio
         self.val_ratio = getattr(cfg.data, 'val_ratio', 0.1)
         
@@ -274,18 +284,18 @@ class MultiMaterialPointDataset(IterableDataset if True else Dataset):
         
         # Debug mode settings
         self.debug = getattr(cfg.data, 'debug', False)
-        self.debug_num_materials = getattr(cfg.data, 'debug_num_materials', 1)
-        
-        # Discover material folders
+        self.num_materials = getattr(cfg.data, 'num_materials', 1)
+        self.start_material_id = getattr(cfg.data, 'start_material_id', 0)
+        # Discover material folders (only include folders with observations subfolder)
         self.material_folders = sorted([
             d for d in Path(root_folder).iterdir() 
-            if d.is_dir() and d.name.isdigit()
+            if d.is_dir() and d.name.isdigit() and (d / "observations").is_dir()
         ], key=lambda x: int(x.name))
         
         # In debug mode, limit to first N materials (sorted by folder name)
         if self.debug:
             original_count = len(self.material_folders)
-            self.material_folders = self.material_folders[:self.debug_num_materials]
+            self.material_folders = self.material_folders[self.start_material_id:self.start_material_id+self.num_materials]
             print(f"\n[DEBUG MODE] Limiting materials from {original_count} to {len(self.material_folders)}")
         
         print(f"\n{'='*60}")
@@ -382,6 +392,26 @@ class MultiMaterialPointDataset(IterableDataset if True else Dataset):
         
         print(f"Metadata loaded for {len(self.material_chunks)} materials")
     
+    def _filter_observations_by_xy(self, observations: np.ndarray) -> np.ndarray:
+        """
+        Filter observations to keep only points within the XY region.
+        
+        Args:
+            observations: (N, 10) array with [x, y, z, image_id, pixel_x, pixel_y, r, g, b, point_id]
+            
+        Returns:
+            Filtered observations array
+        """
+        x = observations[:, 0]
+        y = observations[:, 1]
+        
+        # Keep points within half of the original width/length from center
+        x_mask = np.abs(x - self.filter_center[0]) <= self.filter_half_width
+        y_mask = np.abs(y - self.filter_center[1]) <= self.filter_half_length
+        
+        xy_mask = x_mask & y_mask
+        return observations[xy_mask]
+    
     def set_step(self, step: int):
         """Called by training loop to track current step for chunk reloading."""
         self.step = step
@@ -448,11 +478,16 @@ class MultiMaterialPointDataset(IterableDataset if True else Dataset):
                 obs_data = np.load(chunk_path)
                 observations = obs_data['observations']  # (N, 10): [x, y, z, image_id, pixel_x, pixel_y, r, g, b, point_id]
                 
+                # Filter by XY region
+                original_count = len(observations)
+                if self.filter_observations:
+                    observations = self._filter_observations_by_xy(observations)
+                
                 if len(observations) == 0:
                     continue
                 
                 if not load_all:
-                    print(f"  [Background] Material {material_id}: Loaded {chunk_path.name} ({len(observations):,} obs)")
+                    print(f"  [Background] Material {material_id}: Loaded {chunk_path.name} ({len(observations):,}/{original_count:,} obs after XY filter)")
                 
                 # Process observations - vectorized
                 xyz = torch.from_numpy(observations[:, :3]).float()
@@ -554,7 +589,7 @@ class MultiMaterialPointDataset(IterableDataset if True else Dataset):
             return math.ceil(len(self.all_rays) / self.rays_num)
         else:
             # For training with double buffer, return a large number
-            return 100
+            return 1000000
     
     def __iter__(self):
         """Infinite iterator for training (samples random batches)."""

@@ -311,6 +311,8 @@ class Stage1Trainer(pl.LightningModule):
             per_pix = torch.abs(rgbs[vis] - rgbs_gt.squeeze(0)[vis]).mean(dim=-1)
         elif self.hparams.model.loss.recon_loss.name == "l2":  # "l2"
             per_pix = torch.pow(rgbs[vis] - rgbs_gt.squeeze(0)[vis], 2).mean(dim=-1)
+        elif self.hparams.model.loss.recon_loss.name == "normalized_l1":  # "normalized_l1"
+            per_pix = torch.abs(rgbs[vis] - rgbs_gt.squeeze(0)[vis]).mean(dim=-1) / 65535.0
         else:  # "logrel" from paper
             rho_ref = getattr(
                 self.hparams.model.loss.recon_loss.log_space, "logrel_ref", 0.5
@@ -356,7 +358,7 @@ class Stage1Trainer(pl.LightningModule):
         psnr_loss  = torch.nn.functional.mse_loss(rgbs[vis], rgbs_gt.squeeze(0)[vis], reduction='mean')
         if torch.isnan(psnr_loss).any():
             print("psnr_loss is nan")
-        max_val = torch.max(torch.stack([rgbs.max(), rgbs_gt.squeeze(0).max()])).clamp_min(1e-8)
+        max_val = torch.max(torch.stack([rgbs[vis].max(), rgbs_gt.squeeze(0)[vis].max()])).clamp_min(1e-8)
         psnr       = 10.0 * torch.log10((max_val ** 2) / psnr_loss.clamp_min(1e-5))
 
         # ------------------------------------------------------------------
@@ -370,6 +372,14 @@ class Stage1Trainer(pl.LightningModule):
 
         return loss
 
+    def on_after_backward(self):
+        """Called after loss.backward() and before optimizers step."""
+        if self.global_step % 100 == 0:  # Print every 100 steps
+            for name, param in self.named_parameters():
+                if param.grad is not None:
+                    grad_norm = param.grad.norm().item()
+                    print(f"{name}: grad_norm={grad_norm:.6f}")
+                
     def validation_step(self, batch, batch_idx):
         """
         with importance sampling
@@ -387,7 +397,7 @@ class Stage1Trainer(pl.LightningModule):
         loss = self.loss_function(rgbs, rgbs_gt, vis)
 
         psnr_loss  = torch.nn.functional.mse_loss(rgbs[vis], rgbs_gt.squeeze(0)[vis], reduction='mean')
-        max_val = torch.max(torch.stack([rgbs.max(), rgbs_gt.squeeze(0).max()])).clamp_min(1e-8)
+        max_val = torch.max(torch.stack([rgbs[vis].max(), rgbs_gt.squeeze(0)[vis].max()])).clamp_min(1e-8)
         psnr       = 10.0 * torch.log10((max_val ** 2) / psnr_loss.clamp_min(1e-5))
 
         # ------------------------------------------------------------------
@@ -402,6 +412,10 @@ class Stage1Trainer(pl.LightningModule):
 
         return loss
     
+    def on_train_batch_start(self, batch, batch_idx):
+        step = self.global_step
+        self.trainer.train_dataloader.dataset.datasets.set_step(step)
+        
     # def validation_step(self, batch, batch_idx):
     #     """ Unified validation step for both normal and radiometric calibration """
     #     rays, rgbs_gt, emitter_ids, material_ids = batch['rays'], batch['rgbs'], batch['emitter_ids'], batch['material_ids']
@@ -582,10 +596,7 @@ class Stage1Trainer(pl.LightningModule):
     #         'mean_error': mean_error,
     #         'median_error': median_error
     #     }
-    
-    # def on_train_batch_start(self, batch, batch_idx):
-    #     step = self.global_step
-    #     self.trainer.train_dataloader.dataset.datasets.set_step(step)
+
 
     # def debug_multi_line_fitting_recursive_ransac(self, all_rad, all_cam, all_batch_ids, epoch, max_lines=5, min_points=100):
     #     """

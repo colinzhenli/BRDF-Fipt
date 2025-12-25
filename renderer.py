@@ -1,4 +1,5 @@
 import torch
+import json
 from utils.path_tracing import path_tracing_envmap_emitter, batched_path_tracing_dynamic_emitter, batched_path_tracing_preset_emitter, batched_path_tracing_tbn_preset_emitter, batched_path_tracing_tbn_real_area_emitter, points_path_tracing_real_area_emitter
 from utils.scene_loader import load_uv_obj_to_mitsuba_scene, create_rectangle_scene, create_rectangle_scene_params  
 from mitsuba import load_dict
@@ -30,8 +31,20 @@ class ForwardRenderer:
                 length=cfg.renderer.mesh.rectangle.length
             )
         else:
+            # Load center from bbox_json file
+            import os
+            bbox_json_path = cfg.renderer.mesh.rectangle.bbox_json
+            if os.path.exists(bbox_json_path):
+                with open(bbox_json_path, 'r') as f:
+                    bbox_data = json.load(f)
+                center = bbox_data['bbox_center']
+                print(f"Loading rectangle scene with center from bbox.json: {center}")
+            else:
+                center = cfg.renderer.mesh.rectangle.center
+                print(f"bbox.json not found, using center from config: {center}")
+            
             self.scene = create_rectangle_scene_params(
-                center=cfg.renderer.mesh.rectangle.center,
+                center=center,
                 width=cfg.renderer.mesh.rectangle.width,
                 length=cfg.renderer.mesh.rectangle.length
             )

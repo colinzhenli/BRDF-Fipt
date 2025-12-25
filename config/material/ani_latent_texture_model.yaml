@@ -4,6 +4,10 @@ latent_dim: 16
 predict_frame: True
 use_nerfstudio_sh: False
 
+use_latent_bank: True
+observations_folder: ${dataset_folder}/observations
+
+num_materials: ${data.num_materials}
 gt_frame: False
 colorful_texture: True
 leaky_relu: True

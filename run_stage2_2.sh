@@ -1,15 +1,16 @@
 #!/bin/bash
 
-export CUDA_VISIBLE_DEVICES=3
+export CUDA_VISIBLE_DEVICES=2
 
 python main.py \
-    dataset_folder=/media/raid/cloth/capture_data/New_center_Nov25/0 \
+    dataset_folder=/media/raid/cloth/capture_data/Dataset_Nov11/119 \
     data=real \
     renderer=multiarea_emitter \
     material=ani_latent_texture_model \
-    experiment_name=Stage-2_ReLU_Optimize_from-scratch-decoder_run_2 \
+    experiment_name=Stage-2_Material-119_ReLU_Optimize_from-scratch-decoder_run_2 \
     model.stage=2 \
     model.test=False \
+    material.use_latent_bank=False \
     model.freeze_decoder=False \
     data.switch_iters=3000 \
     data.debug=False \
