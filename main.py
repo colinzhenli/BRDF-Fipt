@@ -147,7 +147,7 @@ def main(cfg):
     trainer = pl.Trainer(
         callbacks=[checkpoint_callback, lr_monitor], logger=logger, 
         track_grad_norm=2,  # Log L2 norm of gradients
-        gradient_clip_val=1.0,  # Optional: clip gradients
+        # gradient_clip_val=1.0,  # Optional: clip gradients
         **cfg.model.trainer
     )
     # tracer = VizTracer()

@@ -332,15 +332,15 @@ class MultiMaterialPointDataset(IterableDataset if True else Dataset):
             visualize = False
             if visualize:
                 import open3d as o3d
-                mask = self.all_material_ids == 0
+                mask = self.all_material_ids == 102
                 xyz = self.all_xyz[mask].cpu().numpy()
                 # Convert int16 RGB to float [0, 1] for open3d
                 rgbs = np.clip(self.all_rgbs[mask].cpu().numpy().astype(np.float32), 0, 65535) / 65535.0
                 pcd = o3d.geometry.PointCloud()
                 pcd.points = o3d.utility.Vector3dVector(xyz)
                 pcd.colors = o3d.utility.Vector3dVector(rgbs)
-                o3d.io.write_point_cloud("/media/raid/cloth/output/visualizaitons/debug_material_0_points.ply", pcd)
-                print(f"Saved debug point cloud to debug_material_0_points.ply ({len(xyz)} points)")
+                o3d.io.write_point_cloud("/media/raid/cloth/output/visualizaitons/material_102_points.ply", pcd)
+                print(f"Saved debug point cloud to material_102_points.ply ({len(xyz)} points)")
         
         print(f"\nDataset ready!")
         print(f"{'='*60}\n")

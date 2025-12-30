@@ -10,8 +10,8 @@ shape_matching:
 camera:
   # linear_factor: 131231480.000000
   # linear_factor: 231435888.000000 # half the resolution
-  # linear_factor: 259494976.000000 # Before 100
-  linear_factor: 467090956.000000 # After 100 materials
+  linear_factor: 259494976.000000 # Before 100
+  # linear_factor: 467090956.000000 # After 100 materials
   colmap_camera: True # whether to use colmap camera or robotic log camera
   distance: 2.0
   number_of_views: 40 # used to generate reference images
