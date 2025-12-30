@@ -332,7 +332,7 @@ class BRDFDecoder(nn.Module):
                     prev_dim = hidden_dim
                 
                 layers.append(nn.Linear(prev_dim, cfg.output_channels))
-                layers.append(nn.ReLU())
+                layers.append(nn.LeakyReLU())
                 return nn.Sequential(*layers)
             else:
                 # MLP with skip connection - use ModuleList for manual forward
@@ -355,7 +355,7 @@ class BRDFDecoder(nn.Module):
                 self.activation = nn.ReLU()
             else:
                 self.activation = nn.LeakyReLU(0.2)
-            self.output_activation = nn.ReLU()
+            self.output_activation = nn.LeakyReLU()
         
         if different_decoder:
             self.mlp_r = build_mlp()

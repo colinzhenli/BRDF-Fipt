@@ -372,13 +372,13 @@ class Stage1Trainer(pl.LightningModule):
 
         return loss
 
-    def on_after_backward(self):
-        """Called after loss.backward() and before optimizers step."""
-        if self.global_step % 100 == 0:  # Print every 100 steps
-            for name, param in self.named_parameters():
-                if param.grad is not None:
-                    grad_norm = param.grad.norm().item()
-                    print(f"{name}: grad_norm={grad_norm:.6f}")
+    # def on_after_backward(self):
+    #     """Called after loss.backward() and before optimizers step."""
+    #     if self.global_step % 100 == 0:  # Print every 100 steps
+    #         for name, param in self.named_parameters():
+    #             if param.grad is not None:
+    #                 grad_norm = param.grad.norm().item()
+    #                 print(f"{name}: grad_norm={grad_norm:.6f}")
                 
     def validation_step(self, batch, batch_idx):
         """

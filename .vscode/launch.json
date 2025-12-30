@@ -101,7 +101,7 @@
                 "data=points",
                 "renderer=multiarea_emitter",
                 "material=multi_material_latent",
-                "experiment_name=Grad-clip_Stage-1_Material-0_No-skip-connection_debug",
+                "experiment_name=Leaky-ReLU_Material-102_No-chunk-switching_Debug",
                 "model.stage=1",
                 "model.test=False",
                 "model.trainer.limit_train_batches=512",
@@ -111,7 +111,7 @@
                 "data.debug=True",
                 "data.val_ratio=0.2",
                 "data.num_materials=1",
-                "data.start_material_id=0"
+                "data.start_material_id=100"
             ]
         }
 

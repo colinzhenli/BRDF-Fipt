@@ -31,7 +31,7 @@ checkpoint_monitor:
 
 optimizer:
   name: Adam # SGD or Adam
-  weight_decay: 1e-4 # 0.001
+  weight_decay: 0.0 # 0.001
   # lr: 0.001 
   lr: 0.001 # used for initial mesh optimization
   inference_lr: 0.001
@@ -40,7 +40,7 @@ optimizer:
 
 loss:
   recon_loss:
-    name: normalized_l1 # l1 or l2 or logrel or normalized_l1
+    name: l1 # l1 or l2 or logrel or normalized_l1
     weight: 1.0
     log_space:
       logrel_ref: 30000
