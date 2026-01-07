@@ -86,62 +86,65 @@
         //     ]
         // },
 
-        {
-            "name": "Python: Auto-decoder Points",
-            "type": "python",
-            "request": "launch",
-            "program": "main.py",
-            "console": "integratedTerminal",
-            "justMyCode": true,
-            "env": {
-                "CUDA_VISIBLE_DEVICES": "3"
-            },
-            "args": [
-                "dataset_folder=/media/raid/cloth/capture_data/Dataset_Nov11",
-                "data=points",
-                "renderer=multiarea_emitter",
-                "material=multi_material_latent",
-                "experiment_name=Leaky-ReLU_Material-102_No-chunk-switching_Debug",
-                "model.stage=1",
-                "model.test=False",
-                "model.trainer.limit_train_batches=512",
-                "material.decoder.use_skip_connection=False",
-                "data.switch_iters=2000",
-                "data.filter_observations=False",
-                "data.debug=True",
-                "data.val_ratio=0.2",
-                "data.num_materials=1",
-                "data.start_material_id=100"
-            ]
-        }
-
-
         // {
-        //     "name": "Python: stage 2",
+        //     "name": "Python: Auto-decoder Points",
         //     "type": "python",
         //     "request": "launch",
         //     "program": "main.py",
         //     "console": "integratedTerminal",
         //     "justMyCode": true,
         //     "env": {
-        //         "CUDA_VISIBLE_DEVICES": "0"
+        //         "CUDA_VISIBLE_DEVICES": "1"
         //     },
         //     "args": [
-        //         "dataset_folder=/media/raid/cloth/capture_data/New_center_Nov25/0",
-        //         "data=real",
-        //         "data.debug=False",
+        //         "dataset_folder=/media/raid/cloth/capture_data/Debug_Dec23",
+        //         "data=points",
         //         "renderer=multiarea_emitter",
-        //         "material=ani_latent_texture_model",
-        //         "experiment_name=Correct-PNSR_Test_1",
-        //         "model.stage=2",
-        //         "material.use_latent_bank=False",
-        //         "model.test=True",
-        //         "model.freeze_decoder=True",
-        //         "model.ckpt_path=/media/raid/cloth/output/BRDF/real/Stage-2_ReLU_Optimize_from-scratch-decoder_run_2/training/model_0.20_0.20/last.ckpt"
+        //         "material=multi_material_latent",
+        //         "experiment_name=Add-boundary_Leaky-ReLU_Stage-1_Material-100-40_Skip-connection_run_1",
+        //         "model.stage=1",
+        //         "model.test=False",
+        //         "model.trainer.limit_train_batches=512",
+        //         "material.decoder.use_skip_connection=True",
+        //         "data.switch_iters=2000",
+        //         "data.filter_observations=False",
+        //         "data.debug=True",
+        //         "data.val_ratio=0.2",
+        //         "data.num_materials=1",
+        //         "data.start_material_id=2"
         //     ]
         // }
 
-                // {
+
+        {
+            "name": "Python: stage 2 pretrained 119",
+            "type": "python",
+            "request": "launch",
+            "program": "main.py",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "env": {
+                "CUDA_VISIBLE_DEVICES": "2"
+            },
+            "args": [
+                "dataset_folder=/media/raid/cloth/capture_data/Dataset_Nov11/119",
+                "data=real",
+                "renderer=multiarea_emitter",
+                "material=ani_latent_texture_model",
+                "material.different_decoder=True",
+                "material.decoder.use_skip_connection=True",
+                "experiment_name=Multi-Head-decoder_Add-boundary_Leaky-ReLU_Stage-2-Skip-connection-from-pretrained-decoder_Material-119_run_1",
+                "model.stage=2",
+                "model.test=False",
+                "material.use_latent_bank=False",
+                "model.freeze_decoder=True",
+                "data.switch_iters=3000",
+                "data.debug=False",
+                "model.ckpt_path=/media/raid/cloth/output/BRDF/points/Multi-Head-decoder_Add-boundary_Leaky-ReLU_Stage-1_Material-100-40_Skip-connection_run_1/training/model_0.20_0.20/last.ckpt"
+            ]
+        }
+
+        // {
         //     "name": "Python: Current File",
         //     "type": "python",
         //     "request": "launch",

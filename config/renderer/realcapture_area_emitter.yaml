@@ -81,8 +81,8 @@ mesh:
     # center: [0.16, -0.11, -0.0625] # 0.063 is the foam board bottom
     # width: 0.125 # board_size
     # length: 0.135
-    width: 0.14 # sample_size
-    length: 0.14 # sample_size
+    width: 0.14 # sample_size 0-153
+    length: 0.14 # sample_size 0-153 material
     # width: 0.08
     # length: 0.08 # colorchecker size
 emitter:

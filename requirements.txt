@@ -1,14 +1,13 @@
 # torch==1.13.1
 # torchvision==0.14.1
-pytorch-lightning==1.9
+lightning
 lightning-bolts
-mitsuba==3.5.1
+mitsuba
 
-opencv-python==4.7.0.72
-Pillow==9.5.0
-trimesh==3.21.4
-matplotlib==3.7.1
-scipy==1.10.1
+opencv-python
+Pillow
+matplotlib
+scipy
 tensorboardX
 jupyter
 ipywidgets
@@ -16,6 +15,17 @@ open3d
 omegaconf
 scikit-learn
 nerfstudio
-lightning-bolts
 torchviz
 openexr_numpy
+bpy
+trimesh
+hydra-core
+tqdm
+imageio
+openexr_numpy
+viztracer
+pnoise
+wandb
+psutil
+pynvml
+open3d

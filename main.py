@@ -68,32 +68,36 @@ def main(cfg):
         checkpoint = torch.load(cfg.model.ckpt_path, map_location='cuda' if torch.cuda.is_available() else 'cpu', weights_only=False)
         
         if stage == 2:
-            # Stage 2: Only load the decoder weights from checkpoint
-            # Load material.decoder.* weights only (not latent codes)
-            model_dict = model.state_dict()
-            decoder_dict = {}
-            for k, v in checkpoint['state_dict'].items():
-                if 'material.decoder.' in k:
-                    if k in model_dict:
-                        decoder_dict[k] = v
-            
-            model_dict.update(decoder_dict)
-            model.load_state_dict(model_dict)
-            print(f"=> Stage 2: loaded decoder checkpoint successfully. {len(decoder_dict)}/{len([k for k in model_dict if 'material.decoder.' in k])} decoder parameters loaded.")
-            
-            # If use_latent_bank is enabled, also load the latent bank from checkpoint
-            use_latent_bank = getattr(cfg.material, 'use_latent_bank', False)
-            if use_latent_bank:
-                latent_bank_key = 'material.point_latent_bank.weight'
-                if latent_bank_key in checkpoint['state_dict']:
-                    latent_weights = checkpoint['state_dict'][latent_bank_key]
-                    num_points, latent_dim = latent_weights.shape
-                    # Create embedding from checkpoint weights directly
-                    model.material.point_latent_bank = nn.Embedding(num_points, latent_dim)
-                    model.material.point_latent_bank.weight.data = latent_weights
-                    print(f"=> Stage 2: loaded latent bank from checkpoint: {num_points} x {latent_dim}")
-                else:
-                    print(f"=> Stage 2: use_latent_bank=True but no latent bank weights found in checkpoint.")
+            if cfg.model.test:
+                model.load_state_dict(checkpoint['state_dict'])
+                print(f"=> loaded model checkpoint successfully. {len(checkpoint['state_dict'])}/{len(checkpoint['state_dict'])} parameters loaded.")
+            else:
+                # Stage 2: Only load the decoder weights from checkpoint
+                # Load material.decoder.* weights only (not latent codes)
+                model_dict = model.state_dict()
+                decoder_dict = {}
+                for k, v in checkpoint['state_dict'].items():
+                    if 'material.decoder.' in k:
+                        if k in model_dict:
+                            decoder_dict[k] = v
+                
+                model_dict.update(decoder_dict)
+                model.load_state_dict(model_dict)
+                print(f"=> Stage 2: loaded decoder checkpoint successfully. {len(decoder_dict)}/{len([k for k in model_dict if 'material.decoder.' in k])} decoder parameters loaded.")
+                
+                # If use_latent_bank is enabled, also load the latent bank from checkpoint
+                use_latent_bank = getattr(cfg.material, 'use_latent_bank', False)
+                if use_latent_bank:
+                    latent_bank_key = 'material.point_latent_bank.weight'
+                    if latent_bank_key in checkpoint['state_dict']:
+                        latent_weights = checkpoint['state_dict'][latent_bank_key]
+                        num_points, latent_dim = latent_weights.shape
+                        # Create embedding from checkpoint weights directly
+                        model.material.point_latent_bank = nn.Embedding(num_points, latent_dim)
+                        model.material.point_latent_bank.weight.data = latent_weights
+                        print(f"=> Stage 2: loaded latent bank from checkpoint: {num_points} x {latent_dim}")
+                    else:
+                        print(f"=> Stage 2: use_latent_bank=True but no latent bank weights found in checkpoint.")
         else:
             # Stage 1: Only load material parameters
             model_dict = model.state_dict()
