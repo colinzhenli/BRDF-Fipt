@@ -230,7 +230,7 @@ def transform_mesh_to_base(mesh_path, T_BW, output_path=None):
         print(f"Transformed mesh saved to: {output_path}")
     return mesh
 
-def process_pointcloud_to_base(pointcloud_path, T_BW, cfg, output_path=None, z_outlier_percentile=5.0):
+def process_pointcloud_to_base(pointcloud_path, T_BW, cfg, output_path=None, z_outlier_percentile=5.0, material_id=None):
     """
     Transform Colmap sparse pointcloud to base frame, crop by XY rectangle, remove Z outliers,
     and compute axis-aligned bounding box.
@@ -241,6 +241,7 @@ def process_pointcloud_to_base(pointcloud_path, T_BW, cfg, output_path=None, z_o
         cfg: Config dict containing mesh.rectangle parameters
         output_path: Path to save filtered pointcloud (optional)
         z_outlier_percentile: Percentage of points to remove as outliers from top and bottom (default 5%)
+        material_id: Material ID to look up width/length from sample_size_json (optional)
     
     Returns:
         tuple: (filtered_pcd, bbox_min, bbox_max, bbox_center, bbox_size, filtered_indices, points_world_filtered)
@@ -265,8 +266,25 @@ def process_pointcloud_to_base(pointcloud_path, T_BW, cfg, output_path=None, z_o
     
     # Get rectangle parameters from config
     center = np.array(cfg.mesh.rectangle.center)
-    width = cfg.mesh.rectangle.width  # x direction
-    length = cfg.mesh.rectangle.length  # y direction
+    
+    # Get width and length from sample_size_json if material_id is provided
+    width = cfg.mesh.rectangle.width  # x direction (fallback)
+    length = cfg.mesh.rectangle.length  # y direction (fallback)
+    
+    if material_id is not None and hasattr(cfg.mesh.rectangle, 'sample_size_json'):
+        import json
+        sample_size_json_path = cfg.mesh.rectangle.sample_size_json
+        with open(sample_size_json_path, 'r') as f:
+            sample_sizes_data = json.load(f)
+        
+        for entry in sample_sizes_data["sample_sizes"]:
+            if entry["id_start"] <= material_id <= entry["id_end"]:
+                width = entry["width"]
+                length = entry["length"]
+                print(f"Using sample size for material_id {material_id}: width={width}, length={length}")
+                break
+        else:
+            print(f"Warning: material_id {material_id} not found in sample_size_json, using default width={width}, length={length}")
     
     # Calculate XY bounds
     x_min = center[0] - width / 2.0
@@ -295,12 +313,24 @@ def process_pointcloud_to_base(pointcloud_path, T_BW, cfg, output_path=None, z_o
     if len(points_cropped) == 0:
         raise ValueError("No points remain after XY cropping. Check rectangle parameters.")
     
-    # Remove Z outliers by percentile
+    use_iqr = True
     z_values = points_cropped[:, 2]
-    z_lower = np.percentile(z_values, z_outlier_percentile)
-    z_upper = np.percentile(z_values, 100 - z_outlier_percentile)
+    # Remove Z outliers
+    if use_iqr:
+        # IQR (Interquartile Range) method - adaptive outlier detection
+        Q1 = np.percentile(z_values, 25)
+        Q3 = np.percentile(z_values, 75)
+        IQR = Q3 - Q1
+        z_lower = Q1 - 1.5 * IQR
+        z_upper = Q3 + 1.5 * IQR
+    else:
+        # Fixed percentile method
+        z_lower = np.percentile(z_values, z_outlier_percentile)
+        z_upper = np.percentile(z_values, 100 - z_outlier_percentile)
     
     z_mask = (z_values >= z_lower) & (z_values <= z_upper)
+    filtered_percentage = 100 * np.sum(z_mask) / len(z_mask)
+    print(f"Z filtering: keeping {np.sum(z_mask)} / {len(z_mask)} points ({filtered_percentage:.1f}%)")
     points_filtered = points_cropped[z_mask]
     colors_filtered = colors_cropped[z_mask] if colors_cropped is not None else None
     filtered_indices = indices_after_xy[z_mask]
@@ -321,7 +351,8 @@ def process_pointcloud_to_base(pointcloud_path, T_BW, cfg, output_path=None, z_o
     # Compute axis-aligned bounding box
     bbox_min = points_filtered.min(axis=0)
     bbox_max = points_filtered.max(axis=0)
-    bbox_center = (bbox_min + bbox_max) / 2.0
+    # Use config center for x,y and mean of points for z
+    bbox_center = np.array([center[0], center[1], points_filtered[:, 2].mean()])
     bbox_size = bbox_max - bbox_min
     
     print(f"\n{'='*60}")
@@ -936,6 +967,9 @@ def main_process(cfg, cameras, images, points3D=None, scan_log_path=None, mesh_p
     rotation_axis = np.array(cfg.emitter.turntable.axis)
     
     T_BW, cam_c2w, robot_T, s, scan_id = estimate_world2base(scan_log_path, images, R_c2g, t_c2g, rotation_center, rotation_axis, unmatched_scan_ids_path)
+    
+    material_id = int(Path(camera_log_path).parent.name)
+    
     if mesh_path is not None:
         transform_mesh_to_base(mesh_path, T_BW, output_path=str(Path(mesh_path).with_name(Path(mesh_path).stem + "_transformed.ply")))
     
@@ -943,7 +977,8 @@ def main_process(cfg, cameras, images, points3D=None, scan_log_path=None, mesh_p
     if pointcloud_path is not None:
         output_pcd_path = str(Path(pointcloud_path).with_name(Path(pointcloud_path).stem + "_transformed_filtered.ply"))
         pcd_filtered, bbox_min, bbox_max, bbox_center, bbox_size, filtered_indices, points_world_filtered = process_pointcloud_to_base(
-            pointcloud_path, T_BW, cfg, output_path=output_pcd_path, z_outlier_percentile=z_outlier_percentile
+            pointcloud_path, T_BW, cfg, output_path=output_pcd_path, z_outlier_percentile=z_outlier_percentile,
+            material_id=material_id,
         )
         
         save_points_pixel_data_reprojection(pcd_filtered, points_world_filtered, cameras, images, hdr_path, observations_folder, num_workers=num_workers, num_chunks=num_chunks)

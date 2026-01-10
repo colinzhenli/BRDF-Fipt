@@ -6,22 +6,22 @@
     // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
     "version": "0.2.0",
     "configurations": [
-        // {
-        //     "name": "Python: Shape Matching",
-        //     "type": "python",
-        //     "request": "launch",
-        //     "program": "./recon/calibration/shape_matching.py",
-        //     "console": "integratedTerminal",
-        //     "justMyCode": true,
-        //     "env": {
-        //         "CUDA_VISIBLE_DEVICES": "1"
-        //     },
-        //     "args": [
-        //         "shape_matching.folder_path=/media/raid/cloth/capture_data/Dataset_Nov11/2",
-        //         "shape_matching.num_workers=16",
-        //         "shape_matching.z_outlier_percentile=5.0"
-        //     ]
-        // },
+        {
+            "name": "Python: Shape Matching",
+            "type": "python",
+            "request": "launch",
+            "program": "./recon/calibration/shape_matching.py",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "env": {
+                "CUDA_VISIBLE_DEVICES": "1"
+            },
+            "args": [
+                "shape_matching.folder_path=/media/raid/cloth/capture_data/Dataset_Nov11/180",
+                "shape_matching.num_workers=16",
+                "shape_matching.z_outlier_percentile=0.0"
+            ]
+        },
 
         // {
         //     "name": "Python: Shape Matching",
@@ -116,33 +116,33 @@
         // }
 
 
-        {
-            "name": "Python: stage 2 pretrained 119",
-            "type": "python",
-            "request": "launch",
-            "program": "main.py",
-            "console": "integratedTerminal",
-            "justMyCode": true,
-            "env": {
-                "CUDA_VISIBLE_DEVICES": "2"
-            },
-            "args": [
-                "dataset_folder=/media/raid/cloth/capture_data/Dataset_Nov11/119",
-                "data=real",
-                "renderer=multiarea_emitter",
-                "material=ani_latent_texture_model",
-                "material.different_decoder=True",
-                "material.decoder.use_skip_connection=True",
-                "experiment_name=Multi-Head-decoder_Add-boundary_Leaky-ReLU_Stage-2-Skip-connection-from-pretrained-decoder_Material-119_run_1",
-                "model.stage=2",
-                "model.test=False",
-                "material.use_latent_bank=False",
-                "model.freeze_decoder=True",
-                "data.switch_iters=3000",
-                "data.debug=False",
-                "model.ckpt_path=/media/raid/cloth/output/BRDF/points/Multi-Head-decoder_Add-boundary_Leaky-ReLU_Stage-1_Material-100-40_Skip-connection_run_1/training/model_0.20_0.20/last.ckpt"
-            ]
-        }
+        // {
+        //     "name": "Python: stage 2 pretrained 119",
+        //     "type": "python",
+        //     "request": "launch",
+        //     "program": "main.py",
+        //     "console": "integratedTerminal",
+        //     "justMyCode": true,
+        //     "env": {
+        //         "CUDA_VISIBLE_DEVICES": "1"
+        //     },
+        //     "args": [
+        //         "dataset_folder=/media/raid/cloth/capture_data/Dataset_Nov11/119",
+        //         "data=real",
+        //         "renderer=multiarea_emitter",
+        //         "material=ani_latent_texture_model",
+        //         "material.different_decoder=True",
+        //         "material.decoder.use_skip_connection=True",
+        //         "experiment_name=Material-119_run_1",
+        //         "model.stage=2",
+        //         "model.test=False",
+        //         "material.use_latent_bank=True",
+        //         "model.freeze_decoder=True",
+        //         "data.switch_iters=3000",
+        //         "data.debug=True",
+        //         "model.ckpt_path=/media/raid/cloth/output/BRDF/points/Multi-Head-decoder_Add-boundary_Leaky-ReLU_Stage-1_Material-100-40_Skip-connection_run_1/training/model_0.20_0.20/last.ckpt"
+        //     ]
+        // }
 
         // {
         //     "name": "Python: Current File",

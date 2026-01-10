@@ -98,6 +98,35 @@ def main(cfg):
                         print(f"=> Stage 2: loaded latent bank from checkpoint: {num_points} x {latent_dim}")
                     else:
                         print(f"=> Stage 2: use_latent_bank=True but no latent bank weights found in checkpoint.")
+                
+                # If initialize_from_std is enabled, reinitialize latent texture using std from checkpoint's latent bank
+                initialize_from_std = getattr(cfg.material, 'initialize_from_std', False)
+                if initialize_from_std:
+                    latent_bank_key = 'material.point_latent_bank.weight'
+                    if latent_bank_key in checkpoint['state_dict']:
+                        latent_weights = checkpoint['state_dict'][latent_bank_key]
+                        # latent_weights: [num_points, latent_dim]
+                        # Last 6 dimensions have special meaning (normal + tangent), exclude them
+                        brdf_latent_weights = latent_weights[:, :-6]
+                        
+                        # Compute std from the brdf latent dimensions
+                        computed_std = brdf_latent_weights.std().item()
+                        
+                        # Reinitialize only the first N-6 dimensions, keep last 6 unchanged
+                        latent_texture = model.material.latent_texture
+                        resolution = latent_texture.resolution
+                        num_brdf_dims = brdf_latent_weights.shape[1]
+                        
+                        # Reinitialize first N-6 dimensions with computed std
+                        latent_texture.params.data[:, :num_brdf_dims, :, :] = torch.randn(
+                            1, num_brdf_dims, resolution, resolution,
+                            device=latent_texture.params.device,
+                            dtype=latent_texture.params.dtype
+                        ) * computed_std
+                        
+                        print(f"=> Stage 2: initialized latent texture (first {num_brdf_dims} dims) from checkpoint std={computed_std:.6f}")
+                    else:
+                        print(f"=> Stage 2: initialize_from_std=True but no latent bank weights found in checkpoint.")
         else:
             # Stage 1: Only load material parameters
             model_dict = model.state_dict()

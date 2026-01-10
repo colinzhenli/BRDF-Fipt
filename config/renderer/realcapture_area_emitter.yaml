@@ -74,6 +74,7 @@ mesh:
   mitsuba_scene: False
   rectangle:
     bbox_json: ${dataset_folder}/bbox.json
+    sample_size_json: "/media/raid/cloth/capture_data/Dataset_Nov11/sample_size.json"
     # center: [0.16, -0.11, -0.058] # 0.06 is the foam board top
     # center: [0.16, -0.11, -0.0673] # 0.063 is the foam board bottom
     center: [0.16, -0.11, -0.061] # the hard material
@@ -81,8 +82,8 @@ mesh:
     # center: [0.16, -0.11, -0.0625] # 0.063 is the foam board bottom
     # width: 0.125 # board_size
     # length: 0.135
-    width: 0.14 # sample_size 0-153
-    length: 0.14 # sample_size 0-153 material
+    width: 0.14 # sample_size 0-153 (fallback if json not used)
+    length: 0.14 # sample_size 0-153 material (fallback if json not used)
     # width: 0.08
     # length: 0.08 # colorchecker size
 emitter:

@@ -1,6 +1,6 @@
 #!/bin/bash
 
-export CUDA_VISIBLE_DEVICES=2
+export CUDA_VISIBLE_DEVICES=1
 
 python main.py \
     dataset_folder=/media/raid/cloth/capture_data/Dataset_Nov11/119 \
@@ -8,8 +8,9 @@ python main.py \
     renderer=multiarea_emitter \
     material=ani_latent_texture_model \
     material.different_decoder=True \
+    material.neural_geometry.factor=0.2 \
     material.decoder.use_skip_connection=True \
-    experiment_name=Multi-Head-decoder_Add-boundary_Leaky-ReLU_Stage-2-Skip-connection-from-pretrained-decoder_Material-119_run_1 \
+    experiment_name=Multi-Head-decoder_Neural-geometry-factor-0.2_Initialize-from-std_Add-boundary_Leaky-ReLU_Stage-2-Skip-connection-from-pretrained-decoder_Material-119_run_1 \
     model.stage=2 \
     model.test=False \
     material.use_latent_bank=False \

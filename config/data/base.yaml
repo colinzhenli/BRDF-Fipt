@@ -48,5 +48,5 @@ valid_on_train_set: False
 val_ratio: 0.05
 visualize_uv: False
 start_idx: 0
-valid_num: 1 # -1 to use all data for validation
+valid_num: -1 # -1 to use all data for validation
 
