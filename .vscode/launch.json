@@ -6,22 +6,22 @@
     // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
     "version": "0.2.0",
     "configurations": [
-        {
-            "name": "Python: Shape Matching",
-            "type": "python",
-            "request": "launch",
-            "program": "./recon/calibration/shape_matching.py",
-            "console": "integratedTerminal",
-            "justMyCode": true,
-            "env": {
-                "CUDA_VISIBLE_DEVICES": "1"
-            },
-            "args": [
-                "shape_matching.folder_path=/media/raid/cloth/capture_data/Dataset_Nov11/232",
-                "shape_matching.num_workers=16",
-                "shape_matching.z_outlier_percentile=0.0"
-            ]
-        },
+        // {
+        //     "name": "Python: Shape Matching",
+        //     "type": "python",
+        //     "request": "launch",
+        //     "program": "./recon/calibration/shape_matching.py",
+        //     "console": "integratedTerminal",
+        //     "justMyCode": true,
+        //     "env": {
+        //         "CUDA_VISIBLE_DEVICES": "1"
+        //     },
+        //     "args": [
+        //         "shape_matching.folder_path=/media/raid/cloth/capture_data/Dataset_Nov11/232",
+        //         "shape_matching.num_workers=16",
+        //         "shape_matching.z_outlier_percentile=0.0"
+        //     ]
+        // },
 
         // {
         //     "name": "Python: Shape Matching",
@@ -113,35 +113,35 @@
         // }
 
 
-        // {
-        //     "name": "Python: stage 2 pretrained 119",
-        //     "type": "python",
-        //     "request": "launch",
-        //     "program": "main.py",
-        //     "console": "integratedTerminal",
-        //     "justMyCode": true,
-        //     "env": {
-        //         "CUDA_VISIBLE_DEVICES": "0"
-        //     },
-        //     "args": [
-        //         "dataset_folder=/media/raid/cloth/capture_data/Dataset_Nov11/105",
-        //         "data=real",
-        //         "renderer=multiarea_emitter",
-        //         "material=ani_latent_texture_model",
-        //         "material.different_decoder=False",
-        //         "material.decoder.use_skip_connection=True",
-        //         "experiment_name=Single-head-Material-105_test-on-train-set_1",
-        //         "model.stage=2",
-        //         "model.test=True",
-        //         "material.use_latent_bank=False",
-        //         "material.neural_geometry.factor=0.02"
-        //         "model.freeze_decoder=True",
-        //         "data.switch_iters=3000",
-        //         "data.debug=False",
-        //         "data.valid_on_train_set=True",
-        //         "model.ckpt_path=/media/raid/cloth/output/BRDF/real/Stage-2_Epoch-1600-model_Small-Gaussian-blur_Single-Head-decoder_Neural-geometry-factor-0.02_Initialize-from-std_Leaky-ReLU_Material-105_run_1/training/model_0.20_0.20/last.ckpt"
-        //     ]
-        // }
+        {
+            "name": "Python: stage 2 pretrained 119",
+            "type": "python",
+            "request": "launch",
+            "program": "main.py",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "env": {
+                "CUDA_VISIBLE_DEVICES": "1"
+            },
+            "args": [
+                "dataset_folder=/media/raid/cloth/capture_data/Dataset_Nov11/105",
+                "data=real",
+                "renderer=multiarea_emitter",
+                "material=ani_latent_texture_model",
+                "material.different_decoder=False",
+                "material.decoder.use_skip_connection=True",
+                "experiment_name=Single-head-Material-105_Novel-view-test_1",
+                "model.stage=2",
+                "model.test=True",
+                "material.use_latent_bank=False",
+                "material.neural_geometry.factor=0.02",
+                "model.freeze_decoder=True",
+                "data.switch_iters=3000",
+                "data.debug=False",
+                "data.valid_on_train_set=True",
+                "model.ckpt_path=/media/raid/cloth/output/BRDF/real/Stage-2_Epoch-1600-model_Small-Gaussian-blur_Single-Head-decoder_Neural-geometry-factor-0.02_Initialize-from-std_Leaky-ReLU_Material-105_run_1/training/model_0.20_0.20/last.ckpt"
+            ]
+        }
 
         // {
         //     "name": "Python: Current File",

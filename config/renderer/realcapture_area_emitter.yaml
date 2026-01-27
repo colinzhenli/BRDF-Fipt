@@ -15,12 +15,14 @@ camera:
   colmap_camera: True # whether to use colmap camera or robotic log camera
   distance: 2.0
   number_of_views: 40 # used to generate reference images
-  number_of_view_test: 10
+  number_of_view_test: 10 # Used on customized novel view test
+  altitude_angle: 45.0 # in degrees
   views_per_batch: 8
   look_at: [0.0, 0.0, 0.0]
   up: [0.0, 1.0, 0.0]
   position: [0.0, 0.0, -2.0]
   camera_angle_x: 0.5
+
   # R_c2g: [[-0.00369406,  0.99992083,  0.01202885], # OpenGL convention!
   #         [-0.00272167,  0.01201883, -0.99992407],
   #         [-0.99998947, -0.00372652,  0.00267706]]

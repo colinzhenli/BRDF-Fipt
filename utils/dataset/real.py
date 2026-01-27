@@ -755,4 +755,95 @@ class RealValDataset(Dataset):
             'gt_params': torch.zeros(1),
             'camera_ids': camera_ids,
         }
+
+class RealNovelViewDataset(Dataset):
+    """ Test dataset that generates camera views rotating around z-axis, looking at bbox center """
+    def __init__(self, cfg, gt_folder):
+        self.cfg = cfg
+        self.pixel = False
+        self.gt_folder = gt_folder
         
+        # Use same intrinsics as RealValDataset
+        self.intrinsics = cfg.renderer.camera.intrinsics
+        self.cx = self.intrinsics['cx']
+        self.cy = self.intrinsics['cy']
+        self.distortion = self.intrinsics['distortion']
+        self.focal = self.intrinsics['focal_length']
+        self.img_hw = (self.intrinsics['height'], self.intrinsics['width'])
+        
+        # Get camera view generation parameters from config
+        self.number_of_views = cfg.renderer.camera.number_of_view_test
+        self.altitude_angle = cfg.renderer.camera.altitude_angle  # in degrees
+        self.distance = cfg.renderer.camera.distance
+        
+        # Load center from bbox_json file (same as renderer.py)
+        bbox_json_path = cfg.renderer.mesh.rectangle.bbox_json
+        if os.path.exists(bbox_json_path):
+            with open(bbox_json_path, 'r') as f:
+                bbox_data = json.load(f)
+            self.look_at = bbox_data['bbox_center']
+            print(f"RealNovelViewDataset: Loading look_at from bbox.json: {self.look_at}")
+        else:
+            self.look_at = cfg.renderer.camera.look_at
+            print(f"RealNovelViewDataset: bbox.json not found, using config look_at: {self.look_at}")
+        
+        self.up = [0, 0, 1]  # z-axis up for rotation around z-axis
+        
+        # Generate ray directions using intrinsics with distortion correction
+        self.directions = get_ray_directions(self.img_hw[0], self.img_hw[1], self.focal, self.cx, self.cy, self.distortion)
+        
+        # Generate camera dicts for all views
+        self.get_camera_rotation_dicts()
+    
+    def get_camera_rotation_dicts(self):
+        """ Generate camera positions rotating around z-axis at fixed altitude angle """
+        self.camera_dicts = []
+        
+        dist = self.distance
+        altitude = np.radians(self.altitude_angle)  # angle from horizontal plane (elevation angle)
+        n_steps = self.number_of_views
+        
+        # Uniformly sample azimuth angles around the circle
+        azimuths = np.linspace(0, 2 * np.pi, n_steps, endpoint=False)
+        
+        for azimuth in azimuths:
+            # Spherical to Cartesian conversion
+            # altitude is the angle from horizontal plane (elevation)
+            # azimuth is the angle around z-axis
+            x = dist * np.cos(altitude) * np.cos(azimuth) + self.look_at[0]
+            y = dist * np.cos(altitude) * np.sin(azimuth) + self.look_at[1]
+            z = dist * np.sin(altitude) + self.look_at[2]
+            
+            camera_dict = {
+                "position": [x, y, z],
+                "look_at": self.look_at,
+                "up": self.up
+            }
+            self.camera_dicts.append(camera_dict)
+    
+    def __len__(self):
+        return self.number_of_views
+    
+    def __getitem__(self, idx):
+        camera_dict = self.camera_dicts[idx]
+        
+        # Generate c2w matrix using get_c2w (same as SphereTestDataset)
+        c2w = get_c2w(camera_dict)
+        rays_o, rays_d, dxdu, dydv = get_rays(self.directions, c2w, focal=self.focal)
+        rays = torch.cat([rays_o, rays_d, dxdu, dydv], dim=-1)
+        
+        # Return zero rgbs
+        num_rays = rays.shape[0]
+        rgbs = torch.zeros(num_rays, 3)
+        
+        # Return all zeros for emitter_ids and camera_ids
+        emitter_ids = torch.zeros(num_rays, dtype=torch.long)
+        camera_ids = torch.zeros(num_rays, dtype=torch.long)
+        
+        return {
+            'rays': rays,
+            'rgbs': rgbs,
+            'emitter_ids': emitter_ids,
+            'gt_params': torch.zeros(1),
+            'camera_ids': camera_ids,
+        }

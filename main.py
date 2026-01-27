@@ -11,7 +11,7 @@ from renderer import ForwardRenderer
 from trainers import get_trainer_class
 from model.brdf import SvPBRBRDF
 from torch.utils.data import DataLoader
-from utils.dataset import RealImageDataset, RealValDataset, MultiMaterialPointDataset
+from utils.dataset import RealImageDataset, RealValDataset, MultiMaterialPointDataset, RealNovelViewDataset
 import hydra
 from omegaconf import DictConfig
 from pytorch_lightning.strategies import DDPStrategy
@@ -137,8 +137,14 @@ def main(cfg):
     print("after trainer init")
     print("==> initializing data ...")   
     if cfg.data.dataset_name == "real":
-        train_dataset = RealImageDataset(cfg, gt_folder=cfg.gt_folder, split="train")
-        val_dataset = RealValDataset(cfg, gt_folder=cfg.gt_folder)
+        if not cfg.model.test:
+            train_dataset = RealImageDataset(cfg, gt_folder=cfg.gt_folder, split="train")
+            val_dataset = RealValDataset(cfg, gt_folder=cfg.gt_folder)
+        else:
+            if cfg.model.test_novel_view:
+                val_dataset = RealNovelViewDataset(cfg, gt_folder=cfg.gt_folder)
+            else:
+                val_dataset = RealValDataset(cfg, gt_folder=cfg.gt_folder)
     elif cfg.data.dataset_name == "points":
         train_dataset = MultiMaterialPointDataset(cfg, root_folder=cfg.dataset_folder, split="train")
         if cfg.data.debug & cfg.data.valid_on_train_set:
@@ -147,19 +153,18 @@ def main(cfg):
             val_dataset = MultiMaterialPointDataset(cfg, root_folder=cfg.dataset_folder, split="val")
     else:
         raise ValueError(f"Invalid dataset name: {cfg.data.dataset_name}")
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=cfg.data.batch_size,
-        num_workers=cfg.data.num_workers,
-        pin_memory=True,
-    )
-
+    if not cfg.model.test:
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=cfg.data.batch_size,
+            num_workers=cfg.data.num_workers,
+            pin_memory=True,
+        )
     val_loader = DataLoader(
         val_dataset,
         batch_size=1,
         num_workers=cfg.data.num_workers,
     )
-
     print("==> initializing logger ...")
     logger = hydra.utils.instantiate(cfg.model.logger, save_dir=cfg.exp_output_root_path)
 
@@ -192,7 +197,7 @@ def main(cfg):
     # tracer.stop()
     # tracer.save(f"Ray-rect-intersection_tracer.json")
     """  Skipping testing for now """
-    # test_results = trainer.test(model, dataloaders=val_loader)
+    # test_results = trainer.test(model, dataloaders=test_loader)
 
     # test_psnr = sum(result['test/psnr'] for result in test_results) / len(test_results)
     # print(f"PSNR for roughness {roughness:.2f}, metallic {metallic:.2f}: {test_psnr:.2f}")

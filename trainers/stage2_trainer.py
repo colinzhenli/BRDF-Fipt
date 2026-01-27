@@ -22,7 +22,7 @@ class Stage2Trainer(pl.LightningModule):
         self.cfg = cfg
         self.save_hyperparameters(cfg)
 
-        self.more_visualization = cfg.model.test
+        self.more_visualization = False
         self.material = material
         self.freeze_decoder = cfg.model.freeze_decoder
         self.gt_material = gt_material
@@ -501,6 +501,80 @@ class Stage2Trainer(pl.LightningModule):
         self.log('val/psnr', psnr)        
         return
 
+    def test_step(self, batch, batch_idx):
+        """ Unified validation step for both normal and radiometric calibration """
+        rays, rgbs_gt, emitter_ids, camera_ids = batch['rays'], batch['rgbs'], batch['emitter_ids'], batch['camera_ids']
+
+        # forward renders
+        rgbs, vis, ray_params, extra_output = self.renderer.stage2_render(self.emitter, rays, emitter_ids, self.cfg.renderer.spp.val, None, None, validation=True)
+        # Handle radiometric calibration
+        uv_offset = extra_output
+        rgbs = rgbs * self.camera_factor
+        psnr_loss = torch.nn.functional.mse_loss(rgbs[vis], rgbs_gt.squeeze(0)[vis], reduction='mean')
+        max_val = torch.max(torch.stack([rgbs[vis].max(), rgbs_gt.squeeze(0)[vis].max()])).clamp_min(1e-8)
+        psnr = 10.0 * torch.log10((max_val ** 2) / psnr_loss.clamp_min(1e-5))
+        
+        loss = self.loss_function(rgbs, rgbs_gt, vis)
+        emitter_radiance = self.emitter.light_radiance.detach().cpu().numpy()
+        
+        # Handle batch of images
+        batch_size = 1
+        batched_rgbs = rgbs.reshape(batch_size, *self.img_hw, -1)
+        batched_rgbs_gt = rgbs_gt.reshape(batch_size, *self.img_hw, -1)
+        
+        for b in range(batch_size):
+            # Reshape individual sample in batch
+            sample_rgbs = batched_rgbs[b]
+            sample_rgbs_gt = batched_rgbs_gt[b]
+            
+            # Create output directory for each sample
+            output_dir = os.path.join(
+                self.cfg.exp_output_root_path,
+                f'test_images'
+            )
+            os.makedirs(output_dir, exist_ok=True)
+
+            if self.more_visualization:
+                # Save original images as 32-bit EXR without clipping
+                sample_rgbs_gt_32bit = sample_rgbs_gt.cpu().numpy().astype(np.float32)/65535.0 
+                sample_rgbs_32bit = sample_rgbs.cpu().numpy().astype(np.float32)/65535.0
+                
+                # Compute error image
+                error_image = (sample_rgbs_32bit - sample_rgbs_gt_32bit).astype(np.float32)
+                
+                # Save as 32-bit EXR (OpenCV expects BGR)
+                cv2.imwrite(
+                    os.path.join(output_dir, f'gt_view_{batch_idx}_{b}.exr'),
+                    cv2.cvtColor(sample_rgbs_gt_32bit, cv2.COLOR_RGB2BGR)
+                )
+                cv2.imwrite(
+                    os.path.join(output_dir, f'result_view_{batch_idx}_{b}.exr'),
+                    cv2.cvtColor(sample_rgbs_32bit, cv2.COLOR_RGB2BGR)
+                )
+                cv2.imwrite(
+                    os.path.join(output_dir, f'error_view_{batch_idx}_{b}.exr'),
+                    cv2.cvtColor(error_image, cv2.COLOR_RGB2BGR)
+                )
+            else:
+                # Convert float32 (0-65535) to uint16 (0-65535)
+                sample_rgbs_gt_16bit = np.clip(sample_rgbs_gt.cpu().numpy(), 0, 65535).astype(np.uint16)
+                sample_rgbs_16bit = np.clip(sample_rgbs.cpu().numpy(), 0, 65535).astype(np.uint16)
+
+                # Save as 16-bit PNG (OpenCV expects BGR)
+                cv2.imwrite(
+                    os.path.join(output_dir, f'gt_view_{batch_idx}_{b}.png'),
+                    cv2.cvtColor(sample_rgbs_gt_16bit, cv2.COLOR_RGB2BGR)
+                )
+                cv2.imwrite(
+                    os.path.join(output_dir, f'result_view_{batch_idx}_{b}.png'),
+                    cv2.cvtColor(sample_rgbs_16bit, cv2.COLOR_RGB2BGR)
+                )
+            
+        self.log('test/loss', loss)
+        self.log('test/emitter_radiance', emitter_radiance.mean())
+        self.log('test/psnr', psnr)        
+        return
+    
     def _radiometric_calibration_step(self, batch_idx, rgbs, rgbs_gt, vis, pixel_all_ok, cosine_emitter_angle):
         """Radiometric calibration: collect radiance-camera pairs with pixel coordinates."""
         mask = rgbs > 0

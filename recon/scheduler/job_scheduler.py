@@ -441,8 +441,8 @@ def fix_material_status_by_timestamps(info: Dict, material: str, verbose: bool =
     colmap_end = info.get("colmap_end_time")
     pid = info.get("pid")
     
-    # Skip if already in final states
-    if current_status in [JobStatus.COMPLETED, JobStatus.NOT_STARTED]:
+    # Skip if already in final states or FAILED (FAILED jobs are handled by reset_failed_jobs)
+    if current_status in [JobStatus.COMPLETED, JobStatus.NOT_STARTED, JobStatus.FAILED]:
         return False
     
     # Rule 1: Has shape matching end time → COMPLETED
@@ -485,8 +485,8 @@ def fix_material_status_by_timestamps(info: Dict, material: str, verbose: bool =
 
 def reset_failed_jobs(state: Dict, verbose: bool = True, force_restart_colmap: bool = True) -> int:
     """
-    Reset failed jobs to retry from the failed stage.
-    - If force_restart_colmap=True (default): Always reset to NOT_STARTED to retry COLMAP
+    Reset failed jobs (and COLMAP_DONE jobs if force_restart_colmap=True) to retry.
+    - If force_restart_colmap=True (default): Reset FAILED and COLMAP_DONE to NOT_STARTED to retry COLMAP
     - If force_restart_colmap=False: 
         - If COLMAP failed → reset to NOT_STARTED
         - If shape matching failed (COLMAP completed) → reset to COLMAP_DONE
@@ -500,7 +500,14 @@ def reset_failed_jobs(state: Dict, verbose: bool = True, force_restart_colmap: b
     """
     reset_count = 0
     for material, info in state["materials"].items():
-        if info["status"] == JobStatus.FAILED:
+        # Determine which statuses to reset
+        should_reset = info["status"] == JobStatus.FAILED
+        
+        # Also reset COLMAP_DONE jobs if force_restart_colmap is True
+        if force_restart_colmap and info["status"] == JobStatus.COLMAP_DONE:
+            should_reset = True
+        
+        if should_reset:
             folder_path = info["folder_path"]
             
             # Determine which stage failed by checking if COLMAP completed
