@@ -280,28 +280,26 @@ class MultiMaterialPointDataset(IterableDataset if True else Dataset):
         
         # Double buffer settings
         self.switch_iters = getattr(cfg.data, 'switch_iters', 1000)  # How often to reload chunks
+        self.chunk_size = getattr(cfg.data, 'chunk_size', 200)  # Number of materials to sample per chunk
         self.step = 0
         
-        # Debug mode settings
-        self.debug = getattr(cfg.data, 'debug', False)
-        self.num_materials = getattr(cfg.data, 'num_materials', 1)
-        self.start_material_id = getattr(cfg.data, 'start_material_id', 0)
-        # Discover material folders (only include folders with observations subfolder)
-        self.material_folders = sorted([
-            d for d in Path(root_folder).iterdir() 
-            if d.is_dir() and d.name.isdigit() and (d / "observations").is_dir()
-        ], key=lambda x: int(x.name))
+        # Read training list from txt file
+        self.training_list_path = cfg.data.training_list_path
+        self.training_list = []
+        with open(self.training_list_path, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if line:  # Skip empty lines
+                    self.training_list.append(int(line))
         
-        # In debug mode, limit to first N materials (sorted by folder name)
-        if self.debug:
-            original_count = len(self.material_folders)
-            self.material_folders = self.material_folders[self.start_material_id:self.start_material_id+self.num_materials]
-            print(f"\n[DEBUG MODE] Limiting materials from {original_count} to {len(self.material_folders)}")
+        # Build material folders from training list
+        self.material_folders = [Path(root_folder) / str(mid) for mid in self.training_list]
         
         print(f"\n{'='*60}")
         print(f"Loading MultiMaterial Dataset ({split})")
         print(f"{'='*60}")
-        print(f"Found {len(self.material_folders)} material folders: {[int(f.name) for f in self.material_folders]}")
+        print(f"Training list path: {self.training_list_path}")
+        print(f"Loaded {len(self.training_list)} materials: {self.training_list}")
         
         # Discover chunks and load metadata (lightweight)
         self._discover_chunks_and_metadata()
@@ -446,7 +444,11 @@ class MultiMaterialPointDataset(IterableDataset if True else Dataset):
         desc = f"Loading {'all' if load_all else 'random'} chunks for {split}"
         print(f"\n[{'Main' if is_val else 'Background'}] {desc}...")
         
-        for material_folder in (tqdm(self.material_folders, desc=desc) if load_all else self.material_folders):
+        # Select material folders: all for validation, random sample for training
+        num_to_sample = min(self.chunk_size, len(self.material_folders))
+        selected_folders = random.sample(self.material_folders, num_to_sample)
+        
+        for material_folder in (tqdm(selected_folders, desc=desc)):
             material_id = int(material_folder.name)
             
             # Get metadata (already loaded, thread-safe to read)
@@ -461,7 +463,7 @@ class MultiMaterialPointDataset(IterableDataset if True else Dataset):
             if is_val:
                 split_chunks = all_chunks[split_idx:]  # Last val_ratio chunks for validation
             else:
-                split_chunks = all_chunks[:split_idx]  # First (1-val_ratio) chunks for training
+                split_chunks = all_chunks  # Use all chunks for training
             
             if len(split_chunks) == 0:
                 print(f"  Warning: Material {material_id} has no {split} chunks!")
@@ -474,9 +476,13 @@ class MultiMaterialPointDataset(IterableDataset if True else Dataset):
                 chunks_to_load = [random.choice(split_chunks)]  # Random single chunk from this split
             
             for chunk_path in chunks_to_load:
-                # Load observations from chunk
-                obs_data = np.load(chunk_path)
-                observations = obs_data['observations']  # (N, 10): [x, y, z, image_id, pixel_x, pixel_y, r, g, b, point_id]
+                # Load observations from chunk with error handling
+                try:
+                    obs_data = np.load(chunk_path)
+                    observations = obs_data['observations']  # (N, 10): [x, y, z, image_id, pixel_x, pixel_y, r, g, b, point_id]
+                except (EOFError, IOError, ValueError, KeyError) as e:
+                    print(f"  [Warning] Skipping corrupted chunk {chunk_path}: {type(e).__name__}: {e}")
+                    continue
                 
                 # Filter by XY region
                 original_count = len(observations)

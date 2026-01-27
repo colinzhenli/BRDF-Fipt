@@ -26,8 +26,8 @@ class Stage1Trainer(pl.LightningModule):
         self.freeze_decoder = False
         self.gt_material = gt_material
         self.gt_folder = cfg.gt_folder
-        self.camera_factor = cfg.renderer.camera.linear_factor
-        
+        self.camera_factor1 = cfg.renderer.camera.linear_factor1
+        self.camera_factor2 = cfg.renderer.camera.linear_factor2
         #self.latent_dim = cfg.material.latent_dim
         # Create a mapping from roughness-metallic pairs to train latent indices
         self.radiance_rgb_pairs = {}
@@ -352,7 +352,9 @@ class Stage1Trainer(pl.LightningModule):
             rays, prior = self.handeye_refiner.apply_handeye_delta_to_rays(rays, camera_ids)
         # forward renders
         rgbs, vis, ray_params, _ = self.renderer.stage1_render(self.emitter, rays, xyz, emitter_ids, material_ids, point_ids, self.cfg.renderer.spp.train, None, None, validation=False)
-        rgbs = rgbs * self.camera_factor
+        # Apply different camera factors based on material_ids
+        camera_factor = torch.where(material_ids < 100, self.camera_factor1, self.camera_factor2)
+        rgbs = rgbs * camera_factor.squeeze(0).unsqueeze(-1)
         loss = self.loss_function(rgbs, rgbs_gt, vis)
 
         psnr_loss  = torch.nn.functional.mse_loss(rgbs[vis], rgbs_gt.squeeze(0)[vis], reduction='mean')
@@ -393,7 +395,8 @@ class Stage1Trainer(pl.LightningModule):
             rays, prior = self.handeye_refiner.apply_handeye_delta_to_rays(rays, camera_ids)
         # forward renders
         rgbs, vis, ray_params, _ = self.renderer.stage1_render(self.emitter, rays, xyz, emitter_ids, material_ids, point_ids, self.cfg.renderer.spp.train, None, None, validation=False)
-        rgbs = rgbs * self.camera_factor
+        camera_factor = torch.where(material_ids < 100, self.camera_factor1, self.camera_factor2)
+        rgbs = rgbs * camera_factor.squeeze(0).unsqueeze(-1)
         loss = self.loss_function(rgbs, rgbs_gt, vis)
 
         psnr_loss  = torch.nn.functional.mse_loss(rgbs[vis], rgbs_gt.squeeze(0)[vis], reduction='mean')

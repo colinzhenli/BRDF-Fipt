@@ -682,29 +682,29 @@ class MultiAreaEmitter(nn.Module):
         self.register_buffer('m', torch.tensor(m, dtype=torch.float32, device='cuda'))
         self.register_buffer('light_radius', torch.tensor(radius, dtype=torch.float32, device='cuda'))
 
-        # Discover material folders and load scan_log.json for each
+        # Read training list from txt file and load scan_log.json for each
         folder_path = cfg.get('folder_path', '')
         root = Path(folder_path)
-        material_folders = sorted([
-            d for d in root.iterdir() 
-            if d.is_dir() and d.name.isdigit() and (d / "observations").is_dir()
-        ], key=lambda x: int(x.name))
-        material_folders = material_folders[cfg.start_material_id:cfg.start_material_id+cfg.num_materials]
-        print(f"MultiAreaEmitter: Found {len(material_folders)} material folders.")
+        training_list_path = cfg.training_list_path
+        training_list = []
+        with open(training_list_path, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if line:  # Skip empty lines
+                    training_list.append(int(line))
+        
+        material_folders = [root / str(mid) for mid in training_list]
+        mat_ids = training_list
+        print(f"MultiAreaEmitter: Training list path: {training_list_path}")
+        print(f"MultiAreaEmitter: Loaded {len(training_list)} materials: {training_list}")
 
         l2w_list = []
-        mat_ids = []
         for d in material_folders:
             json_path = d / "scan_log.json"
-            if not json_path.exists():
-                # raise FileNotFoundError(f"scan_log.json not found in {d}")
-                print(f"scan_log.json not found in {d}")
-                continue
             
             # Compute l2w for this material [N_i, 4, 4]
             l2w_mat = self._compute_l2w(cfg, str(json_path)) 
             l2w_list.append(l2w_mat)
-            mat_ids.append(int(d.name))
 
         if not l2w_list:
              raise ValueError(f"No valid material folders found in {folder_path}")

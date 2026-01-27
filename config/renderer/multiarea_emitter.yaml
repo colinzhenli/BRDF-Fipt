@@ -10,7 +10,9 @@ shape_matching:
 camera:
   # linear_factor: 131231480.000000
   # linear_factor: 231435888.000000 # half the resolution
-  linear_factor: 259494976.000000 # Before 100
+  linear_factor: 467090956.000000 # Before 100
+  linear_factor1: 259494976.000000 # Before 100
+  linear_factor2: 467090956.000000 # After 100 materials
   # linear_factor: 467090956.000000 # After 100 materials
   colmap_camera: True # whether to use colmap camera or robotic log camera
   distance: 2.0
@@ -88,8 +90,7 @@ mesh:
 emitter:
   direction_json: "/media/raid/cloth/capture_data/Dataset_Nov11/emitter_calibration.json"
   # direction_json: False
-  start_material_id: ${data.start_material_id}
-  num_materials: ${data.num_materials}
+  training_list_path: ${data.training_list_path}
   folder_path: ${dataset_folder}
   type: "realarea"
   num_lights: 40

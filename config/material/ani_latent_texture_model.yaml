@@ -8,7 +8,7 @@ use_latent_bank: True
 initialize_from_std: True
 observations_folder: ${dataset_folder}/observations
 
-num_materials: ${data.num_materials}
+training_list_path: ${dataset_folder}/training_list.txt
 gt_frame: False
 colorful_texture: True
 leaky_relu: True

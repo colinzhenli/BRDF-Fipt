@@ -22,6 +22,7 @@ class Stage2Trainer(pl.LightningModule):
         self.cfg = cfg
         self.save_hyperparameters(cfg)
 
+        self.more_visualization = cfg.model.test
         self.material = material
         self.freeze_decoder = cfg.model.freeze_decoder
         self.gt_material = gt_material
@@ -411,19 +412,41 @@ class Stage2Trainer(pl.LightningModule):
             )
             os.makedirs(output_dir, exist_ok=True)
 
-            # Convert float32 (0-65535) to uint16 (0-65535)
-            sample_rgbs_gt_16bit = np.clip(sample_rgbs_gt.cpu().numpy(), 0, 65535).astype(np.uint16)
-            sample_rgbs_16bit = np.clip(sample_rgbs.cpu().numpy(), 0, 65535).astype(np.uint16)
+            if self.more_visualization:
+                # Save original images as 32-bit EXR without clipping
+                sample_rgbs_gt_32bit = sample_rgbs_gt.cpu().numpy().astype(np.float32)/65535.0 
+                sample_rgbs_32bit = sample_rgbs.cpu().numpy().astype(np.float32)/65535.0
+                
+                # Compute error image
+                error_image = (sample_rgbs_32bit - sample_rgbs_gt_32bit).astype(np.float32)
+                
+                # Save as 32-bit EXR (OpenCV expects BGR)
+                cv2.imwrite(
+                    os.path.join(output_dir, f'gt_view_{batch_idx}_{b}.exr'),
+                    cv2.cvtColor(sample_rgbs_gt_32bit, cv2.COLOR_RGB2BGR)
+                )
+                cv2.imwrite(
+                    os.path.join(output_dir, f'result_view_{batch_idx}_{b}.exr'),
+                    cv2.cvtColor(sample_rgbs_32bit, cv2.COLOR_RGB2BGR)
+                )
+                cv2.imwrite(
+                    os.path.join(output_dir, f'error_view_{batch_idx}_{b}.exr'),
+                    cv2.cvtColor(error_image, cv2.COLOR_RGB2BGR)
+                )
+            else:
+                # Convert float32 (0-65535) to uint16 (0-65535)
+                sample_rgbs_gt_16bit = np.clip(sample_rgbs_gt.cpu().numpy(), 0, 65535).astype(np.uint16)
+                sample_rgbs_16bit = np.clip(sample_rgbs.cpu().numpy(), 0, 65535).astype(np.uint16)
 
-            # Save as 16-bit PNG (OpenCV expects BGR)
-            cv2.imwrite(
-                os.path.join(output_dir, f'gt_view_{batch_idx}_{b}.png'),
-                cv2.cvtColor(sample_rgbs_gt_16bit, cv2.COLOR_RGB2BGR)
-            )
-            cv2.imwrite(
-                os.path.join(output_dir, f'result_view_{batch_idx}_{b}.png'),
-                cv2.cvtColor(sample_rgbs_16bit, cv2.COLOR_RGB2BGR)
-            )
+                # Save as 16-bit PNG (OpenCV expects BGR)
+                cv2.imwrite(
+                    os.path.join(output_dir, f'gt_view_{batch_idx}_{b}.png'),
+                    cv2.cvtColor(sample_rgbs_gt_16bit, cv2.COLOR_RGB2BGR)
+                )
+                cv2.imwrite(
+                    os.path.join(output_dir, f'result_view_{batch_idx}_{b}.png'),
+                    cv2.cvtColor(sample_rgbs_16bit, cv2.COLOR_RGB2BGR)
+                )
             
             # Visualize UV offsets as grayscale images
             if not self.is_graypatch and self.visualize_uv:

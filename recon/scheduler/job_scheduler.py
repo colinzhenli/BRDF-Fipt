@@ -29,7 +29,7 @@ import pynvml
 
 class Config:
     """Scheduler configuration"""
-    GPU_IDS = [2]
+    GPU_IDS = [3]
     MAX_COLMAP_PER_GPU = 5  # Maximum COLMAP jobs per GPU
     TOTAL_CPU_CORES = 128
     CPU_CORES_PER_COLMAP = 8  # CPU threads allocated per COLMAP job
@@ -483,15 +483,18 @@ def fix_material_status_by_timestamps(info: Dict, material: str, verbose: bool =
     
     return False
 
-def reset_failed_jobs(state: Dict, verbose: bool = True) -> int:
+def reset_failed_jobs(state: Dict, verbose: bool = True, force_restart_colmap: bool = True) -> int:
     """
     Reset failed jobs to retry from the failed stage.
-    - If COLMAP failed → reset to NOT_STARTED
-    - If shape matching failed (COLMAP completed) → reset to COLMAP_DONE
+    - If force_restart_colmap=True (default): Always reset to NOT_STARTED to retry COLMAP
+    - If force_restart_colmap=False: 
+        - If COLMAP failed → reset to NOT_STARTED
+        - If shape matching failed (COLMAP completed) → reset to COLMAP_DONE
     
     Args:
         state: Current scheduler state
         verbose: Whether to print reset messages
+        force_restart_colmap: If True, always restart from COLMAP regardless of previous progress
     
     Returns: Number of jobs reset
     """
@@ -504,7 +507,7 @@ def reset_failed_jobs(state: Dict, verbose: bool = True) -> int:
             colmap_completed = (info.get("colmap_end_time") is not None and 
                               check_colmap_completion(folder_path))
             
-            if colmap_completed:
+            if colmap_completed and not force_restart_colmap:
                 # COLMAP succeeded, shape matching failed
                 # Reset to COLMAP_DONE so shape matching will be retried
                 info["status"] = JobStatus.COLMAP_DONE
@@ -518,7 +521,7 @@ def reset_failed_jobs(state: Dict, verbose: bool = True) -> int:
                 if verbose:
                     print(f"  Reset material {material}: COLMAP OK, will retry shape matching")
             else:
-                # COLMAP failed or didn't complete
+                # COLMAP failed or didn't complete, or force_restart_colmap is True
                 # Reset to NOT_STARTED to retry from beginning
                 info["status"] = JobStatus.NOT_STARTED
                 info["pid"] = None
@@ -571,7 +574,7 @@ def load_skip_list(dataset_root: str) -> set:
     
     return skip_list
 
-def initialize_materials(dataset_root: str, state: Dict, verbose: bool = True, reset_failed: bool = False, fix_existing: bool = True) -> Tuple[List[str], int]:
+def initialize_materials(dataset_root: str, state: Dict, verbose: bool = True, reset_failed: bool = False, fix_existing: bool = True, force_restart_colmap: bool = True) -> Tuple[List[str], int]:
     """
     Scan dataset folder for material subfolders (0, 1, 2, ..., 10, ..., 100, ...).
     Initialize state for new materials.
@@ -582,6 +585,7 @@ def initialize_materials(dataset_root: str, state: Dict, verbose: bool = True, r
         verbose: Whether to print discovery messages
         reset_failed: Whether to reset failed jobs to NOT_STARTED
         fix_existing: Whether to fix inconsistent states for existing materials (should only be done once on startup)
+        force_restart_colmap: If True, always restart failed jobs from COLMAP (default True)
     
     Returns: 
         Tuple of (sorted list of material folder names, count of new materials found)
@@ -655,7 +659,7 @@ def initialize_materials(dataset_root: str, state: Dict, verbose: bool = True, r
     
     # Reset failed jobs if requested (after fixing timestamps)
     if reset_failed:
-        reset_count = reset_failed_jobs(state, verbose)
+        reset_count = reset_failed_jobs(state, verbose, force_restart_colmap=force_restart_colmap)
         if reset_count > 0 and verbose:
             print(f"Reset {reset_count} failed job(s) to retry\n")
     
@@ -893,7 +897,7 @@ def try_launch_shape_matching_jobs(state: Dict, config: Config):
 
 # ==================== Scheduler Modes ====================
 
-def streaming_mode(dataset_root: str, config: Config, auto_detect: bool = False, retry_failed: bool = True):
+def streaming_mode(dataset_root: str, config: Config, auto_detect: bool = False, retry_failed: bool = True, force_restart_colmap: bool = True):
     """
     Streaming mode: Continuously schedule jobs as capacity becomes available.
     Runs until all materials are completed.
@@ -903,6 +907,7 @@ def streaming_mode(dataset_root: str, config: Config, auto_detect: bool = False,
         config: Scheduler configuration
         auto_detect: If True, periodically scan for new materials and process them automatically
         retry_failed: If True, reset failed jobs to retry them on startup
+        force_restart_colmap: If True, always restart failed jobs from COLMAP (default True)
     """
     print("\n" + "="*60)
     if auto_detect:
@@ -910,7 +915,7 @@ def streaming_mode(dataset_root: str, config: Config, auto_detect: bool = False,
     else:
         print("STREAMING MODE: Automatic job scheduling")
     if retry_failed:
-        print("Failed jobs will be retried")
+        print(f"Failed jobs will be retried (restart from {'COLMAP' if force_restart_colmap else 'failed stage'})")
     print("="*60 + "\n")
     
     # Initialize GPU monitor
@@ -920,7 +925,7 @@ def streaming_mode(dataset_root: str, config: Config, auto_detect: bool = False,
     state["mode"] = "streaming_auto" if auto_detect else "streaming"
     
     # Initialize materials (with failed job reset if requested)
-    materials, new_count = initialize_materials(dataset_root, state, reset_failed=retry_failed)
+    materials, new_count = initialize_materials(dataset_root, state, reset_failed=retry_failed, force_restart_colmap=force_restart_colmap)
     save_state(state, config.STATE_FILE)
     
     if not materials:
@@ -1037,7 +1042,7 @@ def streaming_mode(dataset_root: str, config: Config, auto_detect: bool = False,
         print("State saved. Exiting.")
         sys.exit(0)
 
-def manual_mode(dataset_root: str, n_folders: int, config: Config, retry_failed: bool = True):
+def manual_mode(dataset_root: str, n_folders: int, config: Config, retry_failed: bool = True, force_restart_colmap: bool = True):
     """
     Manual mode: Schedule first N folders and wait for all to complete.
     Balances jobs across GPUs and CPUs upfront.
@@ -1048,11 +1053,12 @@ def manual_mode(dataset_root: str, n_folders: int, config: Config, retry_failed:
         n_folders: Number of folders to process
         config: Scheduler configuration
         retry_failed: If True, reset failed jobs to retry them on startup
+        force_restart_colmap: If True, always restart failed jobs from COLMAP (default True)
     """
     print("\n" + "="*60)
     print(f"MANUAL MODE: Scheduling first {n_folders} folders")
     if retry_failed:
-        print("Failed jobs will be retried")
+        print(f"Failed jobs will be retried (restart from {'COLMAP' if force_restart_colmap else 'failed stage'})")
     print("="*60 + "\n")
     
     # Initialize GPU monitor
@@ -1062,7 +1068,7 @@ def manual_mode(dataset_root: str, n_folders: int, config: Config, retry_failed:
     state["mode"] = "manual"
     
     # Initialize materials (with failed job reset if requested)
-    materials, new_count = initialize_materials(dataset_root, state, reset_failed=retry_failed)
+    materials, new_count = initialize_materials(dataset_root, state, reset_failed=retry_failed, force_restart_colmap=force_restart_colmap)
     save_state(state, config.STATE_FILE)
     
     if not materials:
@@ -1257,6 +1263,8 @@ Examples:
                        help="Auto-detect new materials (streaming mode only). Continuously monitors for new material folders.")
     parser.add_argument("--no_retry_failed", action="store_true",
                        help="Don't retry failed jobs on restart (default: failed jobs are retried)")
+    parser.add_argument("--retry_shape_matching_only", action="store_true",
+                       help="When retrying failed jobs, only retry shape matching if COLMAP completed (default: always restart from COLMAP)")
     
     # Optional configuration overrides
     parser.add_argument("--max_colmap_per_gpu", type=int, help=f"Max COLMAP jobs per GPU (default: {Config.MAX_COLMAP_PER_GPU})")
@@ -1306,12 +1314,14 @@ Examples:
     
     # Determine retry behavior (default is True, unless --no_retry_failed is specified)
     retry_failed = not args.no_retry_failed
+    # Determine restart behavior (default is True = always restart from COLMAP)
+    force_restart_colmap = not args.retry_shape_matching_only
     
     # Run scheduler
     if args.mode == "streaming":
-        streaming_mode(args.dataset, config, auto_detect=args.auto_detect, retry_failed=retry_failed)
+        streaming_mode(args.dataset, config, auto_detect=args.auto_detect, retry_failed=retry_failed, force_restart_colmap=force_restart_colmap)
     elif args.mode == "manual":
-        manual_mode(args.dataset, args.n_folders, config, retry_failed=retry_failed)
+        manual_mode(args.dataset, args.n_folders, config, retry_failed=retry_failed, force_restart_colmap=force_restart_colmap)
 
 if __name__ == "__main__":
     main()

@@ -22,32 +22,28 @@ class ForwardRenderer:
             }
         })
         '''
-        if cfg.renderer.mesh.path is not None:
-            self.scene=load_uv_obj_to_mitsuba_scene(cfg.renderer.mesh.path)
-        elif cfg.renderer.mesh.mitsuba_scene:
-            self.scene = create_rectangle_scene(
-                center=cfg.renderer.mesh.rectangle.center,
-                width=cfg.renderer.mesh.rectangle.width,
-                length=cfg.renderer.mesh.rectangle.length
-            )
+        # Load center, width, and length from bbox_json file
+        import os
+        bbox_json_path = cfg.renderer.mesh.rectangle.bbox_json
+        if os.path.exists(bbox_json_path):
+            with open(bbox_json_path, 'r') as f:
+                bbox_data = json.load(f)
+            center = bbox_data['bbox_center']
+            bbox_size = bbox_data['bbox_size']
+            width = bbox_size[0]
+            length = bbox_size[1]
+            print(f"Loading rectangle scene from bbox.json: center={center}, width={width}, length={length}")
         else:
-            # Load center from bbox_json file
-            import os
-            bbox_json_path = cfg.renderer.mesh.rectangle.bbox_json
-            if os.path.exists(bbox_json_path):
-                with open(bbox_json_path, 'r') as f:
-                    bbox_data = json.load(f)
-                center = bbox_data['bbox_center']
-                print(f"Loading rectangle scene with center from bbox.json: {center}")
-            else:
-                center = cfg.renderer.mesh.rectangle.center
-                print(f"bbox.json not found, using center from config: {center}")
-            
-            self.scene = create_rectangle_scene_params(
-                center=center,
-                width=cfg.renderer.mesh.rectangle.width,
-                length=cfg.renderer.mesh.rectangle.length
-            )
+            center = cfg.renderer.mesh.rectangle.center
+            width = cfg.renderer.mesh.rectangle.width
+            length = cfg.renderer.mesh.rectangle.length
+            print(f"bbox.json not found, using config: center={center}, width={width}, length={length}")
+        
+        self.scene = create_rectangle_scene_params(
+            center=center,
+            width=width,
+            length=length
+        )
         self.material = material.to(self.device)
 
         print("type",cfg.renderer.emitter.type)

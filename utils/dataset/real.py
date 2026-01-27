@@ -682,7 +682,11 @@ class RealValDataset(Dataset):
         # Load metadata from JSON file
         metadata_path = cfg.data.metadata_path
         camera_metadata_path = cfg.data.camera_metadata_path
-        self.metadata, self.camera_metadata = load_metadata(self.colmap_camera, metadata_path, camera_metadata_path, gt_folder, cfg, self.debug, self.debug_num, 'val', self.turntable_center, self.turntable_axis, self.R_c2g, self.t_c2g, self.start_idx)
+        if cfg.data.valid_on_train_set:
+            split = 'train'
+        else:
+            split = 'val'
+        self.metadata, self.camera_metadata = load_metadata(self.colmap_camera, metadata_path, camera_metadata_path, gt_folder, cfg, self.debug, self.debug_num, split, self.turntable_center, self.turntable_axis, self.R_c2g, self.t_c2g, self.start_idx)
         if self.valid_num > 0:
             self.metadata = self.metadata[:self.valid_num]
         self.directions = get_ray_directions(self.img_hw[0], self.img_hw[1], self.focal, self.cx, self.cy, self.distortion)

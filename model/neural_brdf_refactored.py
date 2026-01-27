@@ -530,7 +530,7 @@ class AnisotropicLatentTexturedModel(LightningModule):
         # 1. Create LatentTexture
         self.texture_resolution = getattr(cfg, 'texture_resolution', 256)
         blur_config = {
-            'blur_sigma0': 8.0,
+            'blur_sigma0': 2.0,
             'blur_half_life': 3333
         } if self.Gaussian_blur else None
         
@@ -1046,9 +1046,10 @@ class MultiMaterialLatentBRDF(LightningModule):
         
         # Store configuration
         self.cfg = cfg
-        self.num_materials = cfg.num_materials
         data_folder = getattr(cfg, 'data_folder', None)
-        self.start_material_id = cfg.start_material_id
+        
+        # Read training list from txt file
+        self.training_list_path = getattr(cfg, 'training_list_path', None)
         # Latent dimensions
         self.latent_dim = cfg.latent_dim
         self.predict_frame = cfg.predict_frame
@@ -1112,17 +1113,20 @@ class MultiMaterialLatentBRDF(LightningModule):
         
         root = Path(data_folder)
         
-        # Find material folders (named by material ID: 0, 1, 2, ...)
-        material_folders = sorted([
-            d for d in root.iterdir() 
-            if d.is_dir() and d.name.isdigit() and (d / "observations").is_dir()
-        ], key=lambda x: int(x.name))
-        material_folders = material_folders[self.start_material_id:self.start_material_id+self.num_materials]
+        # Build material folders from training list
+        training_list = []
+        with open(self.training_list_path, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if line:  # Skip empty lines
+                    training_list.append(int(line))
+        material_folders = [root / str(mid) for mid in training_list]
         materials = []
         material_point_offsets = {}
         global_point_offset = 0
         
-        print(f"Found {len(material_folders)} potential material folders")
+        print(f"Training list path: {self.training_list_path}")
+        print(f"Loaded {len(training_list)} materials from training list: {training_list}")
         
         for mat_folder in material_folders:
             material_id = int(mat_folder.name)
