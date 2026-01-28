@@ -4,7 +4,7 @@ latent_dim: 16
 predict_frame: True
 use_nerfstudio_sh: False
 
-use_latent_bank: True
+use_latent_bank: False
 observations_folder: ${dataset_folder}/observations
 
 num_materials: ${data.num_materials}

@@ -1,0 +1,64 @@
+theta_half: tensor([0.3927], device='cuda:0', dtype=torch.float64), fi_half: tensor([3.1416], device='cuda:0', dtype=torch.float64), theta_diff: tensor([0.3927], device='cuda:0', dtype=torch.float64), fi_diff: tensor([0.], device='cuda:0', dtype=torch.float64)
+ind_phi: tensor([0], device='cuda:0'), ind_theta_d: tensor([22], device='cuda:0'), ind_theta_h: tensor([45], device='cuda:0')
+ind: tensor([732960], device='cuda:0')
+0.021385 0.017398 0.012969
+theta_half: tensor([0.3927], device='cuda:0', dtype=torch.float64), fi_half: tensor([3.1416], device='cuda:0', dtype=torch.float64), theta_diff: tensor([0.3927], device='cuda:0', dtype=torch.float64), fi_diff: tensor([0.], device='cuda:0', dtype=torch.float64)
+ind_phi: tensor([0], device='cuda:0'), ind_theta_d: tensor([22], device='cuda:0'), ind_theta_h: tensor([45], device='cuda:0')
+ind: tensor([732960], device='cuda:0')
+0.021385 0.017398 0.012969
+theta_half: tensor([0.3927], device='cuda:0', dtype=torch.float64), fi_half: tensor([3.1416], device='cuda:0', dtype=torch.float64), theta_diff: tensor([0.3927], device='cuda:0', dtype=torch.float64), fi_diff: tensor([0.], device='cuda:0', dtype=torch.float64)
+ind_phi: tensor([0], device='cuda:0'), ind_theta_d: tensor([22], device='cuda:0'), ind_theta_h: tensor([45], device='cuda:0')
+ind: tensor([732960], device='cuda:0')
+0.021385 0.017398 0.012969
+theta_half: tensor([0.3927], device='cuda:0', dtype=torch.float64), fi_half: tensor([3.1416], device='cuda:0', dtype=torch.float64), theta_diff: tensor([0.3927], device='cuda:0', dtype=torch.float64), fi_diff: tensor([0.], device='cuda:0', dtype=torch.float64)
+ind_phi: tensor([0], device='cuda:0'), ind_theta_d: tensor([22], device='cuda:0'), ind_theta_h: tensor([45], device='cuda:0')
+ind: tensor([732960], device='cuda:0')
+0.021385 0.017398 0.012969
+theta_half: tensor([0.3927], device='cuda:0', dtype=torch.float64), fi_half: tensor([3.1416], device='cuda:0', dtype=torch.float64), theta_diff: tensor([0.3927], device='cuda:0', dtype=torch.float64), fi_diff: tensor([0.], device='cuda:0', dtype=torch.float64)
+ind_phi: tensor([0], device='cuda:0'), ind_theta_d: tensor([22], device='cuda:0'), ind_theta_h: tensor([45], device='cuda:0')
+ind: tensor([732960], device='cuda:0')
+0.021385 0.017398 0.012969
+theta_half: tensor([0.3927], device='cuda:0', dtype=torch.float64), fi_half: tensor([3.1416], device='cuda:0', dtype=torch.float64), theta_diff: tensor([0.3927], device='cuda:0', dtype=torch.float64), fi_diff: tensor([0.], device='cuda:0', dtype=torch.float64)
+ind_phi: tensor([0], device='cuda:0'), ind_theta_d: tensor([22], device='cuda:0'), ind_theta_h: tensor([45], device='cuda:0')
+ind: tensor([732960], device='cuda:0')
+0.021385 0.017398 0.012969
+theta_half: tensor([0.3927], device='cuda:0', dtype=torch.float64), fi_half: tensor([3.1416], device='cuda:0', dtype=torch.float64), theta_diff: tensor([0.3927], device='cuda:0', dtype=torch.float64), fi_diff: tensor([0.], device='cuda:0', dtype=torch.float64)
+ind_phi: tensor([0], device='cuda:0'), ind_theta_d: tensor([22], device='cuda:0'), ind_theta_h: tensor([45], device='cuda:0')
+ind: tensor([732960], device='cuda:0')
+0.021385 0.017398 0.012969
+theta_half: tensor([0.3927], device='cuda:0', dtype=torch.float64), fi_half: tensor([3.1416], device='cuda:0', dtype=torch.float64), theta_diff: tensor([0.3927], device='cuda:0', dtype=torch.float64), fi_diff: tensor([0.], device='cuda:0', dtype=torch.float64)
+ind_phi: tensor([0], device='cuda:0'), ind_theta_d: tensor([22], device='cuda:0'), ind_theta_h: tensor([45], device='cuda:0')
+ind: tensor([732960], device='cuda:0')
+0.021385 0.017398 0.012969
+theta_half: tensor([0.], device='cuda:0', dtype=torch.float64), fi_half: tensor([1.5708], device='cuda:0', dtype=torch.float64), theta_diff: tensor([0.7854], device='cuda:0', dtype=torch.float64), fi_diff: tensor([1.5708], device='cuda:0', dtype=torch.float64)
+ind_phi: tensor([90], device='cuda:0'), ind_theta_d: tensor([45], device='cuda:0'), ind_theta_h: tensor([0], device='cuda:0')
+ind: tensor([8190], device='cuda:0')
+24.367003 20.023463 4.524876
+theta_half: tensor([0.3655], device='cuda:0', dtype=torch.float64), fi_half: tensor([1.9635], device='cuda:0', dtype=torch.float64), theta_diff: tensor([0.7119], device='cuda:0', dtype=torch.float64), fi_diff: tensor([1.5708], device='cuda:0', dtype=torch.float64)
+ind_phi: tensor([90], device='cuda:0'), ind_theta_d: tensor([40], device='cuda:0'), ind_theta_h: tensor([43], device='cuda:0')
+ind: tensor([703890], device='cuda:0')
+0.034686 0.026714 0.021905
+theta_half: tensor([0.6155], device='cuda:0', dtype=torch.float64), fi_half: tensor([2.3562], device='cuda:0', dtype=torch.float64), theta_diff: tensor([0.5236], device='cuda:0', dtype=torch.float64), fi_diff: tensor([1.5708], device='cuda:0', dtype=torch.float64)
+ind_phi: tensor([90], device='cuda:0'), ind_theta_d: tensor([30], device='cuda:0'), ind_theta_h: tensor([56], device='cuda:0')
+ind: tensor([912690], device='cuda:0')
+0.013723 0.010780 0.007721
+theta_half: tensor([0.7459], device='cuda:0', dtype=torch.float64), fi_half: tensor([2.7489], device='cuda:0', dtype=torch.float64), theta_diff: tensor([0.2740], device='cuda:0', dtype=torch.float64), fi_diff: tensor([1.5708], device='cuda:0', dtype=torch.float64)
+ind_phi: tensor([90], device='cuda:0'), ind_theta_d: tensor([15], device='cuda:0'), ind_theta_h: tensor([62], device='cuda:0')
+ind: tensor([1007190], device='cuda:0')
+0.009564 0.007237 0.004780
+theta_half: tensor([0.7854], device='cuda:0', dtype=torch.float64), fi_half: tensor([3.1416], device='cuda:0', dtype=torch.float64), theta_diff: tensor([0.], device='cuda:0', dtype=torch.float64), fi_diff: tensor([0.], device='cuda:0', dtype=torch.float64)
+ind_phi: tensor([0], device='cuda:0'), ind_theta_d: tensor([0], device='cuda:0'), ind_theta_h: tensor([63], device='cuda:0')
+ind: tensor([1020600], device='cuda:0')
+0.009138 0.006800 0.004446
+theta_half: tensor([0.7459], device='cuda:0', dtype=torch.float64), fi_half: tensor([-2.7489], device='cuda:0', dtype=torch.float64), theta_diff: tensor([0.2740], device='cuda:0', dtype=torch.float64), fi_diff: tensor([-1.5708], device='cuda:0', dtype=torch.float64)
+ind_phi: tensor([90], device='cuda:0'), ind_theta_d: tensor([15], device='cuda:0'), ind_theta_h: tensor([62], device='cuda:0')
+ind: tensor([1007190], device='cuda:0')
+0.009564 0.007237 0.004780
+theta_half: tensor([0.6155], device='cuda:0', dtype=torch.float64), fi_half: tensor([-2.3562], device='cuda:0', dtype=torch.float64), theta_diff: tensor([0.5236], device='cuda:0', dtype=torch.float64), fi_diff: tensor([-1.5708], device='cuda:0', dtype=torch.float64)
+ind_phi: tensor([90], device='cuda:0'), ind_theta_d: tensor([30], device='cuda:0'), ind_theta_h: tensor([56], device='cuda:0')
+ind: tensor([912690], device='cuda:0')
+0.013723 0.010780 0.007721
+theta_half: tensor([0.3655], device='cuda:0', dtype=torch.float64), fi_half: tensor([-1.9635], device='cuda:0', dtype=torch.float64), theta_diff: tensor([0.7119], device='cuda:0', dtype=torch.float64), fi_diff: tensor([-1.5708], device='cuda:0', dtype=torch.float64)
+ind_phi: tensor([90], device='cuda:0'), ind_theta_d: tensor([40], device='cuda:0'), ind_theta_h: tensor([43], device='cuda:0')
+ind: tensor([703890], device='cuda:0')
+0.034686 0.026714 0.021905

@@ -113,6 +113,34 @@
                 "data.num_materials=1",
                 "data.start_material_id=100"
             ]
+        },
+        {
+            "name": "Debug: test.sh (MERL BRDF Stage1)",
+            "type": "python",
+            "request": "launch",
+            "program": "main.py",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "python": "/home/featurize/work/capture_env/bin/python",
+            "env": {
+                "CUDA_VISIBLE_DEVICES": "0"
+            },
+            "args": [
+                "renderer=realcapture_area_emitter",
+                "material=merl_brdf_model",
+                "experiment_name=mat3_overfit_debug",
+                "output_folder=/home/featurize/data/output",
+                "model.loss.recon_loss.name=l1",
+                "data.importance_sampling=False",
+                "data.use_single_chunk_sampling=False",
+                "data.uniform_sampling=False",
+                "dataset_folder=/home/featurize/data",
+                "model.stage=1",
+                "model.freeze_decoder=False",
+                "model.trainer.max_epochs=51",
+                "model.trainer.limit_train_batches=512",
+                "data.rays_num=32768"
+            ]
         }
 
 

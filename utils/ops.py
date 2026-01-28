@@ -250,3 +250,46 @@ def SH2RGB(sh):
     """
     C0 = 0.28209479177387814
     return sh * C0 + 0.5
+
+def rotate_to_canonical_frame(wi, wo):
+    """
+    Rotate wi and wo around z-axis by the same angle to make wi.x = 0.
+    
+    This exploits isotropy by rotating the coordinate frame so that the incoming 
+    direction lies in the yz-plane (x component = 0). The outgoing direction is 
+    rotated by the same amount.
+    
+    Args:
+        wi: [B, 3] incoming direction vectors
+        wo: [B, 3] outgoing direction vectors
+    
+    Returns:
+        wi_rotated: [B, 3] rotated incoming vectors with x component = 0
+        wo_rotated: [B, 3] rotated outgoing vectors
+    """
+    # Calculate rotation angle: negative of wi's azimuthal angle
+    # phi_wi = atan2(wi.y, wi.x)
+    # We want to rotate by -phi_wi to make wi.x = 0
+    phi_wi = torch.atan2(wi[:, 1], wi[:, 0])  # [B]
+    
+    # Rotation matrix around z-axis by angle -phi_wi:
+    # [cos(-phi)  -sin(-phi)  0]   [cos(phi)   sin(phi)  0]
+    # [sin(-phi)   cos(-phi)  0] = [-sin(phi)  cos(phi)  0]
+    # [   0           0       1]   [   0          0      1]
+    
+    cos_phi = torch.cos(phi_wi)  # [B]
+    sin_phi = torch.sin(phi_wi)  # [B]
+    
+    # Apply rotation to wi
+    wi_rotated = torch.zeros_like(wi)
+    wi_rotated[:, 0] = cos_phi * wi[:, 0] + sin_phi * wi[:, 1]
+    wi_rotated[:, 1] = -sin_phi * wi[:, 0] + cos_phi * wi[:, 1]
+    wi_rotated[:, 2] = wi[:, 2]
+    
+    # Apply same rotation to wo
+    wo_rotated = torch.zeros_like(wo)
+    wo_rotated[:, 0] = cos_phi * wo[:, 0] + sin_phi * wo[:, 1]
+    wo_rotated[:, 1] = -sin_phi * wo[:, 0] + cos_phi * wo[:, 1]
+    wo_rotated[:, 2] = wo[:, 2]
+    
+    return wi_rotated, wo_rotated

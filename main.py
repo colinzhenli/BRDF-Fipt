@@ -11,7 +11,7 @@ from renderer import ForwardRenderer
 from trainers import get_trainer_class
 from model.brdf import SvPBRBRDF
 from torch.utils.data import DataLoader
-from utils.dataset import RealImageDataset, RealValDataset, MultiMaterialPointDataset
+from utils.dataset import RealImageDataset, RealValDataset, MultiMaterialPointDataset, MERLBRDFIterableDataset,MERLBRDFIterableDataset_hd,MERLBRDFFixedDataset_hd,MERLBRDFFixedDataset
 import hydra
 from omegaconf import DictConfig
 from pytorch_lightning.strategies import DDPStrategy
@@ -101,32 +101,64 @@ def main(cfg):
             model_dict.update(pretrained_dict)
             model.load_state_dict(model_dict)
             print(f"=> loaded material checkpoint successfully. {len(pretrained_dict)}/{len([k for k in model_dict if k.startswith('material.')])} material parameters loaded.")
+
     print("after trainer init")
     print("==> initializing data ...")   
     if cfg.data.dataset_name == "real":
         train_dataset = RealImageDataset(cfg, gt_folder=cfg.gt_folder, split="train")
         val_dataset = RealValDataset(cfg, gt_folder=cfg.gt_folder)
     elif cfg.data.dataset_name == "points":
-        train_dataset = MultiMaterialPointDataset(cfg, root_folder=cfg.dataset_folder, split="train")
+        '''
+        train_dataset = MERLBRDFIterableDataset(cfg,data_folder=cfg.dataset_folder,batch_size=1048576,split="train")
         if cfg.data.debug & cfg.data.valid_on_train_set:
-            val_dataset = MultiMaterialPointDataset(cfg, root_folder=cfg.dataset_folder, split="train")
+            val_dataset = MERLBRDFIterableDataset(cfg,data_folder=cfg.dataset_folder,batch_size=1048576,split="val")
         else:
-            val_dataset = MultiMaterialPointDataset(cfg, root_folder=cfg.dataset_folder, split="val")
+            val_dataset = MERLBRDFIterableDataset(cfg,data_folder=cfg.dataset_folder,batch_size=1048576,split="val")
+        '''
+        
+        if cfg.model.stage == 1:
+            train_dataset = MERLBRDFIterableDataset(cfg,data_folder=cfg.dataset_folder,batch_size=1048576,split="train")
+            if cfg.data.debug & cfg.data.valid_on_train_set:
+                val_dataset = MERLBRDFIterableDataset(cfg,data_folder=cfg.dataset_folder,batch_size=1048576,split="val")
+            else:
+                val_dataset = MERLBRDFIterableDataset(cfg,data_folder=cfg.dataset_folder,batch_size=1048576,split="val")
+        else:
+            train_dataset = MERLBRDFFixedDataset(cfg,data_folder=cfg.dataset_folder,batch_size=100,split="train")
+            if cfg.data.debug & cfg.data.valid_on_train_set:
+                val_dataset = MERLBRDFFixedDataset(cfg,data_folder=cfg.dataset_folder,batch_size=1048576,split="val")
+            else:
+                val_dataset = MERLBRDFFixedDataset(cfg,data_folder=cfg.dataset_folder,batch_size=1048576,split="val")
+        '''
+        if cfg.model.stage == 1:
+            train_dataset = MERLBRDFIterableDataset_hd(cfg,data_folder=cfg.dataset_folder,batch_size=1048576,split="train")
+            if cfg.data.debug & cfg.data.valid_on_train_set:
+                val_dataset = MERLBRDFIterableDataset_hd(cfg,data_folder=cfg.dataset_folder,batch_size=1048576,split="val")
+            else:
+                val_dataset = MERLBRDFIterableDataset_hd(cfg,data_folder=cfg.dataset_folder,batch_size=1048576,split="val")
+        else:
+            train_dataset = MERLBRDFFixedDataset_hd(cfg,data_folder=cfg.dataset_folder,n_samples=100,material_id=0,split="train")
+            if cfg.data.debug & cfg.data.valid_on_train_set:
+                val_dataset = MERLBRDFFixedDataset_hd(cfg,data_folder=cfg.dataset_folder,n_samples=1048576,material_id=0,split="val")
+            else:
+                val_dataset = MERLBRDFFixedDataset_hd(cfg,data_folder=cfg.dataset_folder,n_samples=1048576,material_id=0,split="val")
+        '''
     else:
         raise ValueError(f"Invalid dataset name: {cfg.data.dataset_name}")
+
     train_loader = DataLoader(
         train_dataset,
         batch_size=cfg.data.batch_size,
         num_workers=cfg.data.num_workers,
-        pin_memory=True,
+        #pin_memory=True,
     )
+
 
     val_loader = DataLoader(
         val_dataset,
         batch_size=1,
         num_workers=cfg.data.num_workers,
     )
-
+    
     print("==> initializing logger ...")
     logger = hydra.utils.instantiate(cfg.model.logger, save_dir=cfg.exp_output_root_path)
 
@@ -143,21 +175,27 @@ def main(cfg):
     lr_monitor = LearningRateMonitor(logging_interval='step')
 
     print("==> initializing trainer ...")
-
+    
     trainer = pl.Trainer(
         callbacks=[checkpoint_callback, lr_monitor], logger=logger, 
         track_grad_norm=2,  # Log L2 norm of gradients
-        # gradient_clip_val=1.0,  # Optional: clip gradients
+        # gradient_clip_val=1.0,  # Optional: clip gradients,
+        resume_from_checkpoint=None,
         **cfg.model.trainer
     )
-    # tracer = VizTracer()
-    # tracer.start()
+    tracer = VizTracer()
+    tracer.start()
+    print(
+        "current_epoch:", trainer.current_epoch,
+        "max_epochs:", trainer.max_epochs
+    )
     if cfg.model.test:
         trainer.validate(model, val_loader)
     else:
+        # Explicitly pass ckpt_path=None to prevent auto-resuming from last.ckpt
         trainer.fit(model, train_loader, val_loader)
-    # tracer.stop()
-    # tracer.save(f"Ray-rect-intersection_tracer.json")
+    tracer.stop()
+    tracer.save(f"Ray-rect-intersection_tracer.json")
     """  Skipping testing for now """
     # test_results = trainer.test(model, dataloaders=val_loader)
 
