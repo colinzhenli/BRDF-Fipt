@@ -1,0 +1,64 @@
+theta_half: 0.392699, fi_half: 3.141593, theta_diff: 0.392699, fi_diff: 0.000000
+phi_diff_index: 0, theta_diff_index: 22, theta_half_index: 45
+ind: 732960
+0.021385 0.017398 0.012969
+theta_half: 0.392699, fi_half: 3.141593, theta_diff: 0.392699, fi_diff: 0.000000
+phi_diff_index: 0, theta_diff_index: 22, theta_half_index: 45
+ind: 732960
+0.021385 0.017398 0.012969
+theta_half: 0.392699, fi_half: 3.141593, theta_diff: 0.392699, fi_diff: 0.000000
+phi_diff_index: 0, theta_diff_index: 22, theta_half_index: 45
+ind: 732960
+0.021385 0.017398 0.012969
+theta_half: 0.392699, fi_half: 3.141593, theta_diff: 0.392699, fi_diff: 0.000000
+phi_diff_index: 0, theta_diff_index: 22, theta_half_index: 45
+ind: 732960
+0.021385 0.017398 0.012969
+theta_half: 0.392699, fi_half: 3.141593, theta_diff: 0.392699, fi_diff: 0.000000
+phi_diff_index: 0, theta_diff_index: 22, theta_half_index: 45
+ind: 732960
+0.021385 0.017398 0.012969
+theta_half: 0.392699, fi_half: 3.141593, theta_diff: 0.392699, fi_diff: 0.000000
+phi_diff_index: 0, theta_diff_index: 22, theta_half_index: 45
+ind: 732960
+0.021385 0.017398 0.012969
+theta_half: 0.392699, fi_half: 3.141593, theta_diff: 0.392699, fi_diff: 0.000000
+phi_diff_index: 0, theta_diff_index: 22, theta_half_index: 45
+ind: 732960
+0.021385 0.017398 0.012969
+theta_half: 0.392699, fi_half: 3.141593, theta_diff: 0.392699, fi_diff: 0.000000
+phi_diff_index: 0, theta_diff_index: 22, theta_half_index: 45
+ind: 732960
+0.021385 0.017398 0.012969
+theta_half: 0.000000, fi_half: 1.570796, theta_diff: 0.785398, fi_diff: 1.570796
+phi_diff_index: 90, theta_diff_index: 45, theta_half_index: 0
+ind: 8190
+24.367002 20.023462 4.524876
+theta_half: 0.365490, fi_half: 1.963495, theta_diff: 0.711911, fi_diff: 1.570796
+phi_diff_index: 90, theta_diff_index: 40, theta_half_index: 43
+ind: 703890
+0.034686 0.026714 0.021905
+theta_half: 0.615480, fi_half: 2.356194, theta_diff: 0.523599, fi_diff: 1.570796
+phi_diff_index: 90, theta_diff_index: 30, theta_half_index: 56
+ind: 912690
+0.013723 0.010780 0.007721
+theta_half: 0.745853, fi_half: 2.748894, theta_diff: 0.274014, fi_diff: 1.570796
+phi_diff_index: 90, theta_diff_index: 15, theta_half_index: 62
+ind: 1007190
+0.009564 0.007237 0.004780
+theta_half: 0.785398, fi_half: 3.141593, theta_diff: 0.000000, fi_diff: 0.000000
+phi_diff_index: 0, theta_diff_index: 0, theta_half_index: 63
+ind: 1020600
+0.009138 0.006800 0.004446
+theta_half: 0.745853, fi_half: -2.748894, theta_diff: 0.274014, fi_diff: -1.570796
+phi_diff_index: 90, theta_diff_index: 15, theta_half_index: 62
+ind: 1007190
+0.009564 0.007237 0.004780
+theta_half: 0.615480, fi_half: -2.356194, theta_diff: 0.523599, fi_diff: -1.570796
+phi_diff_index: 89, theta_diff_index: 29, theta_half_index: 56
+ind: 912509
+0.013591 0.010651 0.007602
+theta_half: 0.365490, fi_half: -1.963495, theta_diff: 0.711911, fi_diff: -1.570796
+phi_diff_index: 90, theta_diff_index: 40, theta_half_index: 43
+ind: 703890
+0.034686 0.026714 0.021905

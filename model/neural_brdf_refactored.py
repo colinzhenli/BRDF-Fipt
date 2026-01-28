@@ -1408,3 +1408,242 @@ class MultiMaterialLatentBRDF(LightningModule):
         brdf_weight = brdf / pdf.clamp(min=1e-6)
         
         return wi, pdf, brdf_weight
+
+class MERLBRDF(LightningModule):
+    """
+    Multi-material BRDF model using auto-decoder architecture.
+    - Per-material latent codes (M materials)
+    - Per-point latent codes (sum of points across all materials)
+    - Shared MLP decoder across all materials
+    
+    Expected folder structure:
+        data_folder/
+            0/                      # material_id = 0
+                point_metadata.json # contains {"num_points": N, ...}
+            1/                      # material_id = 1
+                point_metadata.json
+            ...
+    """
+    def __init__(self, cfg):
+        super().__init__()
+        
+        # Store configuration
+        self.cfg = cfg
+        self.num_materials = cfg.num_materials
+        data_folder = getattr(cfg, 'data_folder', None)
+        self.start_material_id = cfg.start_material_id
+        # Latent dimensions
+        self.latent_dim = cfg.latent_dim
+        self.predict_frame = cfg.predict_frame
+        self.total_latent_dim = self.latent_dim + (6 if self.predict_frame else 0)
+        # BRDF decoder settings
+        self.use_pos_enc = cfg.use_pos_enc
+        self.different_decoder = cfg.different_decoder
+
+        total_points=120
+        self.point_latent_bank = nn.Embedding(
+            num_embeddings=total_points,
+            embedding_dim=self.total_latent_dim
+        )
+        nn.init.normal_(self.point_latent_bank.weight, mean=0.0, std=cfg.init_std)
+        
+        if self.predict_frame:
+            # Last 6 dimensions: normal (0,0,1) and tangent (0,1,0)
+            with torch.no_grad():
+                self.point_latent_bank.weight[:, -6:-3] = torch.tensor([0.0, 0.0, 1.0])  # normal
+                self.point_latent_bank.weight[:, -3:] = torch.tensor([0.0, 1.0, 0.0])    # tangent
+        
+        # Shared BRDF decoder
+        self.decoder = BRDFDecoder(
+            cfg=cfg.decoder,
+            latent_dim=self.latent_dim,
+            use_pos_enc=self.use_pos_enc,
+            different_decoder=self.different_decoder
+        )
+        
+        print("Initialization complete!")
+    
+    def eval_brdf(
+        self,
+        wi,
+        wo,
+        material_id,
+    ):
+        """
+        Evaluate BRDF at given geometry and directions.
+        
+        Args:
+            pos: [B, 3] 3D positions
+            wi: [B, 3] incoming light directions (world space)
+            wo: [B, 3] outgoing view directions (world space)
+            normal: [B, 3] normals (world space)
+            latent: Ignored (latents retrieved from banks)
+            point_ids: [B] LOCAL point indices (per-material, from dataloader)
+            material_ids: [B] material indices (required for global point ID computation)
+        
+        Returns:
+            brdf: [B, 3] BRDF values
+            normal: [B, 3] normals (local space)
+            pdf: [B, 1] probability density
+        """
+        
+        # Retrieve latents from banks
+        #print("material_id",material_id)
+        latent = self.point_latent_bank(material_id)        # [B, latent_dim]
+
+        normal_local = torch.zeros_like(wi)
+        normal_local[..., 2] = 1.0  # Normal is always (0,0,1) in local space
+        
+        print("latent",torch.mean(latent),torch.std(latent))
+        # Encode directions
+        enc_dir = self.decoder.encode_directions(wi, wo, normal_local)
+        
+        # Decode BRDF
+        if self.different_decoder:
+            # Decode each channel separately
+            brdf_r = self.decoder(enc_dir, latent[:,:self.latent_dim], channel='r')
+            brdf_g = self.decoder(enc_dir, latent[:,:self.latent_dim], channel='g')
+            brdf_b = self.decoder(enc_dir, latent[:,:self.latent_dim], channel='b')
+            brdf = torch.cat([brdf_r, brdf_g, brdf_b], dim=-1)  # [B, 3]
+        else:
+            brdf = self.decoder(enc_dir, latent[:, :self.latent_dim])  # [B, 1] or [B, 3]
+            if brdf.shape[-1] == 1:
+                brdf = brdf.expand(-1, 3)  # Expand to RGB
+        
+        
+        return brdf
+    
+    def directions_to_rusinkiewicz(self, wi, wo):
+        """
+        Convert incoming (wi) and outgoing (wo) directions to Rusinkiewicz parameterization.
+        
+        This follows the MERL BRDF reference implementation (BRDFRead.cpp).
+        
+        Rusinkiewicz parameterization:
+        - theta_h: angle between half-vector and normal [0, π/2]
+        - theta_d: polar angle of rotated incoming vector [0, π/2]
+        - phi_d: azimuthal angle of rotated incoming vector [0, π]
+        
+        The key insight is that theta_d is NOT simply half the angle between wi and wo.
+        Instead, we rotate wi into the half-vector's coordinate frame and measure its angle.
+        
+        Args:
+            wi: [B, 3] incoming light directions (normalized)
+            wo: [B, 3] outgoing view directions (normalized)
+        
+        Returns:
+            theta_h: [B] half-angle [0, pi/2]
+            theta_d: [B] difference angle [0, pi/2]
+            phi_d: [B] azimuthal difference [0, pi]
+        """
+        # Normalize directions
+        wi = NF.normalize(wi, dim=-1)
+        wo = NF.normalize(wo, dim=-1)
+        
+        # Compute half-vector
+        h = NF.normalize(wi + wo, dim=-1)
+        
+        # theta_h: angle between half-vector and surface normal (z-axis)
+        theta_h = torch.acos(torch.clamp(h[..., 2], -1.0, 1.0))
+        
+        # phi_h: azimuthal angle of half-vector
+        phi_h = torch.atan2(h[..., 1], h[..., 0])
+        
+        # Rotate wi into half-vector coordinate frame
+        # Step 1: Rotate by -phi_h around z-axis (normal)
+        cos_ph = torch.cos(-phi_h)
+        sin_ph = torch.sin(-phi_h)
+        wi_rot1_x = wi[..., 0] * cos_ph - wi[..., 1] * sin_ph
+        wi_rot1_y = wi[..., 0] * sin_ph + wi[..., 1] * cos_ph
+        wi_rot1_z = wi[..., 2]
+        
+        # Step 2: Rotate by -theta_h around y-axis (binormal)
+        cos_th = torch.cos(-theta_h)
+        sin_th = torch.sin(-theta_h)
+        diff_x = wi_rot1_x * cos_th + wi_rot1_z * sin_th
+        diff_y = wi_rot1_y
+        diff_z = -wi_rot1_x * sin_th + wi_rot1_z * cos_th
+        
+        # theta_d: polar angle of the rotated difference vector
+        theta_d = torch.acos(torch.clamp(diff_z, -1.0, 1.0))
+        
+        # phi_d: azimuthal angle of the rotated difference vector
+        phi_d = torch.atan2(diff_y, diff_x)
+        
+        # MERL uses reciprocity: phi_d in [0, π] only
+        # If phi_d < 0, add π; if phi_d > π, subtract π
+        phi_d = torch.where(phi_d < 0, phi_d + math.pi, phi_d)
+        
+        return theta_h, theta_d, phi_d
+    
+    def sample_brdf(
+        self,
+        params,
+        pos,
+        sample1,
+        sample2,
+        wo,
+        normal,
+        latent=None,
+        batch_mask=None,
+        point_ids=None,
+        material_ids=None
+    ):
+        """
+        Sample BRDF using importance sampling.
+        
+        Args:
+            params: Ground truth parameters (not used)
+            pos: [B, 3] 3D positions
+            sample1: [B] uniform samples [0,1]
+            sample2: [B, 2] uniform samples [0,1]^2
+            wo: [B, 3] outgoing view directions (world space)
+            normal: [B, 3] normals (world space)
+            latent: Ignored
+            batch_mask: Batch mask
+            point_ids: [B] LOCAL point indices (per-material, from dataloader)
+            material_ids: [B] material indices
+        
+        Returns:
+            wi: [B, 3] sampled incoming light directions
+            pdf: [B, 1] probability density
+            brdf_weight: [B, 3] BRDF / pdf
+        """
+        # Simple cosine-weighted hemisphere sampling (can use proxy BRDF)
+        # This is a placeholder - implement proper importance sampling if needed
+        
+        # Cosine-weighted sampling
+        theta = torch.asin(torch.sqrt(sample2[..., 0]))
+        phi = 2 * math.pi * sample2[..., 1]
+        
+        # Local space directions
+        wi_local = torch.stack([
+            torch.sin(theta) * torch.cos(phi),
+            torch.sin(theta) * torch.sin(phi),
+            torch.cos(theta)
+        ], dim=-1)
+        
+        # Transform to world space
+        # Build TBN frame
+        up = torch.tensor([0.0, 1.0, 0.0], device=normal.device).expand_as(normal)
+        tangent = torch.cross(up, normal)
+        tangent_len = tangent.norm(dim=-1, keepdim=True)
+        tangent = tangent / (tangent_len + 1e-8)
+        bitangent = torch.cross(normal, tangent)
+        
+        # Local to world
+        wi = (wi_local[..., 0:1] * tangent + 
+              wi_local[..., 1:2] * bitangent + 
+              wi_local[..., 2:3] * normal)
+        
+        # Evaluate BRDF at sampled direction
+        brdf, pdf, _ = self.eval_brdf(
+            None, pos, wi, wo, normal,
+            point_ids=point_ids,
+            material_ids=material_ids
+        )
+        
+        # BRDF weight = BRDF / pdf (for Monte Carlo integration)
+        brdf_weight = brdf / pdf.clamp(min=1e-6)
+        
+        return wi, pdf, brdf_weight

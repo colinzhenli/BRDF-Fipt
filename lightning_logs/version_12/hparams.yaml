@@ -1,0 +1,254 @@
+data:
+  train_num: 44
+  val_num: 9
+  test_num: 1
+  num_workers: 0
+  rays_num: 32768
+  ccm:
+  - - 3.6724617
+    - -0.94800931
+    - 0.08428962
+  - - -0.44629176
+    - 2.96095854
+    - -1.17898539
+  - - -0.47909694
+    - -0.39991418
+    - 2.10705124
+  chunk_size: 200
+  switch_iters: 3000
+  random_chunks: true
+  importance_sampling: false
+  use_single_chunk_sampling: false
+  uniform_sampling: false
+  importance_sampling_num: 32768
+  batch_size: 1
+  multi_resolution: false
+  downsample_iter:
+  - -1
+  - -1
+  debug: true
+  debug_num: 1
+  num_materials: 1
+  start_material_id: 0
+  valid_on_train_set: false
+  val_ratio: 0.05
+  visualize_uv: false
+  start_idx: 0
+  valid_num: -1
+  dataset_name: points
+  pbr_path: null
+  shape:
+    type: real
+    center:
+    - 0.0
+    - 0.0
+    - 0.0
+    radius: 0.2
+  pixel: true
+  ray_diff: true
+  custom_c2w: true
+  filter_observations: false
+  metadata_path: /home/featurize/data/scan_log.json
+  camera_metadata_path: /home/featurize/data/rotated_camera.json
+  handeye_refiner: false
+renderer:
+  type: path_tracing_realarea_emitter
+  brdf_sampling: false
+  emitter_sampling: true
+  indir_depth: 0
+  shape_matching:
+    folder_path: /media/raid/cloth/capture_data/BRDF_recon_Oct31_cloth
+    num_workers: 32
+    z_outlier_percentile: 5.0
+  camera:
+    linear_factor: 467090956.0
+    colmap_camera: true
+    distance: 2.0
+    number_of_views: 40
+    number_of_view_test: 10
+    views_per_batch: 8
+    look_at:
+    - 0.0
+    - 0.0
+    - 0.0
+    up:
+    - 0.0
+    - 1.0
+    - 0.0
+    position:
+    - 0.0
+    - 0.0
+    - -2.0
+    camera_angle_x: 0.5
+    R_c2g:
+    - - -0.000717667595
+      - 0.999776474
+      - 0.0211302413
+    - - -0.00442126179
+      - 0.021126868
+      - -0.999767027
+    - - -0.999989969
+      - -0.000810922726
+      - 0.00440511146
+    t_c2g:
+    - 0.0326272696
+    - -0.0161560433
+    - 0.0280920856
+    intrinsics:
+      width: 3072
+      height: 2048
+      focal_length: 6721.054
+      cx: 1536
+      cy: 1024
+      distortion: -0.0648
+  mesh:
+    path: null
+    mitsuba_scene: false
+    rectangle:
+      bbox_json: /home/featurize/data/bbox.json
+      center:
+      - 0.16
+      - -0.11
+      - -0.061
+      width: 0.14
+      length: 0.14
+  emitter:
+    direction_json: None
+    num_materials: 1
+    folder_path: /home/featurize/data
+    type: realarea
+    num_lights: 40
+    dist: 4.0
+    radius: 0.007
+    fwhm_deg: 115.0
+    positions:
+    - 0.0
+    - 0.0
+    - 0.0
+    radiance:
+    - 1.0
+    - 1.0
+    - 1.0
+    turntable:
+      center:
+      - 0.16084722
+      - -0.11011424
+      - -0.021
+      axis:
+      - -0.00876202
+      - -0.01346449
+      - 0.99987096
+    R_l2g:
+    - - 1.0
+      - 0.0
+      - 0.0
+    - - 0.0
+      - 1.0
+      - 0.0
+    - - 0.0
+      - 0.0
+      - 1.0
+    t_l2g:
+    - 0.0
+    - -0.102
+    - 0.02112
+    base2_to_base1:
+    - - 0.999999959
+      - 0.000233227594
+      - -0.000169051819
+      - 0.00722042468
+    - - -0.00023674068
+      - 0.999777598
+      - -0.0210878871
+      - 0.00826339062
+    - - 0.000164095944
+      - 0.0210879262
+      - 0.999777611
+      - 0.00393500345
+    - - 0.0
+      - 0.0
+      - 0.0
+      - 1.0
+  spp:
+    train: 16
+    val: 16
+    test: 16
+  SPP_chunk: 4
+  resolution:
+  - 2048
+  - 2048
+model:
+  ckpt_path: null
+  stage: 1
+  freeze_decoder: false
+  test: false
+  emitter_calibration: false
+  logger:
+    _target_: pytorch_lightning.loggers.WandbLogger
+    project: brdf-capture
+    name: mat3_overfit_debug
+  trainer:
+    accelerator: gpu
+    devices: 1
+    num_nodes: 1
+    max_epochs: 50
+    check_val_every_n_epoch: 15
+    limit_train_batches: 512
+    num_sanity_val_steps: 0
+  checkpoint_monitor:
+    _target_: pytorch_lightning.callbacks.ModelCheckpoint
+    save_top_k: 2
+    every_n_epochs: 1
+    filename: '{epoch}'
+    dirpath: /home/featurize/data/output/points/mat3_overfit_debug/training
+  optimizer:
+    name: Adam
+    weight_decay: 0.0
+    lr: 0.001
+    inference_lr: 0.001
+    inference_steps: 3400
+    warmup_steps_ratio: 0.5
+  loss:
+    recon_loss:
+      name: l1
+      weight: 1.0
+      log_space:
+        logrel_ref: 30000
+        logrel_eps: 0.001
+    refiner_prior_loss:
+      weight: 0.01
+  linear_fitting:
+    skip_ransac: false
+  lr_decay:
+    decay_start_epoch: 700
+material:
+  type: MERLBRDF
+  module: model.neural_brdf_refactored
+  data_folder: /home/featurize/data
+  num_materials: 1
+  start_material_id: 0
+  latent_dim: 16
+  predict_frame: true
+  use_pos_enc: true
+  different_decoder: false
+  init_std: 0.1
+  decoder:
+    input_channels: 3
+    use_skip_connection: true
+    skip_layer: 2
+    hidden_layers:
+    - 256
+    - 128
+    - 128
+    - 64
+    - 32
+    activation: relu
+    output_channels: 3
+    degree: 3
+experiment_name: mat3_overfit_debug
+dataset_folder: /home/featurize/data
+output_folder: /home/featurize/data/output
+exp_output_root_path: /home/featurize/data/output/points/mat3_overfit_debug
+gt_folder: /home/featurize/data/hdr
+test_on_train: true
+global_train_seed: 42

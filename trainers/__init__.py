@@ -1,10 +1,11 @@
 from .stage1_trainer import Stage1Trainer
 from .stage2_trainer import Stage2Trainer
+from .stage1_trainer_merl import Stage1Trainer_MERL
 
 # Registry for easy lookup
 TRAINER_REGISTRY = {
-    1: Stage1Trainer,
-    2: Stage2Trainer,
+    1: Stage1Trainer_MERL,
+    2: Stage1Trainer_MERL,
 }
 
 def get_trainer_class(stage: int):
