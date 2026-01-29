@@ -230,7 +230,7 @@ def transform_mesh_to_base(mesh_path, T_BW, output_path=None):
         print(f"Transformed mesh saved to: {output_path}")
     return mesh
 
-def process_pointcloud_to_base(pointcloud_path, T_BW, cfg, output_path=None, z_outlier_percentile=5.0):
+def process_pointcloud_to_base(pointcloud_path, T_BW, cfg, output_path=None, z_outlier_percentile=5.0, material_id=None):
     """
     Transform Colmap sparse pointcloud to base frame, crop by XY rectangle, remove Z outliers,
     and compute axis-aligned bounding box.
@@ -241,6 +241,7 @@ def process_pointcloud_to_base(pointcloud_path, T_BW, cfg, output_path=None, z_o
         cfg: Config dict containing mesh.rectangle parameters
         output_path: Path to save filtered pointcloud (optional)
         z_outlier_percentile: Percentage of points to remove as outliers from top and bottom (default 5%)
+        material_id: Material ID to look up width/length from sample_size_json (optional)
     
     Returns:
         tuple: (filtered_pcd, bbox_min, bbox_max, bbox_center, bbox_size, filtered_indices, points_world_filtered)
@@ -265,8 +266,25 @@ def process_pointcloud_to_base(pointcloud_path, T_BW, cfg, output_path=None, z_o
     
     # Get rectangle parameters from config
     center = np.array(cfg.mesh.rectangle.center)
-    width = cfg.mesh.rectangle.width  # x direction
-    length = cfg.mesh.rectangle.length  # y direction
+    
+    # Get width and length from sample_size_json if material_id is provided
+    width = cfg.mesh.rectangle.width  # x direction (fallback)
+    length = cfg.mesh.rectangle.length  # y direction (fallback)
+    
+    if material_id is not None and hasattr(cfg.mesh.rectangle, 'sample_size_json'):
+        import json
+        sample_size_json_path = cfg.mesh.rectangle.sample_size_json
+        with open(sample_size_json_path, 'r') as f:
+            sample_sizes_data = json.load(f)
+        
+        for entry in sample_sizes_data["sample_sizes"]:
+            if entry["id_start"] <= material_id <= entry["id_end"]:
+                width = entry["width"]
+                length = entry["length"]
+                print(f"Using sample size for material_id {material_id}: width={width}, length={length}")
+                break
+        else:
+            print(f"Warning: material_id {material_id} not found in sample_size_json, using default width={width}, length={length}")
     
     # Calculate XY bounds
     x_min = center[0] - width / 2.0
@@ -295,12 +313,24 @@ def process_pointcloud_to_base(pointcloud_path, T_BW, cfg, output_path=None, z_o
     if len(points_cropped) == 0:
         raise ValueError("No points remain after XY cropping. Check rectangle parameters.")
     
-    # Remove Z outliers by percentile
+    use_iqr = True
     z_values = points_cropped[:, 2]
-    z_lower = np.percentile(z_values, z_outlier_percentile)
-    z_upper = np.percentile(z_values, 100 - z_outlier_percentile)
+    # Remove Z outliers
+    if use_iqr:
+        # IQR (Interquartile Range) method - adaptive outlier detection
+        Q1 = np.percentile(z_values, 25)
+        Q3 = np.percentile(z_values, 75)
+        IQR = Q3 - Q1
+        z_lower = Q1 - 1.5 * IQR
+        z_upper = Q3 + 1.5 * IQR
+    else:
+        # Fixed percentile method
+        z_lower = np.percentile(z_values, z_outlier_percentile)
+        z_upper = np.percentile(z_values, 100 - z_outlier_percentile)
     
     z_mask = (z_values >= z_lower) & (z_values <= z_upper)
+    filtered_percentage = 100 * np.sum(z_mask) / len(z_mask)
+    print(f"Z filtering: keeping {np.sum(z_mask)} / {len(z_mask)} points ({filtered_percentage:.1f}%)")
     points_filtered = points_cropped[z_mask]
     colors_filtered = colors_cropped[z_mask] if colors_cropped is not None else None
     filtered_indices = indices_after_xy[z_mask]
@@ -321,7 +351,8 @@ def process_pointcloud_to_base(pointcloud_path, T_BW, cfg, output_path=None, z_o
     # Compute axis-aligned bounding box
     bbox_min = points_filtered.min(axis=0)
     bbox_max = points_filtered.max(axis=0)
-    bbox_center = (bbox_min + bbox_max) / 2.0
+    # Use config center for x,y and mean of points for z
+    bbox_center = np.array([center[0], center[1], points_filtered[:, 2].mean()])
     bbox_size = bbox_max - bbox_min
     
     print(f"\n{'='*60}")
@@ -926,9 +957,96 @@ def save_observations_to_chunks(observations, output_folder, num_chunks=50, num_
     print(f"\nSaved {len(results)} chunks to: {output_folder}")
     print(f"{'='*60}\n")
     
+def _debayer_single_image(args):
+    """Worker function to debayer a single mosaic HDR image."""
+    import cv2
+    from colour_demosaicing import demosaicing_CFA_Bayer_Menon2007
+    
+    # White balance parameters (same as capture pipeline)
+    QE_R, QE_G, QE_B = 1.58056, 1, 1.06588
+    
+    src_path, dst_path = args
+    
+    # Read 16-bit PNG mosaic image
+    raw16 = cv2.imread(str(src_path), cv2.IMREAD_UNCHANGED)
+    if raw16 is None:
+        return None
+    
+    # Debayer using Menon2007 method with RGGB pattern
+    rgb = np.clip(demosaicing_CFA_Bayer_Menon2007(raw16.astype(np.float32), "RGGB"), 0, 65535).astype(np.uint16)
+    
+    # Convert RGB to BGR for OpenCV
+    img16 = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+    
+    # Apply white balance correction (same as capture pipeline)
+    imgf = img16.astype(np.float32)
+    imgf[..., 0] *= QE_R
+    imgf[..., 1] *= QE_G
+    imgf[..., 2] *= QE_B
+    np.clip(imgf, 0, 65535, out=imgf)
+    img16 = imgf.astype(np.uint16)
+    
+    # Save the debayered image
+    cv2.imwrite(str(dst_path), img16)
+    
+    return dst_path
+
+def debayer_mosaic_hdr(mosaic_hdr_path, hdr_path, num_workers=32):
+    """
+    Debayer all mosaic HDR images from mosaic_hdr_path folder and save to hdr_path folder.
+    
+    Args:
+        mosaic_hdr_path: Path to folder containing original mosaic HDR images (16-bit PNG)
+        hdr_path: Path to output folder for debayered images
+        num_workers: Number of parallel workers for multiprocessing
+    """
+    import cv2
+    from multiprocessing import Pool
+    from tqdm import tqdm
+    
+    print(f"\n{'='*60}")
+    print(f"Debayering Mosaic HDR Images")
+    print(f"{'='*60}")
+    
+    mosaic_folder = Path(mosaic_hdr_path)
+    output_folder = Path(hdr_path)
+    
+    # Create output folder if it doesn't exist
+    output_folder.mkdir(parents=True, exist_ok=True)
+    
+    # Get all PNG files from mosaic folder
+    png_files = sorted(mosaic_folder.glob("*.png"))
+    
+    if not png_files:
+        print(f"No PNG files found in {mosaic_hdr_path}")
+        return
+    
+    print(f"Found {len(png_files)} mosaic images to debayer")
+    print(f"Output folder: {hdr_path}")
+    print(f"Using {num_workers} parallel workers")
+    
+    # Prepare arguments for each image (source path, destination path with same filename)
+    args_list = [
+        (src_path, output_folder / src_path.name)
+        for src_path in png_files
+    ]
+    
+    # Process images in parallel
+    with Pool(processes=num_workers) as pool:
+        results = list(tqdm(
+            pool.imap(_debayer_single_image, args_list),
+            total=len(args_list),
+            desc="Debayering images"
+        ))
+    
+    # Count successful conversions
+    successful = sum(1 for r in results if r is not None)
+    print(f"\nSuccessfully debayered {successful}/{len(png_files)} images")
+    print(f"{'='*60}\n")
+
 # -------------------- main --------------------
 
-def main_process(cfg, cameras, images, points3D=None, scan_log_path=None, mesh_path=None, camera_log_path=None, hdr_path=None, observations_folder=None, pointcloud_path=None, bbox_json_path=None, unmatched_scan_ids_path=None, z_outlier_percentile=5.0, num_workers=32, num_chunks=50):
+def main_process(cfg, cameras, images, points3D=None, scan_log_path=None, mesh_path=None, camera_log_path=None, hdr_path=None, mosaic_hdr_path=None, observations_folder=None, pointcloud_path=None, bbox_json_path=None, unmatched_scan_ids_path=None, z_outlier_percentile=5.0, num_workers=32, num_chunks=50):
     # Extract parameters from config
     R_c2g = np.array(cfg.camera.R_c2g)
     t_c2g = np.array(cfg.camera.t_c2g)
@@ -936,14 +1054,20 @@ def main_process(cfg, cameras, images, points3D=None, scan_log_path=None, mesh_p
     rotation_axis = np.array(cfg.emitter.turntable.axis)
     
     T_BW, cam_c2w, robot_T, s, scan_id = estimate_world2base(scan_log_path, images, R_c2g, t_c2g, rotation_center, rotation_axis, unmatched_scan_ids_path)
+    
+    material_id = int(Path(camera_log_path).parent.name)
+    
     if mesh_path is not None:
         transform_mesh_to_base(mesh_path, T_BW, output_path=str(Path(mesh_path).with_name(Path(mesh_path).stem + "_transformed.ply")))
     
+    if mosaic_hdr_path is not None and Path(mosaic_hdr_path).is_dir() and not Path(hdr_path).exists():
+        debayer_mosaic_hdr(mosaic_hdr_path, hdr_path, num_workers=num_workers)
     # Process pointcloud if path provided
     if pointcloud_path is not None:
         output_pcd_path = str(Path(pointcloud_path).with_name(Path(pointcloud_path).stem + "_transformed_filtered.ply"))
         pcd_filtered, bbox_min, bbox_max, bbox_center, bbox_size, filtered_indices, points_world_filtered = process_pointcloud_to_base(
-            pointcloud_path, T_BW, cfg, output_path=output_pcd_path, z_outlier_percentile=z_outlier_percentile
+            pointcloud_path, T_BW, cfg, output_path=output_pcd_path, z_outlier_percentile=z_outlier_percentile,
+            material_id=material_id,
         )
         
         save_points_pixel_data_reprojection(pcd_filtered, points_world_filtered, cameras, images, hdr_path, observations_folder, num_workers=num_workers, num_chunks=num_chunks)
@@ -976,6 +1100,7 @@ def main(cfg: DictConfig) -> None:
     model_path = os.path.join(folder_path, "sparse")
     pointcloud_path = os.path.join(model_path, "points3D.ply")
     points3D_path = os.path.join(model_path, "points3D.bin")
+    mosaic_hdr_path = os.path.join(folder_path, "hdr_raw")
     hdr_path = os.path.join(folder_path, "hdr")
     observations_folder = os.path.join(folder_path, "observations")
     camera_log_path = os.path.join(folder_path, "rotated_camera.json")
@@ -1001,7 +1126,7 @@ def main(cfg: DictConfig) -> None:
     print(f"Loaded {len(points3D)} 3D points from COLMAP")
 
     main_process(cfg, cameras, images, points3D=points3D, scan_log_path=scan_log_path, mesh_path=mesh_path, 
-                 camera_log_path=camera_log_path, hdr_path=hdr_path, observations_folder=observations_folder, 
+                 camera_log_path=camera_log_path, hdr_path=hdr_path, mosaic_hdr_path=mosaic_hdr_path, observations_folder=observations_folder, 
                  pointcloud_path=pointcloud_path, bbox_json_path=bbox_json_path, unmatched_scan_ids_path=unmatched_scan_ids_path, z_outlier_percentile=z_outlier_percentile, num_workers=num_workers, num_chunks=num_chunks)
     print(f"Finished shape matching for {folder_path}")
 

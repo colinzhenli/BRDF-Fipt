@@ -11,7 +11,7 @@ from renderer import ForwardRenderer
 from trainers import get_trainer_class
 from model.brdf import SvPBRBRDF
 from torch.utils.data import DataLoader
-from utils.dataset import RealImageDataset, RealValDataset, MultiMaterialPointDataset, MERLBRDFIterableDataset,MERLBRDFIterableDataset_hd,MERLBRDFFixedDataset_hd,MERLBRDFFixedDataset
+from utils.dataset import RealImageDataset, RealValDataset, MultiMaterialPointDataset, MERLBRDFIterableDataset,MERLBRDFIterableDataset_hd,MERLBRDFFixedDataset_hd,MERLBRDFFixedDataset, RealNovelViewDataset
 import hydra
 from omegaconf import DictConfig
 from pytorch_lightning.strategies import DDPStrategy
@@ -68,32 +68,70 @@ def main(cfg):
         checkpoint = torch.load(cfg.model.ckpt_path, map_location='cuda' if torch.cuda.is_available() else 'cpu', weights_only=False)
         
         if stage == 2:
-            # Stage 2: Only load the decoder weights from checkpoint
-            # Load material.decoder.* weights only (not latent codes)
-            model_dict = model.state_dict()
-            decoder_dict = {}
-            for k, v in checkpoint['state_dict'].items():
-                if 'material.decoder.' in k:
-                    if k in model_dict:
-                        decoder_dict[k] = v
-            
-            model_dict.update(decoder_dict)
-            model.load_state_dict(model_dict)
-            print(f"=> Stage 2: loaded decoder checkpoint successfully. {len(decoder_dict)}/{len([k for k in model_dict if 'material.decoder.' in k])} decoder parameters loaded.")
-            
-            # If use_latent_bank is enabled, also load the latent bank from checkpoint
-            use_latent_bank = getattr(cfg.material, 'use_latent_bank', False)
-            if use_latent_bank:
-                latent_bank_key = 'material.point_latent_bank.weight'
-                if latent_bank_key in checkpoint['state_dict']:
-                    latent_weights = checkpoint['state_dict'][latent_bank_key]
-                    num_points, latent_dim = latent_weights.shape
-                    # Create embedding from checkpoint weights directly
-                    model.material.point_latent_bank = nn.Embedding(num_points, latent_dim)
-                    model.material.point_latent_bank.weight.data = latent_weights
-                    print(f"=> Stage 2: loaded latent bank from checkpoint: {num_points} x {latent_dim}")
-                else:
-                    print(f"=> Stage 2: use_latent_bank=True but no latent bank weights found in checkpoint.")
+            if cfg.model.test:
+                # Filter out emitter parameters from checkpoint
+                model_dict = model.state_dict()
+                filtered_dict = {k: v for k, v in checkpoint['state_dict'].items() 
+                                 if 'emitter' not in k and k in model_dict}
+                model_dict.update(filtered_dict)
+                model.load_state_dict(model_dict)
+                print(f"=> loaded model checkpoint successfully (excluding emitter). {len(filtered_dict)}/{len(checkpoint['state_dict'])} parameters loaded.")
+            else:
+                # Stage 2: Only load the decoder weights from checkpoint
+                # Load material.decoder.* weights only (not latent codes)
+                model_dict = model.state_dict()
+                decoder_dict = {}
+                for k, v in checkpoint['state_dict'].items():
+                    if 'material.decoder.' in k:
+                        if k in model_dict:
+                            decoder_dict[k] = v
+                
+                model_dict.update(decoder_dict)
+                model.load_state_dict(model_dict)
+                print(f"=> Stage 2: loaded decoder checkpoint successfully. {len(decoder_dict)}/{len([k for k in model_dict if 'material.decoder.' in k])} decoder parameters loaded.")
+                
+                # If use_latent_bank is enabled, also load the latent bank from checkpoint
+                use_latent_bank = getattr(cfg.material, 'use_latent_bank', False)
+                if use_latent_bank:
+                    latent_bank_key = 'material.point_latent_bank.weight'
+                    if latent_bank_key in checkpoint['state_dict']:
+                        latent_weights = checkpoint['state_dict'][latent_bank_key]
+                        num_points, latent_dim = latent_weights.shape
+                        # Create embedding from checkpoint weights directly
+                        model.material.point_latent_bank = nn.Embedding(num_points, latent_dim)
+                        model.material.point_latent_bank.weight.data = latent_weights
+                        print(f"=> Stage 2: loaded latent bank from checkpoint: {num_points} x {latent_dim}")
+                    else:
+                        print(f"=> Stage 2: use_latent_bank=True but no latent bank weights found in checkpoint.")
+                
+                # If initialize_from_std is enabled, reinitialize latent texture using std from checkpoint's latent bank
+                initialize_from_std = getattr(cfg.material, 'initialize_from_std', False)
+                if initialize_from_std:
+                    latent_bank_key = 'material.point_latent_bank.weight'
+                    if latent_bank_key in checkpoint['state_dict']:
+                        latent_weights = checkpoint['state_dict'][latent_bank_key]
+                        # latent_weights: [num_points, latent_dim]
+                        # Last 6 dimensions have special meaning (normal + tangent), exclude them
+                        brdf_latent_weights = latent_weights[:, :-6]
+                        
+                        # Compute std from the brdf latent dimensions
+                        computed_std = brdf_latent_weights.std().item()
+                        
+                        # Reinitialize only the first N-6 dimensions, keep last 6 unchanged
+                        latent_texture = model.material.latent_texture
+                        resolution = latent_texture.resolution
+                        num_brdf_dims = brdf_latent_weights.shape[1]
+                        
+                        # Reinitialize first N-6 dimensions with computed std
+                        latent_texture.params.data[:, :num_brdf_dims, :, :] = torch.randn(
+                            1, num_brdf_dims, resolution, resolution,
+                            device=latent_texture.params.device,
+                            dtype=latent_texture.params.dtype
+                        ) * computed_std
+                        
+                        print(f"=> Stage 2: initialized latent texture (first {num_brdf_dims} dims) from checkpoint std={computed_std:.6f}")
+                    else:
+                        print(f"=> Stage 2: initialize_from_std=True but no latent bank weights found in checkpoint.")
         else:
             # Stage 1: Only load material parameters
             model_dict = model.state_dict()
@@ -101,21 +139,18 @@ def main(cfg):
             model_dict.update(pretrained_dict)
             model.load_state_dict(model_dict)
             print(f"=> loaded material checkpoint successfully. {len(pretrained_dict)}/{len([k for k in model_dict if k.startswith('material.')])} material parameters loaded.")
-
     print("after trainer init")
     print("==> initializing data ...")   
     if cfg.data.dataset_name == "real":
-        train_dataset = RealImageDataset(cfg, gt_folder=cfg.gt_folder, split="train")
-        val_dataset = RealValDataset(cfg, gt_folder=cfg.gt_folder)
-    elif cfg.data.dataset_name == "points":
-        '''
-        train_dataset = MERLBRDFIterableDataset(cfg,data_folder=cfg.dataset_folder,batch_size=1048576,split="train")
-        if cfg.data.debug & cfg.data.valid_on_train_set:
-            val_dataset = MERLBRDFIterableDataset(cfg,data_folder=cfg.dataset_folder,batch_size=1048576,split="val")
+        if not cfg.model.test:
+            train_dataset = RealImageDataset(cfg, gt_folder=cfg.gt_folder, split="train")
+            val_dataset = RealValDataset(cfg, gt_folder=cfg.gt_folder)
         else:
-            val_dataset = MERLBRDFIterableDataset(cfg,data_folder=cfg.dataset_folder,batch_size=1048576,split="val")
-        '''
-        
+            if cfg.model.test_novel_view:
+                val_dataset = RealNovelViewDataset(cfg, gt_folder=cfg.gt_folder)
+            else:
+                val_dataset = RealValDataset(cfg, gt_folder=cfg.gt_folder)
+    elif cfg.data.dataset_name == "points":
         if cfg.model.stage == 1:
             train_dataset = MERLBRDFIterableDataset(cfg,data_folder=cfg.dataset_folder,batch_size=1048576,split="train")
             if cfg.data.debug & cfg.data.valid_on_train_set:
@@ -128,37 +163,20 @@ def main(cfg):
                 val_dataset = MERLBRDFFixedDataset(cfg,data_folder=cfg.dataset_folder,batch_size=1048576,split="val")
             else:
                 val_dataset = MERLBRDFFixedDataset(cfg,data_folder=cfg.dataset_folder,batch_size=1048576,split="val")
-        '''
-        if cfg.model.stage == 1:
-            train_dataset = MERLBRDFIterableDataset_hd(cfg,data_folder=cfg.dataset_folder,batch_size=1048576,split="train")
-            if cfg.data.debug & cfg.data.valid_on_train_set:
-                val_dataset = MERLBRDFIterableDataset_hd(cfg,data_folder=cfg.dataset_folder,batch_size=1048576,split="val")
-            else:
-                val_dataset = MERLBRDFIterableDataset_hd(cfg,data_folder=cfg.dataset_folder,batch_size=1048576,split="val")
-        else:
-            train_dataset = MERLBRDFFixedDataset_hd(cfg,data_folder=cfg.dataset_folder,n_samples=100,material_id=0,split="train")
-            if cfg.data.debug & cfg.data.valid_on_train_set:
-                val_dataset = MERLBRDFFixedDataset_hd(cfg,data_folder=cfg.dataset_folder,n_samples=1048576,material_id=0,split="val")
-            else:
-                val_dataset = MERLBRDFFixedDataset_hd(cfg,data_folder=cfg.dataset_folder,n_samples=1048576,material_id=0,split="val")
-        '''
     else:
         raise ValueError(f"Invalid dataset name: {cfg.data.dataset_name}")
-
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=cfg.data.batch_size,
-        num_workers=cfg.data.num_workers,
-        #pin_memory=True,
-    )
-
-
+    if not cfg.model.test:
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=cfg.data.batch_size,
+            num_workers=cfg.data.num_workers,
+            pin_memory=True,
+        )
     val_loader = DataLoader(
         val_dataset,
         batch_size=1,
         num_workers=cfg.data.num_workers,
     )
-    
     print("==> initializing logger ...")
     logger = hydra.utils.instantiate(cfg.model.logger, save_dir=cfg.exp_output_root_path)
 
@@ -175,29 +193,23 @@ def main(cfg):
     lr_monitor = LearningRateMonitor(logging_interval='step')
 
     print("==> initializing trainer ...")
-    
+
     trainer = pl.Trainer(
         callbacks=[checkpoint_callback, lr_monitor], logger=logger, 
         track_grad_norm=2,  # Log L2 norm of gradients
-        # gradient_clip_val=1.0,  # Optional: clip gradients,
-        resume_from_checkpoint=None,
+        # gradient_clip_val=1.0,  # Optional: clip gradients
         **cfg.model.trainer
     )
-    tracer = VizTracer()
-    tracer.start()
-    print(
-        "current_epoch:", trainer.current_epoch,
-        "max_epochs:", trainer.max_epochs
-    )
+    # tracer = VizTracer()
+    # tracer.start()
     if cfg.model.test:
         trainer.validate(model, val_loader)
     else:
-        # Explicitly pass ckpt_path=None to prevent auto-resuming from last.ckpt
         trainer.fit(model, train_loader, val_loader)
-    tracer.stop()
-    tracer.save(f"Ray-rect-intersection_tracer.json")
+    # tracer.stop()
+    # tracer.save(f"Ray-rect-intersection_tracer.json")
     """  Skipping testing for now """
-    # test_results = trainer.test(model, dataloaders=val_loader)
+    # test_results = trainer.test(model, dataloaders=test_loader)
 
     # test_psnr = sum(result['test/psnr'] for result in test_results) / len(test_results)
     # print(f"PSNR for roughness {roughness:.2f}, metallic {metallic:.2f}: {test_psnr:.2f}")

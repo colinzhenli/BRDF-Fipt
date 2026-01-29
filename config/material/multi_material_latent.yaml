@@ -1,8 +1,7 @@
 type: "MultiMaterialLatentBRDF"
 module: "model.neural_brdf_refactored"
 data_folder: ${dataset_folder}
-num_materials: ${data.num_materials}
-start_material_id: ${data.start_material_id}
+training_list_path: ${data.training_list_path}
 latent_dim: 16
 predict_frame: True
 use_pos_enc: True
@@ -20,6 +19,6 @@ decoder:
   use_skip_connection: True
   skip_layer: 2
   hidden_layers: [256, 128, 128, 64, 32]
-  activation: "relu"
+  activation: "leakyrelu" # only for output layer
   output_channels: 3
-  degree: 3  # SH degree for positional encoding
+  degree: 5  # SH degree for positional encoding

@@ -22,6 +22,26 @@ pip instlal trimesh
 conda install conda-forge::hydra-core
 ```
 
+In compute compute canada fir:
+```bash
+source ./envs/fipt/bin/activate
+module load python/3.10
+module load StdEnv/2023 intel/2023.2.1 cuda/11.8
+
+
+pip install torch==2.1.1 torchvision==0.16.1 torchaudio==2.1.1
+pip install -r requirements.txt
+# hydra-core ?
+
+
+pip install torch-scatter -f https://data.pyg.org/whl/torch-2.0.0+cu118.html 
+pip install git+https://github.com/NVlabs/tiny-cuda-nn/#subdirectory=bindings/torch
+pip install -r requirements.txt
+pip install bpy==3.6.0 --extra-index-url https://download.blender.org/pypi/
+pip instlal trimesh
+conda install conda-forge::hydra-core
+```
+
 Make sure everything installs properly. After setup, you can run a simple dummy training.
 
 ---

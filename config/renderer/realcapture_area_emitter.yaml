@@ -15,12 +15,14 @@ camera:
   colmap_camera: True # whether to use colmap camera or robotic log camera
   distance: 2.0
   number_of_views: 40 # used to generate reference images
-  number_of_view_test: 10
+  number_of_view_test: 10 # Used on customized novel view test
+  altitude_angle: 45.0 # in degrees
   views_per_batch: 8
   look_at: [0.0, 0.0, 0.0]
   up: [0.0, 1.0, 0.0]
   position: [0.0, 0.0, -2.0]
   camera_angle_x: 0.5
+
   # R_c2g: [[-0.00369406,  0.99992083,  0.01202885], # OpenGL convention!
   #         [-0.00272167,  0.01201883, -0.99992407],
   #         [-0.99998947, -0.00372652,  0.00267706]]
@@ -74,6 +76,7 @@ mesh:
   mitsuba_scene: False
   rectangle:
     bbox_json: ${dataset_folder}/bbox.json
+    sample_size_json: "/media/raid/cloth/capture_data/Dataset_Nov11/sample_size.json"
     # center: [0.16, -0.11, -0.058] # 0.06 is the foam board top
     # center: [0.16, -0.11, -0.0673] # 0.063 is the foam board bottom
     center: [0.16, -0.11, -0.061] # the hard material
@@ -81,14 +84,14 @@ mesh:
     # center: [0.16, -0.11, -0.0625] # 0.063 is the foam board bottom
     # width: 0.125 # board_size
     # length: 0.135
-    width: 0.14 # sample_size
-    length: 0.14 # sample_size
+    width: 0.14 # sample_size 0-153 (fallback if json not used)
+    length: 0.14 # sample_size 0-153 material (fallback if json not used)
     # width: 0.08
     # length: 0.08 # colorchecker size
 emitter:
   # direction_json: "/media/raid/cloth/capture_data/Dataset_Nov11/emitter_calibration.json"
   direction_json: None
-  num_materials: ${data.num_materials}
+  training_list_path: ${data.training_list_path}
   folder_path: ${dataset_folder}
   type: "realarea"
   num_lights: 40

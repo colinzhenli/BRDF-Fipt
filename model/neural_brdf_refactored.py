@@ -317,6 +317,9 @@ class BRDFDecoder(nn.Module):
         if self.skip_layer is None:
             self.skip_layer = num_hidden // 2
         
+        # Output activation: LeakyReLU if configured, otherwise ReLU
+        output_activation = nn.LeakyReLU() if cfg.activation.lower() == "leakyrelu" else nn.ReLU()
+        
         # Build MLP(s)
         def build_mlp():
             if not self.use_skip_connection:
@@ -325,14 +328,11 @@ class BRDFDecoder(nn.Module):
                 prev_dim = input_dim
                 for hidden_dim in cfg.hidden_layers:
                     layers.append(nn.Linear(prev_dim, hidden_dim))
-                    if cfg.activation.lower() == "relu":
-                        layers.append(nn.ReLU())
-                    else:
-                        layers.append(nn.LeakyReLU(0.2))
+                    layers.append(nn.ReLU())
                     prev_dim = hidden_dim
                 
                 layers.append(nn.Linear(prev_dim, cfg.output_channels))
-                layers.append(nn.LeakyReLU())
+                layers.append(output_activation)
                 return nn.Sequential(*layers)
             else:
                 # MLP with skip connection - use ModuleList for manual forward
@@ -351,16 +351,39 @@ class BRDFDecoder(nn.Module):
         
         # Store activation for skip connection forward pass
         if self.use_skip_connection:
-            if cfg.activation.lower() == "relu":
-                self.activation = nn.ReLU()
-            else:
-                self.activation = nn.LeakyReLU(0.2)
-            self.output_activation = nn.LeakyReLU()
+            self.activation = nn.ReLU()
+            self.output_activation = output_activation
         
         if different_decoder:
-            self.mlp_r = build_mlp()
-            self.mlp_g = build_mlp()
-            self.mlp_b = build_mlp()
+            # Number of layers for shared trunk vs heads
+            self.num_head_layers = getattr(cfg, 'num_head_layers', 2)  # default: last 2 layers as heads
+            num_trunk_layers = num_hidden - self.num_head_layers
+            
+            # Build shared trunk (all but last num_head_layers)
+            trunk_layers = []
+            prev_dim = input_dim
+            for i, hidden_dim in enumerate(cfg.hidden_layers[:num_trunk_layers]):
+                trunk_layers.append(nn.Linear(prev_dim, hidden_dim))
+                trunk_layers.append(nn.ReLU())
+                prev_dim = hidden_dim
+            self.shared_trunk = nn.Sequential(*trunk_layers)
+            self.trunk_output_dim = prev_dim
+            
+            # Build 3 separate heads (last num_head_layers + output)
+            def build_head():
+                head_layers = []
+                prev = self.trunk_output_dim
+                for hidden_dim in cfg.hidden_layers[num_trunk_layers:]:
+                    head_layers.append(nn.Linear(prev, hidden_dim))
+                    head_layers.append(nn.ReLU())
+                    prev = hidden_dim
+                head_layers.append(nn.Linear(prev, 1))
+                head_layers.append(output_activation)
+                return nn.Sequential(*head_layers)
+            
+            self.head_r = build_head()
+            self.head_g = build_head()
+            self.head_b = build_head()
         else:
             self.mlp = build_mlp()
     
@@ -401,7 +424,7 @@ class BRDFDecoder(nn.Module):
             
             x = layer(x)
             
-            # Apply activation (except for output layer)
+            # Apply activation: ReLU for middle layers, output_activation for last layer
             if i < num_layers - 1:
                 x = self.activation(x)
             else:
@@ -413,41 +436,26 @@ class BRDFDecoder(nn.Module):
         self,
         enc_dir: torch.Tensor,
         latent: torch.Tensor,
-        channel: str = None
+        channel: str = None  # kept for backward compatibility but ignored when different_decoder=True
     ):
         """
         Decode BRDF from encoded directions and latent.
         
-        Args:
-            enc_dir: [B, encoded_dim] encoded directions
-            latent: [B, latent_dim] latent code
-            channel: 'r', 'g', or 'b' if using different decoders, else None
-        
         Returns:
-            brdf: [B, output_channels] BRDF value (1 or 3 channels)
+            brdf: [B, 3] when different_decoder=True, else [B, output_channels]
         """
         mlp_input = torch.cat([enc_dir, latent], dim=-1)
         
-        if self.use_skip_connection:
-            # Use manual forward with skip connection
-            if self.different_decoder:
-                if channel == 'r':
-                    return self._forward_with_skip(mlp_input, self.mlp_r)
-                elif channel == 'g':
-                    return self._forward_with_skip(mlp_input, self.mlp_g)
-                else:  # 'b'
-                    return self._forward_with_skip(mlp_input, self.mlp_b)
-            else:
-                return self._forward_with_skip(mlp_input, self.mlp)
+        # Shared trunk + 3 heads when different_decoder=True
+        if self.different_decoder:
+            trunk_out = self.shared_trunk(mlp_input)  # [B, trunk_output_dim]
+            brdf_r = self.head_r(trunk_out)  # [B, 1]
+            brdf_g = self.head_g(trunk_out)  # [B, 1]
+            brdf_b = self.head_b(trunk_out)  # [B, 1]
+            return torch.cat([brdf_r, brdf_g, brdf_b], dim=-1)  # [B, 3]
         else:
-            # Original sequential forward
-            if self.different_decoder:
-                if channel == 'r':
-                    return self.mlp_r(mlp_input)
-                elif channel == 'g':
-                    return self.mlp_g(mlp_input)
-                else:  # 'b'
-                    return self.mlp_b(mlp_input)
+            if self.use_skip_connection:
+                return self._forward_with_skip(mlp_input, self.mlp)
             else:
                 return self.mlp(mlp_input)
 
@@ -522,7 +530,7 @@ class AnisotropicLatentTexturedModel(LightningModule):
         # 1. Create LatentTexture
         self.texture_resolution = getattr(cfg, 'texture_resolution', 256)
         blur_config = {
-            'blur_sigma0': 8.0,
+            'blur_sigma0': 2.0,
             'blur_half_life': 3333
         } if self.Gaussian_blur else None
         
@@ -933,26 +941,15 @@ class AnisotropicLatentTexturedModel(LightningModule):
         # 5. Encode directions
         enc_dir = self.decoder.encode_directions(wi_local, wo_local, local_normal)
         
-        # 6. Extract BRDF latent (excluding frame and geometry latents)
+        # 6. Extract BRDF latent and decode
         if self.colorful_texture:
             if self.different_decoder:
-                if self.larger_latent_dim:
-                    latent_r = latent[..., :self.latent_dim]
-                    latent_g = latent[..., self.latent_dim:2*self.latent_dim]
-                    latent_b = latent[..., 2*self.latent_dim:3*self.latent_dim]
-                else:
-                    latent_r = latent[..., :self.latent_dim]
-                    latent_g = latent[..., :self.latent_dim]
-                    latent_b = latent[..., :self.latent_dim]
-                
-                brdf_r = self.decoder(enc_dir, latent_r, 'r')
-                brdf_g = self.decoder(enc_dir, latent_g, 'g')
-                brdf_b = self.decoder(enc_dir, latent_b, 'b')
-                brdf = torch.cat([brdf_r, brdf_g, brdf_b], dim=-1)
+                # Shared trunk + 3 heads: just call once, returns [B, 3]
+                brdf = self.decoder(enc_dir, latent[..., :self.latent_dim])
             else:
-                brdf = self.decoder(enc_dir, latent[..., :self.latent_dim], None)
+                brdf = self.decoder(enc_dir, latent[..., :self.latent_dim])
         else:
-            brdf = self.decoder(enc_dir, latent[..., :self.latent_dim], None)
+            brdf = self.decoder(enc_dir, latent[..., :self.latent_dim])
             brdf = brdf.repeat(1, 3)  # Replicate to RGB
         
         # 7. Calculate PDF (cosine-weighted)
@@ -1049,9 +1046,10 @@ class MultiMaterialLatentBRDF(LightningModule):
         
         # Store configuration
         self.cfg = cfg
-        self.num_materials = cfg.num_materials
         data_folder = getattr(cfg, 'data_folder', None)
-        self.start_material_id = cfg.start_material_id
+        
+        # Read training list from txt file
+        self.training_list_path = getattr(cfg, 'training_list_path', None)
         # Latent dimensions
         self.latent_dim = cfg.latent_dim
         self.predict_frame = cfg.predict_frame
@@ -1115,17 +1113,20 @@ class MultiMaterialLatentBRDF(LightningModule):
         
         root = Path(data_folder)
         
-        # Find material folders (named by material ID: 0, 1, 2, ...)
-        material_folders = sorted([
-            d for d in root.iterdir() 
-            if d.is_dir() and d.name.isdigit() and (d / "observations").is_dir()
-        ], key=lambda x: int(x.name))
-        material_folders = material_folders[self.start_material_id:self.start_material_id+self.num_materials]
+        # Build material folders from training list
+        training_list = []
+        with open(self.training_list_path, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if line:  # Skip empty lines
+                    training_list.append(int(line))
+        material_folders = [root / str(mid) for mid in training_list]
         materials = []
         material_point_offsets = {}
         global_point_offset = 0
         
-        print(f"Found {len(material_folders)} potential material folders")
+        print(f"Training list path: {self.training_list_path}")
+        print(f"Loaded {len(training_list)} materials from training list: {training_list}")
         
         for mat_folder in material_folders:
             material_id = int(mat_folder.name)
@@ -1319,13 +1320,10 @@ class MultiMaterialLatentBRDF(LightningModule):
         
         # Decode BRDF
         if self.different_decoder:
-            # Decode each channel separately
-            brdf_r = self.decoder(enc_dir, latent[:,:self.latent_dim], channel='r')
-            brdf_g = self.decoder(enc_dir, latent[:,:self.latent_dim], channel='g')
-            brdf_b = self.decoder(enc_dir, latent[:,:self.latent_dim], channel='b')
-            brdf = torch.cat([brdf_r, brdf_g, brdf_b], dim=-1)  # [B, 3]
+            # Shared trunk + 3 heads: returns [B, 3] directly
+            brdf = self.decoder(enc_dir, latent[:, :self.latent_dim])
         else:
-            brdf = self.decoder(enc_dir, latent[:, :self.latent_dim])  # [B, 1] or [B, 3]
+            brdf = self.decoder(enc_dir, latent[:, :self.latent_dim])
             if brdf.shape[-1] == 1:
                 brdf = brdf.expand(-1, 3)  # Expand to RGB
         
