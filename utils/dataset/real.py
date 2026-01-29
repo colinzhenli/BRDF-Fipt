@@ -771,8 +771,18 @@ class RealNovelViewDataset(Dataset):
         self.focal = self.intrinsics['focal_length']
         self.img_hw = (self.intrinsics['height'], self.intrinsics['width'])
         
-        # Get camera view generation parameters from config
-        self.number_of_views = cfg.renderer.camera.number_of_view_test
+        # Check if using constant camera mode
+        self.constant_camera = getattr(cfg.renderer.camera, 'constant_camera', False)
+        
+        if self.constant_camera:
+            # Use fixed camera, number of views = number of emitters
+            self.num_emitters = cfg.renderer.emitter.num_lights
+            self.number_of_views = self.num_emitters *2 
+            print(f"RealNovelViewDataset: Using constant camera mode with {self.num_emitters} emitters")
+        else:
+            # Get camera view generation parameters from config
+            self.number_of_views = cfg.renderer.camera.number_of_view_test
+        
         self.altitude_angle = cfg.renderer.camera.altitude_angle  # in degrees
         self.distance = cfg.renderer.camera.distance
         
@@ -803,23 +813,39 @@ class RealNovelViewDataset(Dataset):
         altitude = np.radians(self.altitude_angle)  # angle from horizontal plane (elevation angle)
         n_steps = self.number_of_views
         
-        # Uniformly sample azimuth angles around the circle
-        azimuths = np.linspace(0, 2 * np.pi, n_steps, endpoint=False)
-        
-        for azimuth in azimuths:
-            # Spherical to Cartesian conversion
-            # altitude is the angle from horizontal plane (elevation)
-            # azimuth is the angle around z-axis
+        if self.constant_camera:
+            # Use a single fixed camera position (azimuth = 0)
+            azimuth = 0
             x = dist * np.cos(altitude) * np.cos(azimuth) + self.look_at[0]
             y = dist * np.cos(altitude) * np.sin(azimuth) + self.look_at[1]
             z = dist * np.sin(altitude) + self.look_at[2]
             
-            camera_dict = {
+            self.fixed_camera_dict = {
                 "position": [x, y, z],
                 "look_at": self.look_at,
                 "up": self.up
             }
-            self.camera_dicts.append(camera_dict)
+            # Replicate for all emitter views
+            for _ in range(n_steps):
+                self.camera_dicts.append(self.fixed_camera_dict)
+        else:
+            # Uniformly sample azimuth angles around the circle
+            azimuths = np.linspace(0, 2 * np.pi, n_steps, endpoint=False)
+            
+            for azimuth in azimuths:
+                # Spherical to Cartesian conversion
+                # altitude is the angle from horizontal plane (elevation)
+                # azimuth is the angle around z-axis
+                x = dist * np.cos(altitude) * np.cos(azimuth) + self.look_at[0]
+                y = dist * np.cos(altitude) * np.sin(azimuth) + self.look_at[1]
+                z = dist * np.sin(altitude) + self.look_at[2]
+                
+                camera_dict = {
+                    "position": [x, y, z],
+                    "look_at": self.look_at,
+                    "up": self.up
+                }
+                self.camera_dicts.append(camera_dict)
     
     def __len__(self):
         return self.number_of_views
@@ -836,8 +862,13 @@ class RealNovelViewDataset(Dataset):
         num_rays = rays.shape[0]
         rgbs = torch.zeros(num_rays, 3)
         
-        # Return all zeros for emitter_ids and camera_ids
-        emitter_ids = torch.zeros(num_rays, dtype=torch.long)
+        if self.constant_camera:
+            # emitter_id = batch index (idx)
+            emitter_ids = torch.full((num_rays,), idx, dtype=torch.long)
+        else:
+            # Return all zeros for emitter_ids
+            emitter_ids = torch.zeros(num_rays, dtype=torch.long)
+        
         camera_ids = torch.zeros(num_rays, dtype=torch.long)
         
         return {

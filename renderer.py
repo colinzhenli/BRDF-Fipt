@@ -51,12 +51,12 @@ class ForwardRenderer:
             self.ray_tracer = path_tracing_envmap_emitter
         elif cfg.renderer.emitter.type == 'presetpoint':
             self.ray_tracer = batched_path_tracing_tbn_preset_emitter
-        elif cfg.renderer.emitter.type == 'realarea' or cfg.renderer.emitter.type == 'multiarea':
+        elif cfg.renderer.emitter.type == 'realarea' or cfg.renderer.emitter.type == 'multiarea' or cfg.renderer.emitter.type == 'rotatearea':
             if cfg.model.stage == 1:
                 self.ray_tracer = points_path_tracing_real_area_emitter
             else:
                 self.ray_tracer = batched_path_tracing_tbn_real_area_emitter
-            
+
         # elif cfg.renderer.emitter.type == 'tbnpresetpoint':
         #     self.ray_tracer = batched_path_tracing_tbn_preset_emitter
         emitter_cfg = cfg.renderer.emitter

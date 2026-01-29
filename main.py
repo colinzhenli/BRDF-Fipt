@@ -69,8 +69,13 @@ def main(cfg):
         
         if stage == 2:
             if cfg.model.test:
-                model.load_state_dict(checkpoint['state_dict'])
-                print(f"=> loaded model checkpoint successfully. {len(checkpoint['state_dict'])}/{len(checkpoint['state_dict'])} parameters loaded.")
+                # Filter out emitter parameters from checkpoint
+                model_dict = model.state_dict()
+                filtered_dict = {k: v for k, v in checkpoint['state_dict'].items() 
+                                 if 'emitter' not in k and k in model_dict}
+                model_dict.update(filtered_dict)
+                model.load_state_dict(model_dict)
+                print(f"=> loaded model checkpoint successfully (excluding emitter). {len(filtered_dict)}/{len(checkpoint['state_dict'])} parameters loaded.")
             else:
                 # Stage 2: Only load the decoder weights from checkpoint
                 # Load material.decoder.* weights only (not latent codes)

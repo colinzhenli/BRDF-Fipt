@@ -15,7 +15,8 @@ camera:
   linear_factor2: 467090956.000000 # After 100 materials
   # linear_factor: 467090956.000000 # After 100 materials
   colmap_camera: True # whether to use colmap camera or robotic log camera
-  distance: 0.2
+  distance: 0.4
+  constant_camera: True
   number_of_views: 40 # used to generate reference images
   number_of_view_test: 120 # Used on customized novel view test
   altitude_angle: 60.0 # in degrees
@@ -93,9 +94,10 @@ emitter:
   # direction_json: False
   training_list_path: ${data.training_list_path}
   folder_path: ${dataset_folder}
-  type: "realarea"
+  type: "rotatearea"
   num_lights: 120
-  dist: 4.0
+  dist: 0.4
+  altitude_angle: 30.0 # in degrees
   radius: 0.007 # value from specs
   fwhm_deg: 115.0 # full width at half maximum angle(value for specs)
   # fwhm_deg: 30.0 # full width at half maximum angle(value for specs)
@@ -119,9 +121,9 @@ emitter:
                   [ 1.64095944e-04,  2.10879262e-02,  9.99777611e-01,  3.93500345e-03],
                   [ 0.00000000e+00,  0.00000000e+00,  0.00000000e+00,  1.00000000e+00]]
 spp:
-  train: 16  
-  val: 16 
-  test: 16  
-SPP_chunk: 4
+  train: 8  
+  val: 8 
+  test: 8  
+SPP_chunk: 1
 
 resolution: [2048, 2048]

@@ -126,11 +126,11 @@
             "args": [
                 "dataset_folder=/media/raid/cloth/capture_data/Dataset_Nov11/105",
                 "data=real",
-                "renderer=multiarea_emitter",
+                "renderer=rotatearea_emitter",
                 "material=ani_latent_texture_model",
                 "material.different_decoder=False",
                 "material.decoder.use_skip_connection=True",
-                "experiment_name=Single-head-Material-105_Novel-view-test_1",
+                "experiment_name=Single-head-Material-105_Closer_Novel-view-test-Rotate-Area-Emitter-Angle-60_Visualize-Lobe_run_1",
                 "model.stage=2",
                 "model.test=True",
                 "material.use_latent_bank=False",

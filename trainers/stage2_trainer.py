@@ -11,7 +11,7 @@ import cv2
 import numpy as np
 from tqdm import tqdm
 import math
-from model.emitter import DynamicPointEmitter, PresetPointEmitter, RealAreaEmitter, ConstantEmitter, MultiAreaEmitter
+from model.emitter import DynamicPointEmitter, PresetPointEmitter, RealAreaEmitter, ConstantEmitter, MultiAreaEmitter, RotateAreaEmitter
 from model.brdf import GreyPatchBRDF
 import os
 from utils.pose_refiner import GlobalHandEyeRefiner
@@ -23,6 +23,7 @@ class Stage2Trainer(pl.LightningModule):
         self.save_hyperparameters(cfg)
 
         self.more_visualization = False
+        self.visualize_lobe = True
         self.material = material
         self.freeze_decoder = cfg.model.freeze_decoder
         self.gt_material = gt_material
@@ -58,7 +59,12 @@ class Stage2Trainer(pl.LightningModule):
                 json_path = cfg.data.metadata_path
             )
         else:
-            self.emitter = RealAreaEmitter(
+            if cfg.renderer.emitter.type == 'rotatearea':
+                self.emitter = RotateAreaEmitter(
+                    cfg = cfg.renderer.emitter,
+                )
+            else:
+                self.emitter = RealAreaEmitter(
                 cfg = cfg.renderer.emitter,
                 json_path = cfg.data.metadata_path
             )
@@ -302,6 +308,331 @@ class Stage2Trainer(pl.LightningModule):
                             os.path.join(output_dir, f'mipmap_metallic_level_{level}_{batch_idx}_{b}.png')
                         )
 
+    def visualize_brdf_lobe(self, output_dir, num_latents=10, resolution=64):
+        """
+        Visualize BRDF lobes by sampling latents from texture and evaluating BRDF
+        for different wi/wo direction combinations.
+        
+        Args:
+            output_dir: Directory to save visualization images
+            num_latents: Number of random latent samples to visualize
+            resolution: Resolution of the 2D BRDF slice (resolution x resolution)
+        """
+        import matplotlib
+        matplotlib.use('Agg')  # Use non-interactive backend
+        import matplotlib.pyplot as plt
+        
+        # Only works for AnisotropicLatentTexturedModel
+        if self.hparams.material.type != "AnisotropicLatentTexturedModel":
+            return
+        
+        device = next(self.material.parameters()).device
+        
+        # Get the latent texture (without blur for visualization)
+        latent_texture = self.material.latent_texture.params  # [1, latent_dim, H, W]
+        latent_dim = self.material.latent_dim
+        
+        # Randomly sample UV coordinates
+        torch.manual_seed(42)  # For reproducibility
+        random_uvs = torch.rand(num_latents, 2, device=device)  # [num_latents, 2]
+        
+        # Sample latents from texture using grid_sample
+        grid_coords = random_uvs * 2.0 - 1.0  # Convert to [-1, 1]
+        grid_coords = grid_coords.unsqueeze(0).unsqueeze(0)  # [1, 1, num_latents, 2]
+        
+        sampled_latents = torch.nn.functional.grid_sample(
+            latent_texture,  # [1, D, H, W]
+            grid_coords,     # [1, 1, num_latents, 2]
+            mode='bilinear',
+            padding_mode='border',
+            align_corners=False
+        )  # [1, D, 1, num_latents]
+        sampled_latents = sampled_latents.squeeze(0).squeeze(1).transpose(0, 1)  # [num_latents, D]
+        
+        # Extract only BRDF latent (exclude frame and geometry latent)
+        brdf_latents = sampled_latents[:, :latent_dim]  # [num_latents, latent_dim]
+        
+        # Local space normal is always (0, 0, 1)
+        local_normal = torch.tensor([[0.0, 0.0, 1.0]], device=device)  # [1, 3]
+        
+        # Create directory for BRDF lobe visualizations
+        brdf_lobe_dir = os.path.join(output_dir, 'brdf_lobes')
+        os.makedirs(brdf_lobe_dir, exist_ok=True)
+        
+        # =====================================================================
+        # Visualization 1: 3D BRDF Lobe - Fix wo, vary wi
+        # wo is fixed at different elevation angles, wi varies over hemisphere
+        # BRDF value determines the radius in each direction -> creates 3D lobe
+        # =====================================================================
+        from mpl_toolkits.mplot3d import Axes3D
+        
+        wo_elevations = [0.0, 30.0, 60.0]  # degrees from normal
+        
+        for latent_idx in range(num_latents):
+            latent = brdf_latents[latent_idx:latent_idx+1]  # [1, latent_dim]
+            
+            fig = plt.figure(figsize=(5*len(wo_elevations), 5))
+            
+            for ax_idx, wo_elev in enumerate(wo_elevations):
+                ax = fig.add_subplot(1, len(wo_elevations), ax_idx + 1, projection='3d')
+                
+                # Create fixed wo direction (in local space)
+                wo_theta = np.radians(wo_elev)
+                wo_phi = 0.0  # Fixed azimuth for wo
+                wo = torch.tensor([[
+                    np.sin(wo_theta) * np.cos(wo_phi),
+                    np.sin(wo_theta) * np.sin(wo_phi),
+                    np.cos(wo_theta)
+                ]], device=device, dtype=torch.float32)  # [1, 3]
+                
+                # Create grid of wi directions (theta_i, phi_i)
+                theta_range = np.linspace(0, np.pi/2, resolution)  # 0 to 90 degrees
+                phi_range = np.linspace(0, 2*np.pi, resolution)    # 0 to 360 degrees
+                theta_grid, phi_grid = np.meshgrid(theta_range, phi_range, indexing='ij')
+                
+                brdf_values = np.zeros((resolution, resolution))
+                
+                for i, theta_i in enumerate(theta_range):
+                    # Batch all phi values for this theta
+                    wi_batch = torch.zeros(resolution, 3, device=device)
+                    for j, phi_i in enumerate(phi_range):
+                        wi_batch[j, 0] = np.sin(theta_i) * np.cos(phi_i)
+                        wi_batch[j, 1] = np.sin(theta_i) * np.sin(phi_i)
+                        wi_batch[j, 2] = np.cos(theta_i)
+                    
+                    # Expand wo and latent for batch
+                    wo_batch = wo.expand(resolution, -1)  # [resolution, 3]
+                    normal_batch = local_normal.expand(resolution, -1)  # [resolution, 3]
+                    latent_batch = latent.expand(resolution, -1)  # [resolution, latent_dim]
+                    
+                    # Encode directions
+                    enc_dir = self.material.decoder.encode_directions(wi_batch, wo_batch, normal_batch)
+                    
+                    # Decode BRDF
+                    with torch.no_grad():
+                        brdf = self.material.decoder(enc_dir, latent_batch)  # [resolution, 3] or [resolution, 1]
+                    
+                    # Average over RGB channels
+                    brdf_avg = brdf.mean(dim=-1).cpu().numpy()  # [resolution]
+                    brdf_values[i, :] = brdf_avg
+                
+                # Convert spherical to Cartesian coordinates
+                # radius = BRDF value (scaled for visualization)
+                # This creates a 3D lobe where distance from origin = BRDF value
+                r = brdf_values
+                x = r * np.sin(theta_grid) * np.cos(phi_grid)
+                y = r * np.sin(theta_grid) * np.sin(phi_grid)
+                z = r * np.cos(theta_grid)
+                
+                # Normalize colors for the surface
+                brdf_normalized = (brdf_values - brdf_values.min()) / (brdf_values.max() - brdf_values.min() + 1e-8)
+                
+                # Plot 3D surface (lobe)
+                surf = ax.plot_surface(x, y, z, facecolors=plt.cm.viridis(brdf_normalized),
+                                       alpha=0.8, linewidth=0, antialiased=True)
+                
+                # Draw the surface plane (z=0) for reference
+                plane_size = brdf_values.max() * 1.2
+                xx, yy = np.meshgrid(np.linspace(-plane_size, plane_size, 10),
+                                     np.linspace(-plane_size, plane_size, 10))
+                ax.plot_surface(xx, yy, np.zeros_like(xx), alpha=0.1, color='gray')
+                
+                # Draw normal direction arrow
+                ax.quiver(0, 0, 0, 0, 0, brdf_values.max()*0.5, color='red', arrow_length_ratio=0.1, linewidth=2)
+                
+                # Draw wo direction arrow (viewing direction)
+                wo_np = wo[0].cpu().numpy()
+                ax.quiver(0, 0, 0, wo_np[0]*brdf_values.max()*0.5, 
+                         wo_np[1]*brdf_values.max()*0.5, 
+                         wo_np[2]*brdf_values.max()*0.5, 
+                         color='blue', arrow_length_ratio=0.1, linewidth=2, label='wo')
+                
+                ax.set_xlabel('X')
+                ax.set_ylabel('Y')
+                ax.set_zlabel('Z (Normal)')
+                ax.set_title(f'wo_θ={wo_elev}°\nBRDF: [{brdf_values.min():.3f}, {brdf_values.max():.3f}]')
+                
+                # Set equal aspect ratio
+                max_range = brdf_values.max() * 1.2
+                ax.set_xlim([-max_range, max_range])
+                ax.set_ylim([-max_range, max_range])
+                ax.set_zlim([0, max_range])
+                ax.view_init(elev=30, azim=45)
+            
+            plt.suptitle(f'3D BRDF Lobe - Latent {latent_idx}\nUV: {random_uvs[latent_idx].cpu().numpy()}\nRed=Normal, Blue=wo')
+            plt.tight_layout()
+            plt.savefig(os.path.join(brdf_lobe_dir, f'lobe_3d_latent_{latent_idx}.png'), dpi=150)
+            plt.close()
+        
+        # =====================================================================
+        # Visualization 2: 2D Lobe in reflection plane
+        # Fix theta_i at several values, show reflected lobe as polar curve
+        # This shows the cross-section of the BRDF lobe in the plane of incidence
+        # =====================================================================
+        theta_i_values_lobe = [15.0, 30.0, 45.0, 60.0]  # degrees
+        
+        for latent_idx in range(num_latents):
+            latent = brdf_latents[latent_idx:latent_idx+1]
+            
+            fig, ax = plt.subplots(figsize=(10, 8))
+            
+            # Draw the surface (horizontal line at y=0)
+            ax.axhline(y=0, color='brown', linewidth=3, label='Surface')
+            
+            # Draw the normal (vertical arrow)
+            ax.annotate('', xy=(0, 1.0), xytext=(0, 0),
+                       arrowprops=dict(arrowstyle='->', color='green', lw=2))
+            ax.text(0.05, 0.9, 'N', fontsize=12, color='green')
+            
+            colors = plt.cm.tab10(np.linspace(0, 1, len(theta_i_values_lobe)))
+            
+            for idx, theta_i_deg in enumerate(theta_i_values_lobe):
+                theta_i = np.radians(theta_i_deg)
+                
+                # wi direction (phi = 0, coming from the right)
+                wi = torch.tensor([[
+                    np.sin(theta_i),
+                    0.0,
+                    np.cos(theta_i)
+                ]], device=device, dtype=torch.float32)
+                
+                # Vary theta_o from -90 to 90 degrees in the reflection plane
+                num_samples = resolution * 2
+                theta_o_range = np.linspace(-np.pi/2 + 0.01, np.pi/2 - 0.01, num_samples)
+                
+                wo_batch = torch.zeros(num_samples, 3, device=device)
+                for j, theta_o in enumerate(theta_o_range):
+                    if theta_o >= 0:
+                        # phi_o = 180 (opposite side from wi)
+                        wo_batch[j, 0] = -np.sin(theta_o)
+                        wo_batch[j, 2] = np.cos(theta_o)
+                    else:
+                        # phi_o = 0 (same side as wi, for backscatter)
+                        wo_batch[j, 0] = np.sin(-theta_o)
+                        wo_batch[j, 2] = np.cos(-theta_o)
+                
+                wi_batch = wi.expand(num_samples, -1)
+                normal_batch = local_normal.expand(num_samples, -1)
+                latent_batch = latent.expand(num_samples, -1)
+                
+                enc_dir = self.material.decoder.encode_directions(wi_batch, wo_batch, normal_batch)
+                
+                with torch.no_grad():
+                    brdf = self.material.decoder(enc_dir, latent_batch)
+                
+                brdf_values = brdf.mean(dim=-1).cpu().numpy()
+                
+                # Normalize BRDF for visualization (scale to reasonable size)
+                brdf_scaled = brdf_values / (brdf_values.max() + 1e-8) * 0.8
+                
+                # Convert to Cartesian for the lobe curve
+                # theta_o < 0: backscatter (same side as wi), theta_o > 0: forward scatter
+                lobe_x = []
+                lobe_z = []
+                for j, theta_o in enumerate(theta_o_range):
+                    r = brdf_scaled[j]
+                    if theta_o >= 0:
+                        # Outgoing direction on opposite side (negative x)
+                        lobe_x.append(-r * np.sin(theta_o))
+                        lobe_z.append(r * np.cos(theta_o))
+                    else:
+                        # Backscatter direction (same side, positive x)
+                        lobe_x.append(r * np.sin(-theta_o))
+                        lobe_z.append(r * np.cos(-theta_o))
+                
+                ax.fill(lobe_x, lobe_z, alpha=0.3, color=colors[idx])
+                ax.plot(lobe_x, lobe_z, color=colors[idx], linewidth=2, 
+                       label=f'θ_i={theta_i_deg}° (max={brdf_values.max():.2f})')
+                
+                # Draw incident light direction arrow
+                wi_np = wi[0].cpu().numpy()
+                arrow_len = 0.4
+                ax.annotate('', xy=(0, 0), xytext=(wi_np[0]*arrow_len, wi_np[2]*arrow_len),
+                           arrowprops=dict(arrowstyle='->', color=colors[idx], lw=1.5))
+            
+            ax.set_xlim([-1.2, 1.2])
+            ax.set_ylim([-0.1, 1.2])
+            ax.set_aspect('equal')
+            ax.set_xlabel('X (horizontal)')
+            ax.set_ylabel('Z (normal direction)')
+            ax.set_title(f'BRDF Lobe Cross-Section - Latent {latent_idx}\n(Arrows = incident light wi)')
+            ax.legend(loc='upper right', fontsize=8)
+            ax.grid(True, alpha=0.3)
+            plt.tight_layout()
+            plt.savefig(os.path.join(brdf_lobe_dir, f'lobe_2d_slice_latent_{latent_idx}.png'), dpi=150)
+            plt.close()
+        
+        # =====================================================================
+        # Visualization 3: Polar plot of BRDF in reflection plane
+        # Fix theta_i, show BRDF as function of theta_o (polar plot)
+        # =====================================================================
+        theta_i_values = [15.0, 30.0, 45.0, 60.0, 75.0]  # degrees
+        
+        for latent_idx in range(num_latents):
+            latent = brdf_latents[latent_idx:latent_idx+1]
+            
+            fig, ax = plt.subplots(figsize=(8, 8), subplot_kw={'projection': 'polar'})
+            
+            for theta_i_deg in theta_i_values:
+                theta_i = np.radians(theta_i_deg)
+                
+                # wi direction (phi = 0)
+                wi = torch.tensor([[
+                    np.sin(theta_i),
+                    0.0,
+                    np.cos(theta_i)
+                ]], device=device, dtype=torch.float32)
+                
+                # Vary theta_o from -90 to 90 degrees (full reflection plane)
+                theta_o_range = np.linspace(-np.pi/2, np.pi/2, resolution * 2)
+                brdf_polar = np.zeros(len(theta_o_range))
+                
+                wo_batch = torch.zeros(len(theta_o_range), 3, device=device)
+                for j, theta_o in enumerate(theta_o_range):
+                    if theta_o >= 0:
+                        # phi_o = 180 (opposite side from wi)
+                        wo_batch[j, 0] = -np.sin(theta_o)
+                        wo_batch[j, 2] = np.cos(theta_o)
+                    else:
+                        # phi_o = 0 (same side as wi, for backscatter)
+                        wo_batch[j, 0] = np.sin(-theta_o)
+                        wo_batch[j, 2] = np.cos(-theta_o)
+                
+                wi_batch = wi.expand(len(theta_o_range), -1)
+                normal_batch = local_normal.expand(len(theta_o_range), -1)
+                latent_batch = latent.expand(len(theta_o_range), -1)
+                
+                enc_dir = self.material.decoder.encode_directions(wi_batch, wo_batch, normal_batch)
+                
+                with torch.no_grad():
+                    brdf = self.material.decoder(enc_dir, latent_batch)
+                
+                brdf_polar = brdf.mean(dim=-1).cpu().numpy()
+                
+                # Plot in polar coordinates (theta_o as angle, brdf as radius)
+                # theta_o directly maps to polar angle:
+                #   0° = normal direction (top of plot)
+                #   +θ = opposite side from wi (right side, where specular reflection goes)
+                #   -θ = same side as wi (left side, backscatter)
+                polar_angles = theta_o_range  # Use theta_o directly (in radians)
+                ax.plot(polar_angles, brdf_polar, label=f'θ_i={theta_i_deg}°')
+                
+                # Mark the expected specular reflection direction
+                specular_angle = np.radians(theta_i_deg)
+                ax.axvline(x=specular_angle, color=ax.lines[-1].get_color(), linestyle='--', alpha=0.5)
+            
+            ax.set_theta_zero_location('N')  # 0 degrees at top (normal direction)
+            ax.set_theta_direction(1)  # Counter-clockwise (standard math convention)
+            ax.set_thetamin(-90)
+            ax.set_thetamax(90)
+            ax.legend(loc='upper right', bbox_to_anchor=(1.3, 1.0))
+            ax.set_title(f'BRDF Polar Plot - Latent {latent_idx}\n(0°=normal, dashed=specular direction)')
+            plt.tight_layout()
+            plt.savefig(os.path.join(brdf_lobe_dir, f'polar_brdf_latent_{latent_idx}.png'), dpi=150)
+            plt.close()
+        
+        print(f"[BRDF Lobe Visualization] Saved {num_latents * 3} figures to {brdf_lobe_dir}")
+
     def loss_function(self, rgbs, rgbs_gt, vis):
         # Calculate per-pixel loss
         if self.hparams.model.loss.recon_loss.name == "l1":
@@ -495,6 +826,28 @@ class Stage2Trainer(pl.LightningModule):
             
         os.makedirs(os.path.join(self.cfg.exp_output_root_path, f'pbr_map_images'), exist_ok=True)
         self.save_pbr_texture(os.path.join(self.cfg.exp_output_root_path, f'pbr_map_images'), batch_idx, b)
+        
+        # Visualize BRDF lobes (only on first batch to avoid redundant visualizations)
+        if self.visualize_lobe and batch_idx == 0:
+            self.visualize_brdf_lobe(
+                output_dir=os.path.join(self.cfg.exp_output_root_path, f'images'),
+                num_latents=10,
+                resolution=64
+            )
+        
+        # Save normal map at first batch
+        if batch_idx == 0:
+            pbr_map_dir = os.path.join(self.cfg.exp_output_root_path, 'pbr_map_images')
+            os.makedirs(pbr_map_dir, exist_ok=True)
+            if hasattr(self.material, 'latent_texture'):
+                # Normal is stored at channels -6:-3 in latent_texture.params [1, latent_dim, H, W]
+                normal_map = self.material.latent_texture.params[:, -6:-3, :, :]  # [1, 3, H, W]
+                # Normalize for visualization (normal values can be negative)
+                normal_map_vis = (normal_map + 1.0) / 2.0  # Map from [-1,1] to [0,1]
+                torchvision.utils.save_image(
+                    normal_map_vis,
+                    os.path.join(pbr_map_dir, 'normal_map_batch0.png')
+                )
             
         self.log('val/loss', loss)
         self.log('val/emitter_radiance', emitter_radiance.mean())
