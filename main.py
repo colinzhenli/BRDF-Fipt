@@ -56,9 +56,10 @@ def main(cfg):
         albedo=torch.tensor(albedo)
     )  # Ground truth uses pbr config
     print("before trainer init")
-    # Get the appropriate trainer class based on stage
+    # Get the appropriate trainer class based on stage and data type
     stage = cfg.model.get('stage', 1)  # Default to stage 1
-    TrainerClass = get_trainer_class(stage)
+    data_type = cfg.data.get('dataset_name', 'default')
+    TrainerClass = get_trainer_class(stage, data_type)
     
     print(f"Using trainer for stage {stage}: {TrainerClass.__name__}")
     model = TrainerClass(cfg, material, gt_material, roughness, metallic)
@@ -150,7 +151,7 @@ def main(cfg):
                 val_dataset = RealNovelViewDataset(cfg, gt_folder=cfg.gt_folder)
             else:
                 val_dataset = RealValDataset(cfg, gt_folder=cfg.gt_folder)
-    elif cfg.data.dataset_name == "points":
+    elif cfg.data.dataset_name == "merl":
         if cfg.model.stage == 1:
             train_dataset = MERLBRDFIterableDataset(cfg,data_folder=cfg.dataset_folder,batch_size=1048576,split="train")
             if cfg.data.debug & cfg.data.valid_on_train_set:
@@ -163,6 +164,12 @@ def main(cfg):
                 val_dataset = MERLBRDFFixedDataset(cfg,data_folder=cfg.dataset_folder,batch_size=1048576,split="val")
             else:
                 val_dataset = MERLBRDFFixedDataset(cfg,data_folder=cfg.dataset_folder,batch_size=1048576,split="val")
+    elif cfg.data.dataset_name == "points":
+        train_dataset = MultiMaterialPointDataset(cfg, root_folder=cfg.dataset_folder, split="train")
+        if cfg.data.debug & cfg.data.valid_on_train_set:
+            val_dataset = MultiMaterialPointDataset(cfg, root_folder=cfg.dataset_folder, split="train")
+        else:
+            val_dataset = MultiMaterialPointDataset(cfg, root_folder=cfg.dataset_folder, split="val")
     else:
         raise ValueError(f"Invalid dataset name: {cfg.data.dataset_name}")
     if not cfg.model.test:

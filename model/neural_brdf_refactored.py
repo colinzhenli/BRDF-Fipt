@@ -504,6 +504,11 @@ class AnisotropicLatentTexturedModel(LightningModule):
         self.gt_frame = cfg.gt_frame
         self.anisotropic = True
         self.Gaussian_blur = cfg.Gaussian_blur
+        self.learnable_factor = cfg.learnable_factor
+        if self.learnable_factor:
+            self.factor = nn.Parameter(torch.tensor(1.0))
+            
+        self.mono_brdf = cfg.mono_brdf
         
         # Neural geometry settings
         self.neural_geometry_enabled = cfg.neural_geometry.enable
@@ -527,6 +532,8 @@ class AnisotropicLatentTexturedModel(LightningModule):
         if self.neural_geometry_enabled:
             total_latent_dim += self.geometry_latent_dim
         
+        if self.mono_brdf:
+            total_latent_dim += 3 # add three color channels
         # 1. Create LatentTexture
         self.texture_resolution = getattr(cfg, 'texture_resolution', 256)
         blur_config = {
@@ -939,21 +946,19 @@ class AnisotropicLatentTexturedModel(LightningModule):
         local_normal[..., 2] = 1.0  # (0, 0, 1) in local space
         
         # 5. Encode directions
-        enc_dir = self.decoder.encode_directions(wi_local, wo_local, local_normal)
+        enc_dir = self.decoder.encode_directions(wi_local, wo_local, local_normal)     
         
         # 6. Extract BRDF latent and decode
         if self.colorful_texture:
-            if self.different_decoder:
-                # Shared trunk + 3 heads: just call once, returns [B, 3]
-                brdf = self.decoder(enc_dir, latent[..., :self.latent_dim])
-            else:
-                brdf = self.decoder(enc_dir, latent[..., :self.latent_dim])
+            brdf = self.decoder(enc_dir, latent[..., :self.latent_dim])
         else:
             brdf = self.decoder(enc_dir, latent[..., :self.latent_dim])
             brdf = brdf.repeat(1, 3)  # Replicate to RGB
         
         # 7. Calculate PDF (cosine-weighted)
         pdf = NoL / math.pi
+        if self.learnable_factor:
+            brdf = brdf * self.factor
         
         return brdf, predicted_normal, pdf, uv_offset
     

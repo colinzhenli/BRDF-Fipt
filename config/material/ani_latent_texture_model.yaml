@@ -2,8 +2,9 @@ type: "AnisotropicLatentTexturedModel"
 module: "model.neural_brdf_refactored"
 latent_dim: 16
 predict_frame: True
-use_nerfstudio_sh: False
 
+use_nerfstudio_sh: False
+learnable_factor: False # True only learned from merl data
 use_latent_bank: True
 initialize_from_std: True
 observations_folder: ${dataset_folder}/observations
@@ -46,6 +47,7 @@ neural_geometry:
 # output_channels: 1
 
 # # config 3:
+mono_brdf: False
 larger_latent_dim: False
 different_decoder: False
 output_channels: 3

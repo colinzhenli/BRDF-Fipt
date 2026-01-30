@@ -1,15 +1,31 @@
 from .stage1_trainer import Stage1Trainer
 from .stage2_trainer import Stage2Trainer
 from .stage1_trainer_merl import Stage1Trainer_MERL
+from .stage2_trainer_merl import Stage2Trainer_MERL
 
 # Registry for easy lookup
 TRAINER_REGISTRY = {
-    1: Stage1Trainer_MERL,
-    2: Stage1Trainer_MERL,
+    'default': {
+        1: Stage1Trainer,
+        2: Stage2Trainer,
+    },
+    'merl': {
+        1: Stage1Trainer_MERL,
+        2: Stage2Trainer_MERL,
+    },
 }
 
-def get_trainer_class(stage: int):
-    """Factory function to get trainer class by stage."""
-    if stage not in TRAINER_REGISTRY:
-        raise ValueError(f"Unknown stage: {stage}. Available: {list(TRAINER_REGISTRY.keys())}")
-    return TRAINER_REGISTRY[stage]
+def get_trainer_class(stage: int, data_type: str = 'default'):
+    """Factory function to get trainer class by stage and data type.
+    
+    Args:
+        stage: Training stage (1 or 2)
+        data_type: Data config name ('merl' for MERL dataset, otherwise 'default')
+    """
+    # Determine which registry to use
+    registry_key = 'merl' if data_type == 'merl' else 'default'
+    registry = TRAINER_REGISTRY[registry_key]
+    
+    if stage not in registry:
+        raise ValueError(f"Unknown stage: {stage}. Available: {list(registry.keys())}")
+    return registry[stage]

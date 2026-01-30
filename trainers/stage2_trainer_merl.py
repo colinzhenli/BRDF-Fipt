@@ -16,7 +16,7 @@ from model.brdf import GreyPatchBRDF
 import os
 from utils.pose_refiner import GlobalHandEyeRefiner
 
-class Stage2Trainer(pl.LightningModule):
+class Stage2Trainer_MERL(pl.LightningModule):
     def __init__(self, cfg, material, gt_material, roughness, metallic):
         super().__init__()
         self.cfg = cfg
@@ -27,7 +27,7 @@ class Stage2Trainer(pl.LightningModule):
         self.gt_material = gt_material
         self.gt_folder = cfg.gt_folder
         self.camera_factor = cfg.renderer.camera.linear_factor
-        
+        print("Initializing stage2 trainer for MERL")
         #self.latent_dim = cfg.material.latent_dim
         # Create a mapping from roughness-metallic pairs to train latent indices
         self.radiance_rgb_pairs = {}
@@ -351,10 +351,9 @@ class Stage2Trainer(pl.LightningModule):
                                         None, None, validation=False)                       # f(r)
         rgbs = rgbs * self.camera_factor
         loss = self.loss_function(rgbs, rgbs_gt, vis)
-
+        MAX_VAL = 65535.0
         psnr_loss  = torch.nn.functional.mse_loss(rgbs[vis], rgbs_gt.squeeze(0)[vis], reduction='mean')
-        max_val = torch.max(torch.stack([rgbs[vis].max(), rgbs_gt.squeeze(0)[vis].max()])).clamp_min(1e-8)
-        psnr       = 10.0 * torch.log10((max_val ** 2) / psnr_loss.clamp_min(1e-5))
+        psnr       = 10.0 * torch.log10((MAX_VAL ** 2) / psnr_loss.clamp_min(1e-5))
 
         # ------------------------------------------------------------------
         # 7.  Logging  (now includes diagnostics)
@@ -383,8 +382,9 @@ class Stage2Trainer(pl.LightningModule):
         else:
             uv_offset = extra_output
         rgbs = rgbs * self.camera_factor
+        MAX_VAL = 65535.0
         psnr_loss = torch.nn.functional.mse_loss(rgbs[vis], rgbs_gt.squeeze(0)[vis], reduction='mean')
-        max_val = torch.max(torch.stack([rgbs[vis].max(), rgbs_gt.squeeze(0)[vis].max()])).clamp_min(1e-8)
+        max_val = MAX_VAL
         psnr = 10.0 * torch.log10((max_val ** 2) / psnr_loss.clamp_min(1e-5))
         
         loss = self.loss_function(rgbs, rgbs_gt, vis)

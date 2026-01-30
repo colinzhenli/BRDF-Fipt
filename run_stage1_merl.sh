@@ -4,10 +4,10 @@ export CUDA_VISIBLE_DEVICES=1
 
 python main.py \
     dataset_folder=/media/raid/cloth/BRDFDatabase/brdfs \
-    data=points \
+    data=merl \
     renderer=realcapture_area_emitter \
     material=merl_brdf_model \
-    experiment_name=MERL_run_1 \
+    experiment_name=MERL_Refactor_Correct-Activation_run_1 \
     model.loss.recon_loss.name=l1 \
     model.stage=1 \
     model.test=False \
