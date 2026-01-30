@@ -1,14 +1,13 @@
 #!/bin/bash
 
-export CUDA_VISIBLE_DEVICES=3
+export CUDA_VISIBLE_DEVICES=1
 
 python main.py \
-    dataset_folder=/home/featurize/data \
+    dataset_folder=/media/raid/cloth/BRDFDatabase/brdfs \
     data=points \
     renderer=realcapture_area_emitter \
     material=merl_brdf_model \
-    experiment_name=Leaky-ReLU_Stage-1_Material-100-40_Skip-connection_run_1 \
-    output_folder=/home/featurize/data/output \
+    experiment_name=MERL_run_1 \
     model.loss.recon_loss.name=l1 \
     model.stage=1 \
     model.test=False \
