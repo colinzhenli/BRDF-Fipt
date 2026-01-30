@@ -350,8 +350,8 @@ class Stage1Trainer_MERL(pl.LightningModule):
         # forward renders
         rgbs=self.material.eval_brdf(wi, wo, material_id)
         
-        print("rgbs",torch.mean(rgbs))
-        print("rgbs_gt",torch.mean(rgbs_gt))
+        # print("rgbs",torch.mean(rgbs))
+        # print("rgbs_gt",torch.mean(rgbs_gt))
         vis = torch.ones_like(rgbs, dtype=torch.bool)
         loss = self.loss_function(rgbs, rgbs_gt, vis)
 

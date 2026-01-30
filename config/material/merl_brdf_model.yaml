@@ -1,8 +1,8 @@
 type: "MERLBRDF"
 module: "model.neural_brdf_refactored"
 data_folder: ${dataset_folder}
-num_materials: ${data.num_materials}
-start_material_id: ${data.start_material_id}
+num_materials: 1
+start_material_id: 0
 latent_dim: 16
 predict_frame: True
 use_pos_enc: True

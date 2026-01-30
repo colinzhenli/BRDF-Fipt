@@ -87,34 +87,34 @@
         //     ]
         // },
 
-        {
-            "name": "Python: Auto-decoder Points",
-            "type": "python",
-            "request": "launch",
-            "program": "main.py",
-            "console": "integratedTerminal",
-            "justMyCode": true,
-            "env": {
-                "CUDA_VISIBLE_DEVICES": "3"
-            },
-            "args": [
-                "dataset_folder=/media/raid/cloth/capture_data/Dataset_Nov11",
-                "data=points",
-                "renderer=multiarea_emitter",
-                "material=multi_material_latent",
-                "experiment_name=Leaky-ReLU_Material-102_No-chunk-switching_Debug",
-                "model.stage=1",
-                "model.test=False",
-                "model.trainer.limit_train_batches=512",
-                "material.decoder.use_skip_connection=False",
-                "data.switch_iters=2000",
-                "data.filter_observations=False",
-                "data.debug=True",
-                "data.val_ratio=0.2",
-                "data.num_materials=1",
-                "data.start_material_id=100"
-            ]
-        },
+        // {
+        //     "name": "Python: Auto-decoder Points",
+        //     "type": "python",
+        //     "request": "launch",
+        //     "program": "main.py",
+        //     "console": "integratedTerminal",
+        //     "justMyCode": true,
+        //     "env": {
+        //         "CUDA_VISIBLE_DEVICES": "3"
+        //     },
+        //     "args": [
+        //         "dataset_folder=/media/raid/cloth/capture_data/Dataset_Nov11",
+        //         "data=points",
+        //         "renderer=multiarea_emitter",
+        //         "material=multi_material_latent",
+        //         "experiment_name=Leaky-ReLU_Material-102_No-chunk-switching_Debug",
+        //         "model.stage=1",
+        //         "model.test=False",
+        //         "model.trainer.limit_train_batches=512",
+        //         "material.decoder.use_skip_connection=False",
+        //         "data.switch_iters=2000",
+        //         "data.filter_observations=False",
+        //         "data.debug=True",
+        //         "data.val_ratio=0.2",
+        //         "data.num_materials=1",
+        //         "data.start_material_id=100"
+        //     ]
+        // },
         {
             "name": "Debug: test.sh (MERL BRDF Stage1)",
             "type": "python",
@@ -122,25 +122,28 @@
             "program": "main.py",
             "console": "integratedTerminal",
             "justMyCode": false,
-            "python": "/home/featurize/work/capture_env/bin/python",
             "env": {
-                "CUDA_VISIBLE_DEVICES": "0"
+                "CUDA_VISIBLE_DEVICES": "1"
             },
             "args": [
+                "dataset_folder=/media/raid/cloth/BRDFDatabase/brdfs",
+                "data=points",
                 "renderer=realcapture_area_emitter",
                 "material=merl_brdf_model",
-                "experiment_name=mat3_overfit_debug",
-                "output_folder=/home/featurize/data/output",
+                "experiment_name=MERL_Debug_1",
+                "output_folder=/media/raid/cloth/output/BRDF",
                 "model.loss.recon_loss.name=l1",
-                "data.importance_sampling=False",
-                "data.use_single_chunk_sampling=False",
-                "data.uniform_sampling=False",
-                "dataset_folder=/home/featurize/data",
                 "model.stage=1",
-                "model.freeze_decoder=False",
-                "model.trainer.max_epochs=51",
+                "model.test=False",
+                "model.trainer.max_epochs=3000",
                 "model.trainer.limit_train_batches=512",
-                "data.rays_num=32768"
+                "material.decoder.use_skip_connection=True",
+                "material.latent_dim=16",
+                "material.decoder.degree=5",
+                "material.different_decoder=False",
+                "data.switch_iters=2000",
+                "data.chunk_size=20",
+                "data.filter_observations=False"
             ]
         },
 
@@ -171,35 +174,35 @@
         // }
 
 
-        {
-            "name": "Python: stage 2 pretrained 119",
-            "type": "python",
-            "request": "launch",
-            "program": "main.py",
-            "console": "integratedTerminal",
-            "justMyCode": true,
-            "env": {
-                "CUDA_VISIBLE_DEVICES": "1"
-            },
-            "args": [
-                "dataset_folder=/media/raid/cloth/capture_data/Dataset_Nov11/105",
-                "data=real",
-                "renderer=rotatearea_emitter",
-                "material=ani_latent_texture_model",
-                "material.different_decoder=False",
-                "material.decoder.use_skip_connection=True",
-                "experiment_name=Single-head-Material-105_Closer_Novel-view-test-Rotate-Area-Emitter-Angle-60_Visualize-Lobe_run_1",
-                "model.stage=2",
-                "model.test=True",
-                "material.use_latent_bank=False",
-                "material.neural_geometry.factor=0.02",
-                "model.freeze_decoder=True",
-                "data.switch_iters=3000",
-                "data.debug=False",
-                "data.valid_on_train_set=True",
-                "model.ckpt_path=/media/raid/cloth/output/BRDF/real/Stage-2_Epoch-1600-model_Small-Gaussian-blur_Single-Head-decoder_Neural-geometry-factor-0.02_Initialize-from-std_Leaky-ReLU_Material-105_run_1/training/model_0.20_0.20/last.ckpt"
-            ]
-        }
+        // {
+        //     "name": "Python: stage 2 pretrained 119",
+        //     "type": "python",
+        //     "request": "launch",
+        //     "program": "main.py",
+        //     "console": "integratedTerminal",
+        //     "justMyCode": true,
+        //     "env": {
+        //         "CUDA_VISIBLE_DEVICES": "1"
+        //     },
+        //     "args": [
+        //         "dataset_folder=/media/raid/cloth/capture_data/Dataset_Nov11/105",
+        //         "data=real",
+        //         "renderer=rotatearea_emitter",
+        //         "material=ani_latent_texture_model",
+        //         "material.different_decoder=False",
+        //         "material.decoder.use_skip_connection=True",
+        //         "experiment_name=Single-head-Material-105_Closer_Novel-view-test-Rotate-Area-Emitter-Angle-60_Visualize-Lobe_run_1",
+        //         "model.stage=2",
+        //         "model.test=True",
+        //         "material.use_latent_bank=False",
+        //         "material.neural_geometry.factor=0.02",
+        //         "model.freeze_decoder=True",
+        //         "data.switch_iters=3000",
+        //         "data.debug=False",
+        //         "data.valid_on_train_set=True",
+        //         "model.ckpt_path=/media/raid/cloth/output/BRDF/real/Stage-2_Epoch-1600-model_Small-Gaussian-blur_Single-Head-decoder_Neural-geometry-factor-0.02_Initialize-from-std_Leaky-ReLU_Material-105_run_1/training/model_0.20_0.20/last.ckpt"
+        //     ]
+        // }
 
         // {
         //     "name": "Python: Current File",

@@ -3,13 +3,12 @@
 export CUDA_VISIBLE_DEVICES=3
 
 python main.py \
-    dataset_folder=/home/featurize/data \
+    dataset_folder=/media/raid/cloth/capture_data/Dataset_Nov11 \
     data=points \
-    renderer=realcapture_area_emitter \
-    material=merl_brdf_model \
-    experiment_name=Leaky-ReLU_Stage-1_Material-100-40_Skip-connection_run_1 \
-    output_folder=/home/featurize/data/output \
-    model.loss.recon_loss.name=l1 \
+    renderer=multiarea_emitter \
+    material=multi_material_latent \
+    experiment_name=L2_All-materials_Latent-dim-16_Large-batch_training_Single-color-head_degree-5_run_2 \
+    model.loss.recon_loss.name=l2 \
     model.stage=1 \
     model.test=False \
     model.trainer.max_epochs=3000 \

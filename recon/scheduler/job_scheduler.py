@@ -29,7 +29,7 @@ import pynvml
 
 class Config:
     """Scheduler configuration"""
-    GPU_IDS = [3]
+    GPU_IDS = [2]
     MAX_COLMAP_PER_GPU = 5  # Maximum COLMAP jobs per GPU
     TOTAL_CPU_CORES = 128
     CPU_CORES_PER_COLMAP = 8  # CPU threads allocated per COLMAP job

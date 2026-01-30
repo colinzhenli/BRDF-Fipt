@@ -1492,7 +1492,7 @@ class MERLBRDF(LightningModule):
         normal_local = torch.zeros_like(wi)
         normal_local[..., 2] = 1.0  # Normal is always (0,0,1) in local space
         
-        print("latent",torch.mean(latent),torch.std(latent))
+        # print("latent",torch.mean(latent),torch.std(latent))
         # Encode directions
         enc_dir = self.decoder.encode_directions(wi, wo, normal_local)
         
