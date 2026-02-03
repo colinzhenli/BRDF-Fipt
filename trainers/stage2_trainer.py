@@ -22,8 +22,8 @@ class Stage2Trainer(pl.LightningModule):
         self.cfg = cfg
         self.save_hyperparameters(cfg)
 
-        self.more_visualization = True
-        self.visualize_lobe = True
+        self.more_visualization = False
+        self.visualize_lobe = False
         self.material = material
         self.freeze_decoder = cfg.model.freeze_decoder
         self.gt_material = gt_material

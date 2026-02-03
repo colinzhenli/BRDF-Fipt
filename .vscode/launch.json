@@ -182,26 +182,26 @@
             "console": "integratedTerminal",
             "justMyCode": true,
             "env": {
-                "CUDA_VISIBLE_DEVICES": "2"
+                "CUDA_VISIBLE_DEVICES": "1"
             },
             "args": [
                 "dataset_folder=/media/raid/cloth/capture_data/Dataset_Nov11/227",
                 "data=real",
                 "renderer=multiarea_emitter",
-                "material=ani_latent_texture_model",
+                "material=learnable_pbr_texture_model",
                 "material.different_decoder=False",
                 "material.decoder.use_skip_connection=True",
                 "material.learnable_factor=True",
-                "experiment_name=Single-head-Material-227_test-MERL-Area-Emitter_Visualize-Lobe_run_1",
+                "experiment_name=PBR_debug_run_1",
                 "model.stage=2",
-                "model.test=True",
+                "model.test=False",
                 "material.use_latent_bank=False",
                 "material.neural_geometry.factor=0.02",
                 "model.freeze_decoder=True",
                 "data.switch_iters=3000",
-                "data.debug=False",
+                "data.debug=True",
                 "data.valid_on_train_set=False",
-                "model.ckpt_path=/media/raid/cloth/output/BRDF/real/Stage-2_Consistent-psnr_Learnable-factor-from-MERL_Degree-3_Single-Head-decoder_Neural-geometry-factor-0.02_Initialize-from-std_Leaky-ReLU_Material-227_run_1/training/model_0.20_0.20/last.ckpt"
+                // "model.ckpt_path=/media/raid/cloth/output/BRDF/real/Stage-2_Consistent-psnr_Learnable-factor-from-MERL_Degree-3_Single-Head-decoder_Neural-geometry-factor-0.02_Initialize-from-std_Leaky-ReLU_Material-227_run_1/training/model_0.20_0.20/last.ckpt"
             ]
         }
 
