@@ -22,7 +22,7 @@ class Stage2Trainer(pl.LightningModule):
         self.cfg = cfg
         self.save_hyperparameters(cfg)
 
-        self.more_visualization = False
+        self.more_visualization = True
         self.visualize_lobe = True
         self.material = material
         self.freeze_decoder = cfg.model.freeze_decoder
@@ -433,31 +433,32 @@ class Stage2Trainer(pl.LightningModule):
                                        alpha=0.8, linewidth=0, antialiased=True)
                 
                 # Draw the surface plane (z=0) for reference
-                plane_size = brdf_values.max() * 1.2
-                xx, yy = np.meshgrid(np.linspace(-plane_size, plane_size, 10),
-                                     np.linspace(-plane_size, plane_size, 10))
+                max_xy = max(np.abs(x).max(), np.abs(y).max()) * 1.2
+                max_z = z.max() * 1.2 if z.max() > 0 else 1.0
+                xx, yy = np.meshgrid(np.linspace(-max_xy, max_xy, 10),
+                                     np.linspace(-max_xy, max_xy, 10))
                 ax.plot_surface(xx, yy, np.zeros_like(xx), alpha=0.1, color='gray')
                 
-                # Draw normal direction arrow
-                ax.quiver(0, 0, 0, 0, 0, brdf_values.max()*0.5, color='red', arrow_length_ratio=0.1, linewidth=2)
+                # Draw normal direction arrow (scaled to z range)
+                ax.quiver(0, 0, 0, 0, 0, max_z*0.8, color='red', arrow_length_ratio=0.1, linewidth=2)
                 
-                # Draw wo direction arrow (viewing direction)
+                # Draw wo direction arrow (viewing direction, scaled appropriately)
                 wo_np = wo[0].cpu().numpy()
-                ax.quiver(0, 0, 0, wo_np[0]*brdf_values.max()*0.5, 
-                         wo_np[1]*brdf_values.max()*0.5, 
-                         wo_np[2]*brdf_values.max()*0.5, 
+                arrow_scale = max(max_xy, max_z) * 0.5
+                ax.quiver(0, 0, 0, wo_np[0]*arrow_scale, 
+                         wo_np[1]*arrow_scale, 
+                         wo_np[2]*arrow_scale, 
                          color='blue', arrow_length_ratio=0.1, linewidth=2, label='wo')
                 
                 ax.set_xlabel('X')
                 ax.set_ylabel('Y')
                 ax.set_zlabel('Z (Normal)')
-                ax.set_title(f'wo_θ={wo_elev}°\nBRDF: [{brdf_values.min():.3f}, {brdf_values.max():.3f}]')
+                ax.set_title(f'wo_θ={wo_elev}°\nBRDF: [{brdf_values.min():.3f}, {brdf_values.max():.3f}]\nz range: [{z.min():.3f}, {z.max():.3f}]')
                 
-                # Set equal aspect ratio
-                max_range = brdf_values.max() * 1.2
-                ax.set_xlim([-max_range, max_range])
-                ax.set_ylim([-max_range, max_range])
-                ax.set_zlim([0, max_range])
+                # Set axis limits based on actual data ranges (independent scaling for z)
+                ax.set_xlim([-max_xy, max_xy])
+                ax.set_ylim([-max_xy, max_xy])
+                ax.set_zlim([0, max_z])
                 ax.view_init(elev=30, azim=45)
             
             plt.suptitle(f'3D BRDF Lobe - Latent {latent_idx}\nUV: {random_uvs[latent_idx].cpu().numpy()}\nRed=Normal, Blue=wo')
@@ -627,12 +628,76 @@ class Stage2Trainer(pl.LightningModule):
             ax.set_thetamin(-90)
             ax.set_thetamax(90)
             ax.legend(loc='upper right', bbox_to_anchor=(1.3, 1.0))
-            ax.set_title(f'BRDF Polar Plot - Latent {latent_idx}\n(0°=normal, dashed=specular direction)')
+            ax.set_title(f'BRDF Polar Plot (vary wo) - Latent {latent_idx}\n(Fixed wi, vary wo; 0°=normal, dashed=specular direction)')
             plt.tight_layout()
-            plt.savefig(os.path.join(brdf_lobe_dir, f'polar_brdf_latent_{latent_idx}.png'), dpi=150)
+            plt.savefig(os.path.join(brdf_lobe_dir, f'polar_brdf_vary_wo_latent_{latent_idx}.png'), dpi=150)
             plt.close()
         
-        print(f"[BRDF Lobe Visualization] Saved {num_latents * 3} figures to {brdf_lobe_dir}")
+        # =====================================================================
+        # Visualization 4: Polar plot of BRDF - Fix wo, vary wi
+        # This is the flipped version: fix viewing direction, vary light direction
+        # =====================================================================
+        theta_o_values = [15.0, 30.0, 45.0, 60.0]  # degrees - fixed viewing angles
+        
+        for latent_idx in range(num_latents):
+            latent = brdf_latents[latent_idx:latent_idx+1]
+            
+            fig, ax = plt.subplots(figsize=(8, 8), subplot_kw={'projection': 'polar'})
+            
+            for theta_o_deg in theta_o_values:
+                theta_o = np.radians(theta_o_deg)
+                
+                # wo direction (fixed viewing direction, phi = 0)
+                wo = torch.tensor([[
+                    np.sin(theta_o),
+                    0.0,
+                    np.cos(theta_o)
+                ]], device=device, dtype=torch.float32)
+                
+                # Vary theta_i from -90 to 90 degrees (full incidence plane)
+                theta_i_range = np.linspace(0.1, np.pi/2 - 0.1, resolution * 2)
+                
+                wi_batch = torch.zeros(len(theta_i_range), 3, device=device)
+                for j, theta_i in enumerate(theta_i_range):
+                    if theta_i >= 0:
+                        # phi_i = 180 (opposite side from wo)
+                        wi_batch[j, 0] = -np.sin(theta_i)
+                        wi_batch[j, 2] = np.cos(theta_i)
+                    else:
+                        # phi_i = 0 (same side as wo)
+                        wi_batch[j, 0] = np.sin(-theta_i)
+                        wi_batch[j, 2] = np.cos(-theta_i)
+                
+                wo_batch = wo.expand(len(theta_i_range), -1)
+                normal_batch = local_normal.expand(len(theta_i_range), -1)
+                latent_batch = latent.expand(len(theta_i_range), -1)
+                
+                enc_dir = self.material.decoder.encode_directions(wi_batch, wo_batch, normal_batch)
+                
+                with torch.no_grad():
+                    brdf = self.material.decoder(enc_dir, latent_batch)
+                
+                brdf_polar = brdf.mean(dim=-1).cpu().numpy()
+                
+                # Plot in polar coordinates (theta_i as angle, brdf as radius)
+                polar_angles = theta_i_range
+                ax.plot(polar_angles, brdf_polar, label=f'θ_o={theta_o_deg}°')
+                
+                # Mark the expected specular reflection direction (mirror of wo)
+                specular_angle = np.radians(theta_o_deg)
+                ax.axvline(x=specular_angle, color=ax.lines[-1].get_color(), linestyle='--', alpha=0.5)
+            
+            ax.set_theta_zero_location('N')  # 0 degrees at top (normal direction)
+            ax.set_theta_direction(1)
+            ax.set_thetamin(-90)
+            ax.set_thetamax(90)
+            ax.legend(loc='upper right', bbox_to_anchor=(1.3, 1.0))
+            ax.set_title(f'BRDF Polar Plot (vary wi) - Latent {latent_idx}\n(Fixed wo, vary wi; 0°=normal, dashed=specular direction)')
+            plt.tight_layout()
+            plt.savefig(os.path.join(brdf_lobe_dir, f'polar_brdf_vary_wi_latent_{latent_idx}.png'), dpi=150)
+            plt.close()
+        
+        print(f"[BRDF Lobe Visualization] Saved {num_latents * 4} figures to {brdf_lobe_dir}")
 
     def loss_function(self, rgbs, rgbs_gt, vis):
         # Calculate per-pixel loss
@@ -686,8 +751,7 @@ class Stage2Trainer(pl.LightningModule):
         loss = self.loss_function(rgbs, rgbs_gt, vis)
 
         psnr_loss  = torch.nn.functional.mse_loss(rgbs[vis], rgbs_gt.squeeze(0)[vis], reduction='mean')
-        MAX_VAL = 65535.0
-        max_val = MAX_VAL
+        max_val = rgbs_gt.squeeze(0)[vis].max().clamp_min(1e-8)
         psnr       = 10.0 * torch.log10((max_val ** 2) / psnr_loss.clamp_min(1e-5))
 
         # ------------------------------------------------------------------
@@ -718,8 +782,7 @@ class Stage2Trainer(pl.LightningModule):
             uv_offset = extra_output
         rgbs = rgbs * self.camera_factor
         psnr_loss = torch.nn.functional.mse_loss(rgbs[vis], rgbs_gt.squeeze(0)[vis], reduction='mean')
-        MAX_VAL = 65535.0
-        max_val = MAX_VAL
+        max_val = rgbs_gt.squeeze(0)[vis].max().clamp_min(1e-8)
         psnr = 10.0 * torch.log10((max_val ** 2) / psnr_loss.clamp_min(1e-5))
         
         loss = self.loss_function(rgbs, rgbs_gt, vis)

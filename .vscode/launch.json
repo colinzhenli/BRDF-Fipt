@@ -115,37 +115,37 @@
         //         "data.start_material_id=100"
         //     ]
         // },
-        {
-            "name": "Debug: test.sh (MERL BRDF Stage1)",
-            "type": "python",
-            "request": "launch",
-            "program": "main.py",
-            "console": "integratedTerminal",
-            "justMyCode": false,
-            "env": {
-                "CUDA_VISIBLE_DEVICES": "1"
-            },
-            "args": [
-                "dataset_folder=/media/raid/cloth/BRDFDatabase/brdfs",
-                "data=merl",
-                "renderer=realcapture_area_emitter",
-                "material=merl_brdf_model",
-                "experiment_name=MERL_Refactor_Debug_1",
-                "output_folder=/media/raid/cloth/output/BRDF",
-                "model.loss.recon_loss.name=l1",
-                "model.stage=1",
-                "model.test=False",
-                "model.trainer.max_epochs=3000",
-                "model.trainer.limit_train_batches=512",
-                "material.decoder.use_skip_connection=True",
-                "material.latent_dim=16",
-                "material.decoder.degree=5",
-                "material.different_decoder=False",
-                "data.switch_iters=2000",
-                "data.chunk_size=20",
-                "data.filter_observations=False"
-            ]
-        },
+        // {
+        //     "name": "Debug: test.sh (MERL BRDF Stage1)",
+        //     "type": "python",
+        //     "request": "launch",
+        //     "program": "main.py",
+        //     "console": "integratedTerminal",
+        //     "justMyCode": false,
+        //     "env": {
+        //         "CUDA_VISIBLE_DEVICES": "1"
+        //     },
+        //     "args": [
+        //         "dataset_folder=/media/raid/cloth/BRDFDatabase/brdfs",
+        //         "data=merl",
+        //         "renderer=realcapture_area_emitter",
+        //         "material=merl_brdf_model",
+        //         "experiment_name=MERL_Refactor_Debug_1",
+        //         "output_folder=/media/raid/cloth/output/BRDF",
+        //         "model.loss.recon_loss.name=l1",
+        //         "model.stage=1",
+        //         "model.test=False",
+        //         "model.trainer.max_epochs=3000",
+        //         "model.trainer.limit_train_batches=512",
+        //         "material.decoder.use_skip_connection=True",
+        //         "material.latent_dim=16",
+        //         "material.decoder.degree=5",
+        //         "material.different_decoder=False",
+        //         "data.switch_iters=2000",
+        //         "data.chunk_size=20",
+        //         "data.filter_observations=False"
+        //     ]
+        // },
 
         // {
         //     "name": "Python: Auto-decoder Points",
@@ -174,35 +174,36 @@
         // }
 
 
-        // {
-        //     "name": "Python: stage 2 pretrained 119",
-        //     "type": "python",
-        //     "request": "launch",
-        //     "program": "main.py",
-        //     "console": "integratedTerminal",
-        //     "justMyCode": true,
-        //     "env": {
-        //         "CUDA_VISIBLE_DEVICES": "1"
-        //     },
-        //     "args": [
-        //         "dataset_folder=/media/raid/cloth/capture_data/Dataset_Nov11/105",
-        //         "data=real",
-        //         "renderer=rotatearea_emitter",
-        //         "material=ani_latent_texture_model",
-        //         "material.different_decoder=False",
-        //         "material.decoder.use_skip_connection=True",
-        //         "experiment_name=Single-head-Material-105_Closer_Novel-view-test-Rotate-Area-Emitter-Angle-60_Visualize-Lobe_run_1",
-        //         "model.stage=2",
-        //         "model.test=True",
-        //         "material.use_latent_bank=False",
-        //         "material.neural_geometry.factor=0.02",
-        //         "model.freeze_decoder=True",
-        //         "data.switch_iters=3000",
-        //         "data.debug=False",
-        //         "data.valid_on_train_set=True",
-        //         "model.ckpt_path=/media/raid/cloth/output/BRDF/real/Stage-2_Epoch-1600-model_Small-Gaussian-blur_Single-Head-decoder_Neural-geometry-factor-0.02_Initialize-from-std_Leaky-ReLU_Material-105_run_1/training/model_0.20_0.20/last.ckpt"
-        //     ]
-        // }
+        {
+            "name": "Python: stage 2 pretrained 119",
+            "type": "python",
+            "request": "launch",
+            "program": "main.py",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "env": {
+                "CUDA_VISIBLE_DEVICES": "2"
+            },
+            "args": [
+                "dataset_folder=/media/raid/cloth/capture_data/Dataset_Nov11/227",
+                "data=real",
+                "renderer=multiarea_emitter",
+                "material=ani_latent_texture_model",
+                "material.different_decoder=False",
+                "material.decoder.use_skip_connection=True",
+                "material.learnable_factor=True",
+                "experiment_name=Single-head-Material-227_test-MERL-Area-Emitter_Visualize-Lobe_run_1",
+                "model.stage=2",
+                "model.test=True",
+                "material.use_latent_bank=False",
+                "material.neural_geometry.factor=0.02",
+                "model.freeze_decoder=True",
+                "data.switch_iters=3000",
+                "data.debug=False",
+                "data.valid_on_train_set=False",
+                "model.ckpt_path=/media/raid/cloth/output/BRDF/real/Stage-2_Consistent-psnr_Learnable-factor-from-MERL_Degree-3_Single-Head-decoder_Neural-geometry-factor-0.02_Initialize-from-std_Leaky-ReLU_Material-227_run_1/training/model_0.20_0.20/last.ckpt"
+            ]
+        }
 
         // {
         //     "name": "Python: Current File",
