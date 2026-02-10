@@ -23,6 +23,7 @@ class Stage2Trainer(pl.LightningModule):
         self.save_hyperparameters(cfg)
 
         self.more_visualization = False
+        self.use_gamma_correction = True  # When True, apply gamma correction and save as 8-bit PNG
         self.visualize_lobe = False
         self.material = material
         self.freeze_decoder = cfg.model.freeze_decoder
@@ -229,6 +230,7 @@ class Stage2Trainer(pl.LightningModule):
             # )
             return
         else:
+            return
             # Check if material has prefilter option
             if self.hparams.material.prefliter:
                 # Save the finest level PBR texture when using prefilter
@@ -655,7 +657,7 @@ class Stage2Trainer(pl.LightningModule):
                 ]], device=device, dtype=torch.float32)
                 
                 # Vary theta_i from -90 to 90 degrees (full incidence plane)
-                theta_i_range = np.linspace(0.1, np.pi/2 - 0.1, resolution * 2)
+                theta_i_range = np.linspace(-np.pi/2 + 0.01, np.pi/2 - 0.01, resolution * 2)
                 
                 wi_batch = torch.zeros(len(theta_i_range), 3, device=device)
                 for j, theta_i in enumerate(theta_i_range):
@@ -677,9 +679,13 @@ class Stage2Trainer(pl.LightningModule):
                 with torch.no_grad():
                     brdf = self.material.decoder(enc_dir, latent_batch)
                 
-                brdf_polar = brdf.mean(dim=-1).cpu().numpy()
+                # cos(theta_i) = wi · normal = wi.z (since normal is [0,0,1] in local space)
+                cos_theta_i = wi_batch[:, 2].clamp(min=0).cpu().numpy()
                 
-                # Plot in polar coordinates (theta_i as angle, brdf as radius)
+                # BRDF * cos(theta_i) - the actual rendering contribution
+                brdf_polar = brdf.mean(dim=-1).cpu().numpy() * cos_theta_i
+                
+                # Plot in polar coordinates (theta_i as angle, brdf*cos as radius)
                 polar_angles = theta_i_range
                 ax.plot(polar_angles, brdf_polar, label=f'θ_o={theta_o_deg}°')
                 
@@ -692,7 +698,7 @@ class Stage2Trainer(pl.LightningModule):
             ax.set_thetamin(-90)
             ax.set_thetamax(90)
             ax.legend(loc='upper right', bbox_to_anchor=(1.3, 1.0))
-            ax.set_title(f'BRDF Polar Plot (vary wi) - Latent {latent_idx}\n(Fixed wo, vary wi; 0°=normal, dashed=specular direction)')
+            ax.set_title(f'BRDF × cos(θ_i) Polar Plot - Latent {latent_idx}\n(Fixed wo, vary wi; 0°=normal, dashed=specular direction)')
             plt.tight_layout()
             plt.savefig(os.path.join(brdf_lobe_dir, f'polar_brdf_vary_wi_latent_{latent_idx}.png'), dpi=150)
             plt.close()
@@ -831,19 +837,41 @@ class Stage2Trainer(pl.LightningModule):
                     cv2.cvtColor(error_image, cv2.COLOR_RGB2BGR)
                 )
             else:
-                # Convert float32 (0-65535) to uint16 (0-65535)
-                sample_rgbs_gt_16bit = np.clip(sample_rgbs_gt.cpu().numpy(), 0, 65535).astype(np.uint16)
-                sample_rgbs_16bit = np.clip(sample_rgbs.cpu().numpy(), 0, 65535).astype(np.uint16)
+                if self.use_gamma_correction:
+                    # Apply gamma correction and save as 8-bit PNG
+                    # First normalize from 0-65535 to 0-1, then apply gamma, then scale to 0-255
+                    sample_rgbs_gt_normalized = sample_rgbs_gt / 65535.0
+                    sample_rgbs_normalized = sample_rgbs / 65535.0
+                    
+                    sample_rgbs_gt_gamma = self.gamma(sample_rgbs_gt_normalized)
+                    sample_rgbs_gamma = self.gamma(sample_rgbs_normalized)
+                    
+                    sample_rgbs_gt_8bit = (sample_rgbs_gt_gamma.cpu().numpy() * 255).astype(np.uint8)
+                    sample_rgbs_8bit = (sample_rgbs_gamma.cpu().numpy() * 255).astype(np.uint8)
+                    
+                    # Save as 8-bit PNG (OpenCV expects BGR)
+                    cv2.imwrite(
+                        os.path.join(output_dir, f'gt_view_{batch_idx}_{b}.png'),
+                        cv2.cvtColor(sample_rgbs_gt_8bit, cv2.COLOR_RGB2BGR)
+                    )
+                    cv2.imwrite(
+                        os.path.join(output_dir, f'result_view_{batch_idx}_{b}.png'),
+                        cv2.cvtColor(sample_rgbs_8bit, cv2.COLOR_RGB2BGR)
+                    )
+                else:
+                    # Convert float32 (0-65535) to uint16 (0-65535)
+                    sample_rgbs_gt_16bit = np.clip(sample_rgbs_gt.cpu().numpy(), 0, 65535).astype(np.uint16)
+                    sample_rgbs_16bit = np.clip(sample_rgbs.cpu().numpy(), 0, 65535).astype(np.uint16)
 
-                # Save as 16-bit PNG (OpenCV expects BGR)
-                cv2.imwrite(
-                    os.path.join(output_dir, f'gt_view_{batch_idx}_{b}.png'),
-                    cv2.cvtColor(sample_rgbs_gt_16bit, cv2.COLOR_RGB2BGR)
-                )
-                cv2.imwrite(
-                    os.path.join(output_dir, f'result_view_{batch_idx}_{b}.png'),
-                    cv2.cvtColor(sample_rgbs_16bit, cv2.COLOR_RGB2BGR)
-                )
+                    # Save as 16-bit PNG (OpenCV expects BGR)
+                    cv2.imwrite(
+                        os.path.join(output_dir, f'gt_view_{batch_idx}_{b}.png'),
+                        cv2.cvtColor(sample_rgbs_gt_16bit, cv2.COLOR_RGB2BGR)
+                    )
+                    cv2.imwrite(
+                        os.path.join(output_dir, f'result_view_{batch_idx}_{b}.png'),
+                        cv2.cvtColor(sample_rgbs_16bit, cv2.COLOR_RGB2BGR)
+                    )
             
             # Visualize UV offsets as grayscale images
             if not self.is_graypatch and self.visualize_uv:

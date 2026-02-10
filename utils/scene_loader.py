@@ -70,6 +70,13 @@ def create_rectangle_scene_params(center=[0, 0, 0], width=0.4, length=0.4):
     }
     return scene_params
 
+def create_hemisphere_scene_params(center=[0, 0, 0], radius=0.4):   
+    scene_params = {
+        "center": center,
+        "radius": radius
+    }
+    return scene_params
+
 def load_and_transform_mesh_trimesh(obj_path):
     """
     Load mesh from obj_path, scale and transform it to the origin,( scale it to 0.2, and computing the average y axis and moving it toward -y direction), then save the transformed mesh.

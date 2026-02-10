@@ -64,82 +64,94 @@ def main(cfg):
     print(f"Using trainer for stage {stage}: {TrainerClass.__name__}")
     model = TrainerClass(cfg, material, gt_material, roughness, metallic)
     
+    # Track whether to use Lightning's resume functionality
+    resume_ckpt_path = None
+    
     if cfg.model.ckpt_path is not None and os.path.isfile(cfg.model.ckpt_path):
         print(f"=> loading model checkpoint '{cfg.model.ckpt_path}'")
-        checkpoint = torch.load(cfg.model.ckpt_path, map_location='cuda' if torch.cuda.is_available() else 'cpu', weights_only=False)
         
-        if stage == 2:
-            if cfg.model.test:
-                # Filter out emitter parameters from checkpoint
-                model_dict = model.state_dict()
-                filtered_dict = {k: v for k, v in checkpoint['state_dict'].items() 
-                                 if 'emitter' not in k and k in model_dict}
-                model_dict.update(filtered_dict)
-                model.load_state_dict(model_dict)
-                print(f"=> loaded model checkpoint successfully (excluding emitter). {len(filtered_dict)}/{len(checkpoint['state_dict'])} parameters loaded.")
-            else:
-                # Stage 2: Only load the decoder weights from checkpoint
-                # Load material.decoder.* weights only (not latent codes)
-                model_dict = model.state_dict()
-                decoder_dict = {}
-                for k, v in checkpoint['state_dict'].items():
-                    if 'material.decoder.' in k:
-                        if k in model_dict:
-                            decoder_dict[k] = v
-                
-                model_dict.update(decoder_dict)
-                model.load_state_dict(model_dict)
-                print(f"=> Stage 2: loaded decoder checkpoint successfully. {len(decoder_dict)}/{len([k for k in model_dict if 'material.decoder.' in k])} decoder parameters loaded.")
-                
-                # If use_latent_bank is enabled, also load the latent bank from checkpoint
-                use_latent_bank = getattr(cfg.material, 'use_latent_bank', False)
-                if use_latent_bank:
-                    latent_bank_key = 'material.point_latent_bank.weight'
-                    if latent_bank_key in checkpoint['state_dict']:
-                        latent_weights = checkpoint['state_dict'][latent_bank_key]
-                        num_points, latent_dim = latent_weights.shape
-                        # Create embedding from checkpoint weights directly
-                        model.material.point_latent_bank = nn.Embedding(num_points, latent_dim)
-                        model.material.point_latent_bank.weight.data = latent_weights
-                        print(f"=> Stage 2: loaded latent bank from checkpoint: {num_points} x {latent_dim}")
-                    else:
-                        print(f"=> Stage 2: use_latent_bank=True but no latent bank weights found in checkpoint.")
-                
-                # If initialize_from_std is enabled, reinitialize latent texture using std from checkpoint's latent bank
-                initialize_from_std = getattr(cfg.material, 'initialize_from_std', False)
-                if initialize_from_std:
-                    latent_bank_key = 'material.point_latent_bank.weight'
-                    if latent_bank_key in checkpoint['state_dict']:
-                        latent_weights = checkpoint['state_dict'][latent_bank_key]
-                        # latent_weights: [num_points, latent_dim]
-                        # Last 6 dimensions have special meaning (normal + tangent), exclude them
-                        brdf_latent_weights = latent_weights[:, :-6]
-                        
-                        # Compute std from the brdf latent dimensions
-                        computed_std = brdf_latent_weights.std().item()
-                        
-                        # Reinitialize only the first N-6 dimensions, keep last 6 unchanged
-                        latent_texture = model.material.latent_texture
-                        resolution = latent_texture.resolution
-                        num_brdf_dims = brdf_latent_weights.shape[1]
-                        
-                        # Reinitialize first N-6 dimensions with computed std
-                        latent_texture.params.data[:, :num_brdf_dims, :, :] = torch.randn(
-                            1, num_brdf_dims, resolution, resolution,
-                            device=latent_texture.params.device,
-                            dtype=latent_texture.params.dtype
-                        ) * computed_std
-                        
-                        print(f"=> Stage 2: initialized latent texture (first {num_brdf_dims} dims) from checkpoint std={computed_std:.6f}")
-                    else:
-                        print(f"=> Stage 2: initialize_from_std=True but no latent bank weights found in checkpoint.")
+        # If continue_training is enabled, use PyTorch Lightning's native resume
+        # This will restore model weights, optimizer state, scheduler state, epoch, etc.
+        continue_training = getattr(cfg.model, 'continue_training', False)
+        if continue_training:
+            print(f"=> continue_training=True: will resume full training state from checkpoint")
+            resume_ckpt_path = cfg.model.ckpt_path
         else:
-            # Stage 1: Only load material parameters
-            model_dict = model.state_dict()
-            pretrained_dict = {k: v for k, v in checkpoint['state_dict'].items() if k in model_dict and k.startswith('material.')}
-            model_dict.update(pretrained_dict)
-            model.load_state_dict(model_dict)
-            print(f"=> loaded material checkpoint successfully. {len(pretrained_dict)}/{len([k for k in model_dict if k.startswith('material.')])} material parameters loaded.")
+            # Manual weight loading for transfer learning / partial loading
+            checkpoint = torch.load(cfg.model.ckpt_path, map_location='cuda' if torch.cuda.is_available() else 'cpu', weights_only=False)
+            
+            if stage == 2:
+                if cfg.model.test:
+                    # Filter out emitter parameters from checkpoint
+                    model_dict = model.state_dict()
+                    filtered_dict = {k: v for k, v in checkpoint['state_dict'].items() 
+                                     if 'emitter' not in k and k in model_dict}
+                    model_dict.update(filtered_dict)
+                    model.load_state_dict(model_dict)
+                    print(f"=> loaded model checkpoint successfully (excluding emitter). {len(filtered_dict)}/{len(checkpoint['state_dict'])} parameters loaded.")
+                else:
+                    # Stage 2: Only load the decoder weights from checkpoint
+                    # Load material.decoder.* weights only (not latent codes)
+                    model_dict = model.state_dict()
+                    decoder_dict = {}
+                    for k, v in checkpoint['state_dict'].items():
+                        if 'material.decoder.' in k:
+                            if k in model_dict:
+                                decoder_dict[k] = v
+                    
+                    model_dict.update(decoder_dict)
+                    model.load_state_dict(model_dict)
+                    print(f"=> Stage 2: loaded decoder checkpoint successfully. {len(decoder_dict)}/{len([k for k in model_dict if 'material.decoder.' in k])} decoder parameters loaded.")
+                    
+                    # If use_latent_bank is enabled, also load the latent bank from checkpoint
+                    use_latent_bank = getattr(cfg.material, 'use_latent_bank', False)
+                    if use_latent_bank:
+                        latent_bank_key = 'material.point_latent_bank.weight'
+                        if latent_bank_key in checkpoint['state_dict']:
+                            latent_weights = checkpoint['state_dict'][latent_bank_key]
+                            num_points, latent_dim = latent_weights.shape
+                            # Create embedding from checkpoint weights directly
+                            model.material.point_latent_bank = nn.Embedding(num_points, latent_dim)
+                            model.material.point_latent_bank.weight.data = latent_weights
+                            print(f"=> Stage 2: loaded latent bank from checkpoint: {num_points} x {latent_dim}")
+                        else:
+                            print(f"=> Stage 2: use_latent_bank=True but no latent bank weights found in checkpoint.")
+                    
+                    # If initialize_from_std is enabled, reinitialize latent texture using std from checkpoint's latent bank
+                    initialize_from_std = getattr(cfg.material, 'initialize_from_std', False)
+                    if initialize_from_std:
+                        latent_bank_key = 'material.point_latent_bank.weight'
+                        if latent_bank_key in checkpoint['state_dict']:
+                            latent_weights = checkpoint['state_dict'][latent_bank_key]
+                            # latent_weights: [num_points, latent_dim]
+                            # Last 6 dimensions have special meaning (normal + tangent), exclude them
+                            brdf_latent_weights = latent_weights[:, :-6]
+                            
+                            # Compute std from the brdf latent dimensions
+                            computed_std = brdf_latent_weights.std().item()
+                            
+                            # Reinitialize only the first N-6 dimensions, keep last 6 unchanged
+                            latent_texture = model.material.latent_texture
+                            resolution = latent_texture.resolution
+                            num_brdf_dims = brdf_latent_weights.shape[1]
+                            
+                            # Reinitialize first N-6 dimensions with computed std
+                            latent_texture.params.data[:, :num_brdf_dims, :, :] = torch.randn(
+                                1, num_brdf_dims, resolution, resolution,
+                                device=latent_texture.params.device,
+                                dtype=latent_texture.params.dtype
+                            ) * computed_std
+                            
+                            print(f"=> Stage 2: initialized latent texture (first {num_brdf_dims} dims) from checkpoint std={computed_std:.6f}")
+                        else:
+                            print(f"=> Stage 2: initialize_from_std=True but no latent bank weights found in checkpoint.")
+            else:
+                # Stage 1: Only load material parameters
+                model_dict = model.state_dict()
+                pretrained_dict = {k: v for k, v in checkpoint['state_dict'].items() if k in model_dict and k.startswith('material.')}
+                model_dict.update(pretrained_dict)
+                model.load_state_dict(model_dict)
+                print(f"=> loaded material checkpoint successfully. {len(pretrained_dict)}/{len([k for k in model_dict if k.startswith('material.')])} material parameters loaded.")
     print("after trainer init")
     print("==> initializing data ...")   
     if cfg.data.dataset_name == "real":
@@ -212,7 +224,7 @@ def main(cfg):
     if cfg.model.test:
         trainer.validate(model, val_loader)
     else:
-        trainer.fit(model, train_loader, val_loader)
+        trainer.fit(model, train_loader, val_loader, ckpt_path=resume_ckpt_path)
     # tracer.stop()
     # tracer.save(f"Ray-rect-intersection_tracer.json")
     """  Skipping testing for now """

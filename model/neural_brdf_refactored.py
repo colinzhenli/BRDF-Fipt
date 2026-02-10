@@ -2421,3 +2421,74 @@ class LearnablePBRTexturedModel(LightningModule):
     def load_latent(self, path: str):
         """Load latent texture from file"""
         self.latent_texture.load(path)
+        
+class PBRTexturedModel(LightningModule):
+    """
+    Visualization-Specific Material Model.
+    Renders a fixed, homogeneous BRDF for visualizing light trajectories.
+    """
+    def __init__(self, cfg):
+        super().__init__()
+        self.cfg = cfg
+
+    def eval_brdf(
+        self,
+        gt_params,
+        pos: torch.Tensor,
+        wi: torch.Tensor,
+        wo: torch.Tensor,
+        normal: torch.Tensor,
+        uv: torch.Tensor,
+        TBN: torch.Tensor,
+        latent=None,
+        batch_mask=None,
+        footprint_vis=None,
+        dp_du=None,
+        dp_dv=None
+    ):
+        """
+        Evaluate Homogeneous BRDF directly.
+        Ignores latent, texture, and uv.
+        """
+        device = wi.device
+        N = wi.shape[0]
+
+        # Fixed Parameters: "Shiny Plastic" look
+        color = torch.tensor([[1.0, 1.0, 1.0]], device=device).expand(N, -1)
+        albedo = torch.tensor([[0.5]], device=device).expand(N, -1)
+        roughness = torch.tensor([[0.05]], device=device).expand(N, -1)
+        metallic = torch.tensor([[0.0]], device=device).expand(N, -1)
+
+        # Geometry Prep
+        predicted_normal = normal
+        h = NF.normalize(wi + wo, dim=-1)
+
+        # Dot products
+        NoL = (wi * predicted_normal).sum(-1, keepdim=True).clamp(min=0.0)
+        NoV = (wo * predicted_normal).sum(-1, keepdim=True).clamp(min=1e-4)
+        VoH = (wo * h).sum(-1, keepdim=True).clamp(min=0.0)
+        NoH = (predicted_normal * h).sum(-1, keepdim=True).clamp(min=0.0)
+
+        # Diffuse component (Lambertian)
+        kd = albedo * (1 - metallic)
+        brdf_diff = kd / math.pi
+
+        # Specular component (Cook-Torrance GGX)
+        F0 = 0.04 * (1 - metallic) + albedo * metallic
+        F = fresnelSchlick(VoH, F0)
+        D = D_GGX(NoH, roughness)
+        G = G_Smith(NoV, NoL, roughness)
+        
+        denom = 4.0 * NoL * NoV + 1e-6
+        brdf_spec = (D * G * F) / denom
+
+        # Total BRDF
+        brdf = (brdf_diff + brdf_spec) * color
+        brdf = torch.where(NoL > 0, brdf, torch.zeros_like(brdf))
+
+        # PDF (simplified placeholder)
+        pdf = (D * NoH / (4.0 * VoH + 1e-6)) * 0.5 + (NoL / math.pi) * 0.5
+
+        uv_offset = torch.zeros_like(uv)
+        
+        return brdf, predicted_normal, pdf, uv_offset

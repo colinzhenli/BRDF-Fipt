@@ -68,6 +68,157 @@ def ray_intersect(scene,xs,ds):
     
 #     return hit_pos, normals, valid
 
+def ray_hemisphere_intersect_TBN(xs, ds, center=[0, 0, 0], radius=1.0):
+    """
+    Ray-hemisphere intersection using mathematical computation.
+    Hemisphere is defined by center and radius, with the hemisphere on the positive z half.
+    
+    Args:
+        xs: (N, 3) ray origins
+        ds: (N, 3) ray directions (normalized)
+        center: [x, y, z] center of the hemisphere (sphere center)
+        radius: radius of the hemisphere
+    
+    Returns:
+        positions: (N, 3) intersection points
+        normals: (N, 3) surface normals (pointing outward)
+        uv: (N, 2) texture coordinates [0,1] using spherical mapping
+        dp_du: (N, 3) surface partial derivative wrt u
+        dp_dv: (N, 3) surface partial derivative wrt v
+        idx: (N,) primitive index (-1 for invalid)
+        valid: (N,) boolean mask for valid intersections
+        TBN: (N, 3, 3) tangent-bitangent-normal frame
+    """
+    device = xs.device
+    N = xs.shape[0]
+    
+    center_pt = torch.tensor(center, dtype=xs.dtype, device=device)
+    
+    # Ray-sphere intersection: solve quadratic equation
+    # |xs + t*ds - center|^2 = radius^2
+    # oc = xs - center
+    # |oc + t*ds|^2 = radius^2
+    # t^2*(ds·ds) + 2t*(oc·ds) + (oc·oc) - radius^2 = 0
+    oc = xs - center_pt
+    a = (ds * ds).sum(-1)  # ds·ds (should be 1 if normalized)
+    b = 2.0 * (oc * ds).sum(-1)  # 2*(oc·ds)
+    c = (oc * oc).sum(-1) - radius * radius  # oc·oc - r^2
+    
+    discriminant = b * b - 4 * a * c
+    
+    # Check if ray intersects sphere
+    valid = discriminant >= 0
+    
+    # Compute both intersection points (t1 < t2)
+    sqrt_disc = torch.zeros(N, dtype=xs.dtype, device=device)
+    sqrt_disc[valid] = torch.sqrt(discriminant[valid])
+    
+    t1 = torch.zeros(N, dtype=xs.dtype, device=device)
+    t2 = torch.zeros(N, dtype=xs.dtype, device=device)
+    t1[valid] = (-b[valid] - sqrt_disc[valid]) / (2.0 * a[valid])
+    t2[valid] = (-b[valid] + sqrt_disc[valid]) / (2.0 * a[valid])
+    
+    # Compute intersection points for both t values
+    pos1 = xs + ds * t1.unsqueeze(-1)
+    pos2 = xs + ds * t2.unsqueeze(-1)
+    
+    # Check which intersection is on positive z half (relative to center)
+    local_pos1 = pos1 - center_pt
+    local_pos2 = pos2 - center_pt
+    
+    on_hemisphere1 = local_pos1[..., 2] >= -1e-6  # positive z half
+    on_hemisphere2 = local_pos2[..., 2] >= -1e-6  # positive z half
+    
+    # Choose the closer valid intersection that's on the hemisphere and in front of ray
+    t1_valid = valid & (t1 > 1e-6) & on_hemisphere1
+    t2_valid = valid & (t2 > 1e-6) & on_hemisphere2
+    
+    # Use t1 if valid, otherwise use t2
+    t = torch.where(t1_valid, t1, t2)
+    valid = t1_valid | t2_valid
+    
+    # For cases where both are valid, use the smaller t (closer intersection)
+    both_valid = t1_valid & t2_valid
+    t[both_valid] = torch.minimum(t1[both_valid], t2[both_valid])
+    
+    # Compute final intersection points
+    positions = xs + ds * t.unsqueeze(-1)
+    local_pos = positions - center_pt
+    
+    # Normals: pointing outward from sphere center
+    normals = NF.normalize(local_pos, dim=-1)
+    normals = double_sided(-ds, normals)
+    
+    # Compute spherical coordinates for UV mapping
+    # theta: azimuthal angle in xy-plane from +x axis [0, 2pi] -> u [0, 1]
+    # phi: polar angle from +z axis [0, pi/2] for hemisphere -> v [0, 1]
+    # Note: for hemisphere on +z, phi ranges from 0 (top) to pi/2 (equator)
+    
+    # Normalize local position to unit sphere
+    local_normalized = local_pos / radius
+    
+    # phi = arccos(z), ranges [0, pi/2] for z in [1, 0]
+    phi = torch.acos(torch.clamp(local_normalized[..., 2], -1.0, 1.0))
+    
+    # theta = atan2(y, x), ranges [-pi, pi]
+    theta = torch.atan2(local_normalized[..., 1], local_normalized[..., 0])
+    
+    # Map to UV coordinates [0, 1]
+    uv = torch.zeros(N, 2, dtype=xs.dtype, device=device)
+    uv[:, 0] = (theta / (2 * torch.pi)) + 0.5  # u: theta mapped to [0, 1]
+    uv[:, 1] = phi / (torch.pi / 2)  # v: phi mapped to [0, 1] for hemisphere
+    
+    # Surface partials for spherical parameterization:
+    # p(u, v) = center + r * [sin(phi)*cos(theta), sin(phi)*sin(theta), cos(phi)]
+    # where theta = 2*pi*(u-0.5) and phi = v*pi/2
+    # 
+    # dp/du = r * sin(phi) * 2*pi * [-sin(theta), cos(theta), 0]
+    # dp/dv = r * (pi/2) * [cos(phi)*cos(theta), cos(phi)*sin(theta), -sin(phi)]
+    
+    sin_phi = torch.sin(phi)
+    cos_phi = torch.cos(phi)
+    sin_theta = torch.sin(theta)
+    cos_theta = torch.cos(theta)
+    
+    dp_du = torch.zeros(N, 3, dtype=xs.dtype, device=device)
+    dp_du[:, 0] = -radius * sin_phi * 2 * torch.pi * sin_theta
+    dp_du[:, 1] = radius * sin_phi * 2 * torch.pi * cos_theta
+    dp_du[:, 2] = 0
+    
+    dp_dv = torch.zeros(N, 3, dtype=xs.dtype, device=device)
+    dp_dv[:, 0] = radius * (torch.pi / 2) * cos_phi * cos_theta
+    dp_dv[:, 1] = radius * (torch.pi / 2) * cos_phi * sin_theta
+    dp_dv[:, 2] = -radius * (torch.pi / 2) * sin_phi
+    
+    # TBN frame: tangent (u-direction), bitangent (v-direction), normal
+    # Tangent is along theta direction (normalized dp_du)
+    tangent = torch.zeros(N, 3, dtype=xs.dtype, device=device)
+    tangent[:, 0] = -sin_theta
+    tangent[:, 1] = cos_theta
+    tangent[:, 2] = 0
+    
+    # Bitangent is along phi direction (normalized dp_dv)
+    bitangent = torch.zeros(N, 3, dtype=xs.dtype, device=device)
+    bitangent[:, 0] = cos_phi * cos_theta
+    bitangent[:, 1] = cos_phi * sin_theta
+    bitangent[:, 2] = -sin_phi
+    
+    # Handle degenerate case at pole (phi = 0, sin_phi = 0)
+    at_pole = sin_phi.abs() < 1e-6
+    tangent[at_pole, 0] = 1.0
+    tangent[at_pole, 1] = 0.0
+    bitangent[at_pole, 0] = 0.0
+    bitangent[at_pole, 1] = 1.0
+    bitangent[at_pole, 2] = 0.0
+    
+    TBN = torch.stack([tangent, bitangent, normals], dim=-1)  # [N, 3, 3]
+    
+    # Primitive index (0 for valid hits, -1 for invalid)
+    idx = torch.zeros(N, dtype=torch.long, device=device)
+    idx[~valid] = -1
+    
+    return positions, normals, uv, dp_du, dp_dv, idx, valid, TBN
+
 def ray_rectangle_intersect_TBN(xs, ds, center=[0, 0, 0], width=0.4, length=0.4):
     """
     Ray-rectangle intersection using mathematical computation.
@@ -151,7 +302,6 @@ def ray_rectangle_intersect_TBN(xs, ds, center=[0, 0, 0], width=0.4, length=0.4)
     idx[~valid] = -1
     
     return positions, normals, uv, dp_du, dp_dv, idx, valid, TBN
-
 
 def ray_intersect_with_tbn(scene, xs, ds):
     xs_mi = mitsuba.Point3f(xs[...,0], xs[...,1], xs[...,2])
@@ -772,13 +922,21 @@ def batched_path_tracing_tbn_real_area_emitter(scene,emitter_net,material_net,ra
     # compute first intersection
     # Check if scene is a dictionary (scene parameters) or a Mitsuba scene object
     if isinstance(scene, dict):
-        # Use mathematical ray-rectangle intersection
-        position, normal, uv, dp_du, dp_dv, _, vis, TBN = ray_rectangle_intersect_TBN(
-            position, wi, 
-            center=scene.get('center', [0, 0, 0]),
-            width=scene.get('width', 0.4),
-            length=scene.get('length', 0.4)
-        )
+        if 'radius' in scene:
+            # Use mathematical ray-hemisphere intersection
+            position, normal, uv, dp_du, dp_dv, _, vis, TBN = ray_hemisphere_intersect_TBN(
+                position, wi, 
+                center=scene.get('center', [0, 0, 0]),
+                radius=scene.get('radius', 1.0)
+            )
+        else:
+            # Use mathematical ray-rectangle intersection
+            position, normal, uv, dp_du, dp_dv, _, vis, TBN = ray_rectangle_intersect_TBN(
+                position, wi, 
+                center=scene.get('center', [0, 0, 0]),
+                width=scene.get('width', 0.4),
+                length=scene.get('length', 0.4)
+            )
     else:
         # Use Mitsuba scene intersection
         position, normal, uv, dp_du, dp_dv, _, vis, TBN = ray_intersect_with_tbn(scene, position, wi)

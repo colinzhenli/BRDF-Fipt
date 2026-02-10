@@ -1,4 +1,4 @@
-type: "LearnablePBRTexturedModel"
+type: "PBRTexturedModel"
 module: "model.neural_brdf_refactored"
 latent_dim: 16
 predict_frame: True

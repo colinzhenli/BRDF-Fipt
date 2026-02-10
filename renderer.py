@@ -1,7 +1,7 @@
 import torch
 import json
 from utils.path_tracing import path_tracing_envmap_emitter, batched_path_tracing_dynamic_emitter, batched_path_tracing_preset_emitter, batched_path_tracing_tbn_preset_emitter, batched_path_tracing_tbn_real_area_emitter, points_path_tracing_real_area_emitter
-from utils.scene_loader import load_uv_obj_to_mitsuba_scene, create_rectangle_scene, create_rectangle_scene_params  
+from utils.scene_loader import load_uv_obj_to_mitsuba_scene, create_rectangle_scene, create_rectangle_scene_params, create_hemisphere_scene_params  
 from mitsuba import load_dict
 import mitsuba as mi
 from model.emitter import EnvMapEmitter, DynamicPointEmitter
@@ -39,11 +39,17 @@ class ForwardRenderer:
             length = cfg.renderer.mesh.rectangle.length
             print(f"bbox.json not found, using config: center={center}, width={width}, length={length}")
         
-        self.scene = create_rectangle_scene_params(
-            center=center,
-            width=width,
-            length=length
-        )
+        if cfg.renderer.mesh.use_hemisphere:
+            self.scene = create_hemisphere_scene_params(
+                center=center,
+                radius=0.02
+            )
+        else:
+            self.scene = create_rectangle_scene_params(
+                center=center,
+                width=width,
+                length=length
+            )
         self.material = material.to(self.device)
 
         print("type",cfg.renderer.emitter.type)

@@ -74,6 +74,7 @@ camera:
 
 mesh:
   path: 
+  use_hemisphere: False
   mitsuba_scene: False
   rectangle:
     bbox_json: ${dataset_folder}/bbox.json

@@ -122,7 +122,7 @@ def get_c2w_from_robot_pose(camera_info, R_c2g, t_c2g):
     c2w = g2w @ c2g
     return torch.from_numpy(c2w[:3, :4]).float()
 
-def load_metadata(colmap_camera, metadata_path, camera_metadata_path, gt_folder, cfg, debug, debug_num, split, turntable_center, turntable_axis, R_c2g, t_c2g, start_idx):
+def load_metadata(colmap_camera, metadata_path, camera_metadata_path, gt_folder, cfg, debug, debug_num, split, turntable_center, turntable_axis, R_c2g, t_c2g, start_idx, use_fixed_val=False, fixed_val_num=240):
     metadata, _, _= load_camera_turntable_light_metadata(metadata_path)
     
     if colmap_camera:
@@ -197,13 +197,26 @@ def load_metadata(colmap_camera, metadata_path, camera_metadata_path, gt_folder,
         selected_metadata = [metadata[i] for i in selected_indices]
         print(f"Debug mode: {len(selected_metadata)} images selected")
     else:
-        split_idx = int(0.8 * total_images)
-        if split == 'train':
-            selected_indices = indices[:split_idx]
+        if use_fixed_val:
+            # Use first fixed_val_num images for validation, rest for training
+            # Split first, then permute each set separately
+            if split == 'val':
+                selected_metadata = metadata[:fixed_val_num]
+                print(f"Fixed validation set: {len(selected_metadata)} images (first {fixed_val_num})")
+            else:
+                selected_metadata = metadata[fixed_val_num:]
+                print(f"Training set: {len(selected_metadata)} images (after first {fixed_val_num})")
+            # Permute the selected metadata
+            perm_indices = torch.randperm(len(selected_metadata)).tolist()
+            selected_metadata = [selected_metadata[i] for i in perm_indices]
         else:
-            selected_indices = indices[split_idx:]
-            
-        selected_metadata = [metadata[i] for i in selected_indices] 
+            split_idx = int(0.8 * total_images)
+            if split == 'train':
+                selected_indices = indices[:split_idx]
+            else:
+                selected_indices = indices[split_idx:]
+                
+            selected_metadata = [metadata[i] for i in selected_indices] 
         
     return selected_metadata, camera_metadata
         
@@ -310,6 +323,8 @@ class RealImageDataset(IterableDataset):
         self.turntable_axis = cfg.renderer.emitter.turntable.axis
         self.colmap_camera = cfg.renderer.camera.colmap_camera  # whether to use colmap camera or robotic log camera
         self.start_idx = cfg.data.start_idx
+        self.use_fixed_val = cfg.data.use_fixed_val
+        self.hold_out_val_num = cfg.data.hold_out_val_num
         # Load metadata from JSON file
         metadata_path = cfg.data.metadata_path
         camera_metadata_path = cfg.data.camera_metadata_path
@@ -326,7 +341,9 @@ class RealImageDataset(IterableDataset):
             self.turntable_axis,
             self.R_c2g,
             self.t_c2g,
-            self.start_idx
+            self.start_idx,
+            self.use_fixed_val,
+            self.hold_out_val_num
         )
 
         # Internal state
@@ -678,7 +695,8 @@ class RealValDataset(Dataset):
         self.colmap_camera = cfg.renderer.camera.colmap_camera # whether to use colmap camera or robotic log camera
         self.turntable_center = cfg.renderer.emitter.turntable.center
         self.turntable_axis = cfg.renderer.emitter.turntable.axis
-        self.valid_num = cfg.data.valid_num
+        self.use_fixed_val = cfg.data.use_fixed_val
+        self.hold_out_val_num = cfg.data.hold_out_val_num
         # Load metadata from JSON file
         metadata_path = cfg.data.metadata_path
         camera_metadata_path = cfg.data.camera_metadata_path
@@ -686,7 +704,7 @@ class RealValDataset(Dataset):
             split = 'train'
         else:
             split = 'val'
-        self.metadata, self.camera_metadata = load_metadata(self.colmap_camera, metadata_path, camera_metadata_path, gt_folder, cfg, self.debug, self.debug_num, split, self.turntable_center, self.turntable_axis, self.R_c2g, self.t_c2g, self.start_idx)
+        self.metadata, self.camera_metadata = load_metadata(self.colmap_camera, metadata_path, camera_metadata_path, gt_folder, cfg, self.debug, self.debug_num, split, self.turntable_center, self.turntable_axis, self.R_c2g, self.t_c2g, self.start_idx, self.use_fixed_val, self.hold_out_val_num)
         if self.valid_num > 0:
             self.metadata = self.metadata[:self.valid_num]
         self.directions = get_ray_directions(self.img_hw[0], self.img_hw[1], self.focal, self.cx, self.cy, self.distortion)

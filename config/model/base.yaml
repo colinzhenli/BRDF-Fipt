@@ -1,6 +1,7 @@
 ckpt_path: 
 stage: 2
 freeze_decoder: False
+continue_training: False  # If True, resume full training state (optimizer, scheduler, epoch) from ckpt_path
 
 test: False
 emitter_calibration: False # False
