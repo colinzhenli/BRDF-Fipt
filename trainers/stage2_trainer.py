@@ -941,6 +941,16 @@ class Stage2Trainer(pl.LightningModule):
                     normal_map_vis,
                     os.path.join(pbr_map_dir, 'normal_map_batch0.png')
                 )
+                
+                # Color is stored at channels 0:3 in latent_texture.params [1, latent_dim, H, W]
+                # Isotropic layout: [color(3), albedo(1), roughness(1), metallic(1)]
+                color_map = self.material.latent_texture.params[:, 0:3, :, :]  # [1, 3, H, W]
+                # Clamp to [0, 1] for visualization
+                color_map_vis = torch.clamp(color_map, 0.0, 1.0)
+                torchvision.utils.save_image(
+                    color_map_vis,
+                    os.path.join(pbr_map_dir, 'color_map_batch0.png')
+                )
             
         self.log('val/loss', loss)
         self.log('val/emitter_radiance', emitter_radiance.mean())

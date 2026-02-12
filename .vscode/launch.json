@@ -188,11 +188,11 @@
                 "dataset_folder=/media/raid/cloth/capture_data/Dataset_Debug_Feb10/227",
                 "data=real",
                 "renderer=multiarea_emitter",
-                "material=ani_latent_texture_model",
+                "material=learnable_pbr_texture_model",
                 "material.different_decoder=False",
                 "material.decoder.use_skip_connection=True",
                 "material.learnable_factor=True",
-                "experiment_name=Test_From-Real_Gamma-correction_Visualization_3",
+                "experiment_name=Color_debug_1",
                 "model.stage=2",
                 "model.test=True",
                 "model.test_novel_view=False",
@@ -205,7 +205,7 @@
                 "data.switch_iters=3000",
                 "data.debug=False",
                 "data.valid_on_train_set=False",
-                "model.ckpt_path=/media/raid/cloth/output/BRDF/real/Visualizations/Real/real/Stage-2_Fir_From-Real_Material-227_run_1/training/model_0.20_0.20/last-v1.ckpt"
+                "model.ckpt_path=/media/raid/cloth/output/BRDF/real/Visualizations/Real/real/Stage-2_Anisotropic_PBR_Material-227_run_1/training/model_0.20_0.20/last-v1.ckpt"
             ]
         }
 
