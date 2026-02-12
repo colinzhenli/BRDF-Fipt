@@ -23,7 +23,7 @@ class Stage2Trainer(pl.LightningModule):
         self.save_hyperparameters(cfg)
 
         self.more_visualization = False
-        self.use_gamma_correction = True  # When True, apply gamma correction and save as 8-bit PNG
+        self.use_tone_mapping = False  # When True, apply tone mapping + gamma and save as 8-bit PNG
         self.visualize_lobe = False
         self.material = material
         self.freeze_decoder = cfg.model.freeze_decoder
@@ -837,17 +837,16 @@ class Stage2Trainer(pl.LightningModule):
                     cv2.cvtColor(error_image, cv2.COLOR_RGB2BGR)
                 )
             else:
-                if self.use_gamma_correction:
-                    # Apply gamma correction and save as 8-bit PNG
-                    # First normalize from 0-65535 to 0-1, then apply gamma, then scale to 0-255
-                    sample_rgbs_gt_normalized = sample_rgbs_gt / 65535.0
-                    sample_rgbs_normalized = sample_rgbs / 65535.0
+                psnr_str = f'{psnr.item():.2f}'
+                
+                if self.use_tone_mapping:
+                    # Apply tone mapping and save as 8-bit PNG
+                    # Tone mapping handles arbitrary HDR range, maps [0, inf) to [0, 1)
+                    sample_rgbs_gt_tonemapped = self.tone_mapping(sample_rgbs_gt/(65535.0))
+                    sample_rgbs_tonemapped = self.tone_mapping(sample_rgbs/(65535.0))
                     
-                    sample_rgbs_gt_gamma = self.gamma(sample_rgbs_gt_normalized)
-                    sample_rgbs_gamma = self.gamma(sample_rgbs_normalized)
-                    
-                    sample_rgbs_gt_8bit = (sample_rgbs_gt_gamma.cpu().numpy() * 255).astype(np.uint8)
-                    sample_rgbs_8bit = (sample_rgbs_gamma.cpu().numpy() * 255).astype(np.uint8)
+                    sample_rgbs_gt_8bit = (sample_rgbs_gt_tonemapped.cpu().numpy() * 255).astype(np.uint8)
+                    sample_rgbs_8bit = (sample_rgbs_tonemapped.cpu().numpy() * 255).astype(np.uint8)
                     
                     # Save as 8-bit PNG (OpenCV expects BGR)
                     cv2.imwrite(
@@ -855,7 +854,7 @@ class Stage2Trainer(pl.LightningModule):
                         cv2.cvtColor(sample_rgbs_gt_8bit, cv2.COLOR_RGB2BGR)
                     )
                     cv2.imwrite(
-                        os.path.join(output_dir, f'result_view_{batch_idx}_{b}.png'),
+                        os.path.join(output_dir, f'result_view_{batch_idx}_{b}_psnr{psnr_str}.png'),
                         cv2.cvtColor(sample_rgbs_8bit, cv2.COLOR_RGB2BGR)
                     )
                 else:
@@ -869,7 +868,7 @@ class Stage2Trainer(pl.LightningModule):
                         cv2.cvtColor(sample_rgbs_gt_16bit, cv2.COLOR_RGB2BGR)
                     )
                     cv2.imwrite(
-                        os.path.join(output_dir, f'result_view_{batch_idx}_{b}.png'),
+                        os.path.join(output_dir, f'result_view_{batch_idx}_{b}_psnr{psnr_str}.png'),
                         cv2.cvtColor(sample_rgbs_16bit, cv2.COLOR_RGB2BGR)
                     )
             

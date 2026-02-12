@@ -47,7 +47,7 @@ valid_on_train_set: False
 val_ratio: 0.01
 visualize_uv: False
 start_idx: 0
-valid_num: 20 # Actual validation number during training
+valid_num: 240 # Actual validation number during training
 use_fixed_val: True
 hold_out_val_num: 240 # The first hold_out_val_num images are used for validation
 

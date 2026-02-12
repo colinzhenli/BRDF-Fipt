@@ -17,24 +17,25 @@ from pathlib import Path
 
 def natural_sort_key(filename):
     """
-    Sort key for natural sorting of filenames like scan-0000.png, scan-0001.png, etc.
-    Extracts the numeric index from the filename.
+    Sort key for natural sorting of filenames like result_view_0_0_psnr25.32.png.
+    Extracts the batch_idx from the filename.
     """
-    # Match pattern like scan-0000.png, scan-0001.png
-    match = re.search(r'-(\d+)\.png$', filename)
+    # Match pattern like result_view_0_0_psnr25.32.png or result_view_0_0.png
+    match = re.search(r'_(\d+)_(\d+)(?:_psnr[\d.]+)?\.png$', filename)
     if match:
-        idx = int(match.group(1))
-        return idx
-    return float('inf')
+        batch_idx = int(match.group(1))
+        b = int(match.group(2))
+        return (batch_idx, b)
+    return (float('inf'), float('inf'))
 
 
-def get_image_files(folder, pattern='scan'):
+def get_image_files(folder, pattern='result_view'):
     """
     Get all image files matching the pattern from the folder.
     
     Args:
         folder: Path to the folder containing images
-        pattern: Prefix pattern to match (e.g., 'scan' for scan-0000.png)
+        pattern: Prefix pattern to match (e.g., 'result_view' for result_view_0_0_psnr25.32.png)
     
     Returns:
         List of sorted image file paths
@@ -43,11 +44,11 @@ def get_image_files(folder, pattern='scan'):
     if not folder.exists():
         raise FileNotFoundError(f"Folder not found: {folder}")
     
-    # Find all matching PNG files (pattern-*.png, e.g., scan-0000.png)
-    image_files = list(folder.glob(f'{pattern}-*.png'))
+    # Find all matching PNG files (pattern_*_*.png, e.g., result_view_0_0_psnr25.32.png)
+    image_files = list(folder.glob(f'{pattern}_*_*.png'))
     
     if not image_files:
-        raise ValueError(f"No images found matching pattern '{pattern}-*.png' in {folder}")
+        raise ValueError(f"No images found matching pattern '{pattern}_*_*.png' in {folder}")
     
     # Sort naturally by index
     image_files.sort(key=lambda x: natural_sort_key(x.name))
@@ -133,6 +134,10 @@ Examples:
     
     # Specify custom output filename
     python images_to_video.py /path/to/images/ --output my_video.mp4
+
+Supported patterns:
+    - result_view: matches result_view_0_0_psnr25.32.png, result_view_1_0.png, etc.
+    - gt_view: matches gt_view_0_0.png, gt_view_1_0.png, etc.
         """
     )
     
@@ -150,8 +155,8 @@ Examples:
     parser.add_argument(
         '--pattern',
         type=str,
-        default='scan',
-        help='Image filename pattern to match (default: scan, for scan-0000.png)'
+        default='result_view',
+        help='Image filename pattern to match (default: result_view, for result_view_0_0_psnr25.32.png)'
     )
     parser.add_argument(
         '--output',
@@ -170,7 +175,7 @@ Examples:
     
     # Get image files
     image_files = get_image_files(args.input_folder, args.pattern)
-    print(f"Found {len(image_files)} images matching pattern '{args.pattern}-*.png'")
+    print(f"Found {len(image_files)} images matching pattern '{args.pattern}_*_*.png'")
     
     # Limit to max frames if specified
     if args.max_frames is not None and args.max_frames > 0:

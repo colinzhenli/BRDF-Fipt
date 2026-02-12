@@ -206,9 +206,9 @@ def load_metadata(colmap_camera, metadata_path, camera_metadata_path, gt_folder,
             else:
                 selected_metadata = metadata[fixed_val_num:]
                 print(f"Training set: {len(selected_metadata)} images (after first {fixed_val_num})")
-            # Permute the selected metadata
-            perm_indices = torch.randperm(len(selected_metadata)).tolist()
-            selected_metadata = [selected_metadata[i] for i in perm_indices]
+                # Permute the selected metadata
+                perm_indices = torch.randperm(len(selected_metadata)).tolist()
+                selected_metadata = [selected_metadata[i] for i in perm_indices]
         else:
             split_idx = int(0.8 * total_images)
             if split == 'train':
@@ -697,6 +697,7 @@ class RealValDataset(Dataset):
         self.turntable_axis = cfg.renderer.emitter.turntable.axis
         self.use_fixed_val = cfg.data.use_fixed_val
         self.hold_out_val_num = cfg.data.hold_out_val_num
+        self.valid_num = cfg.data.valid_num
         # Load metadata from JSON file
         metadata_path = cfg.data.metadata_path
         camera_metadata_path = cfg.data.camera_metadata_path
