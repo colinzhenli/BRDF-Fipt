@@ -1440,7 +1440,7 @@ class MERLBRDF(LightningModule):
         self.use_pos_enc = cfg.use_pos_enc
         self.different_decoder = cfg.different_decoder
 
-        total_points=120
+        total_points=512*512
         self.point_latent_bank = nn.Embedding(
             num_embeddings=total_points,
             embedding_dim=self.total_latent_dim

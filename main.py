@@ -11,7 +11,7 @@ from renderer import ForwardRenderer
 from trainers import get_trainer_class
 from model.brdf import SvPBRBRDF
 from torch.utils.data import DataLoader
-from utils.dataset import RealImageDataset, RealValDataset, MultiMaterialPointDataset, MERLBRDFIterableDataset,MERLBRDFIterableDataset_hd,MERLBRDFFixedDataset_hd,MERLBRDFFixedDataset
+from utils.dataset import RealImageDataset, RealValDataset, MultiMaterialPointDataset, MERLBRDFIterableDataset,MERLBRDFIterableDataset_hd,MERLBRDFFixedDataset_hd,MERLBRDFFixedDataset,BonnPointDataset
 import hydra
 from omegaconf import DictConfig
 from pytorch_lightning.strategies import DDPStrategy
@@ -109,13 +109,6 @@ def main(cfg):
         val_dataset = RealValDataset(cfg, gt_folder=cfg.gt_folder)
     elif cfg.data.dataset_name == "points":
         '''
-        train_dataset = MERLBRDFIterableDataset(cfg,data_folder=cfg.dataset_folder,batch_size=1048576,split="train")
-        if cfg.data.debug & cfg.data.valid_on_train_set:
-            val_dataset = MERLBRDFIterableDataset(cfg,data_folder=cfg.dataset_folder,batch_size=1048576,split="val")
-        else:
-            val_dataset = MERLBRDFIterableDataset(cfg,data_folder=cfg.dataset_folder,batch_size=1048576,split="val")
-        '''
-        
         if cfg.model.stage == 1:
             train_dataset = MERLBRDFIterableDataset(cfg,data_folder=cfg.dataset_folder,batch_size=1048576,split="train")
             if cfg.data.debug & cfg.data.valid_on_train_set:
@@ -130,18 +123,17 @@ def main(cfg):
                 val_dataset = MERLBRDFFixedDataset(cfg,data_folder=cfg.dataset_folder,batch_size=1048576,split="val")
         '''
         if cfg.model.stage == 1:
-            train_dataset = MERLBRDFIterableDataset_hd(cfg,data_folder=cfg.dataset_folder,batch_size=1048576,split="train")
+            train_dataset = BonnPointDataset(cfg,data_folder=cfg.dataset_folder,batch_size=1048576,split="train")
             if cfg.data.debug & cfg.data.valid_on_train_set:
-                val_dataset = MERLBRDFIterableDataset_hd(cfg,data_folder=cfg.dataset_folder,batch_size=1048576,split="val")
+                val_dataset = BonnPointDataset(cfg,data_folder=cfg.dataset_folder,batch_size=1048576,split="val")
             else:
-                val_dataset = MERLBRDFIterableDataset_hd(cfg,data_folder=cfg.dataset_folder,batch_size=1048576,split="val")
+                val_dataset = BonnPointDataset(cfg,data_folder=cfg.dataset_folder,batch_size=1048576,split="val")
         else:
-            train_dataset = MERLBRDFFixedDataset_hd(cfg,data_folder=cfg.dataset_folder,n_samples=100,material_id=0,split="train")
+            train_dataset = BonnPointDataset(cfg,data_folder=cfg.dataset_folder,batch_size=100,split="train")
             if cfg.data.debug & cfg.data.valid_on_train_set:
-                val_dataset = MERLBRDFFixedDataset_hd(cfg,data_folder=cfg.dataset_folder,n_samples=1048576,material_id=0,split="val")
+                val_dataset = BonnPointDataset(cfg,data_folder=cfg.dataset_folder,batch_size=1048576,split="val")
             else:
-                val_dataset = MERLBRDFFixedDataset_hd(cfg,data_folder=cfg.dataset_folder,n_samples=1048576,material_id=0,split="val")
-        '''
+                val_dataset = BonnPointDataset(cfg,data_folder=cfg.dataset_folder,batch_size=1048576,split="val")
     else:
         raise ValueError(f"Invalid dataset name: {cfg.data.dataset_name}")
 

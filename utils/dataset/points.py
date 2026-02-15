@@ -1332,3 +1332,109 @@ class MERLBRDFIterableDataset_hd(IterableDataset):
                 'rgb': rgb,
             }
     '''
+
+
+class BonnPointDataset(IterableDataset):
+    """
+    Dataset for Bonn BRDF data that loads RGB, wi (incoming light direction), 
+    and wo (outgoing view direction) using BonnInterface.get_brdf().
+    
+    The data is loaded once and then sampled in batches for training.
+    """
+    
+    def __init__(self, cfg, data_folder, material_name='mat0001', split='train',batch_size=51200, device='cuda'):
+        """
+        Initialize Bonn point dataset.
+        
+        Args:
+            cfg: Configuration object containing batch_size and other parameters
+            data_dir: Path to directory containing Bonn BRDF data
+            material_name: Name of the material (e.g., 'mat0001')
+            split: 'train' or 'val' for training/validation
+            device: Device to store tensors ('cuda' or 'cpu')
+        """
+        super().__init__()
+        from utils.dataset.Bonn import BonnInterface
+        
+        self.cfg = cfg
+        self.split = split
+        self.device = torch.device(device)
+        self.batch_size = batch_size
+        
+        # Initialize Bonn interface and load data
+        print(f"Initializing BonnPointDataset for {material_name} (split: {split})")
+        self.bonn_interface = BonnInterface(data_folder, material_name, device=device)
+        
+        # Load all BRDF data: rgb, wi (L), wo (V)
+        # Shape: (N, 100, 3) for each where N is number of pixels
+        self.material_ids, self.rgb, self.wi, self.wo = self.bonn_interface.get_brdf()
+        self.material_ids=self.material_ids.cuda()
+        self.rgb=self.rgb.cuda()
+        self.wi=self.wi.cuda()
+        self.wo=self.wo.cuda()
+        
+        # Normalize directions
+        self.wi = NF.normalize(self.wi, dim=-1)
+        self.wo = NF.normalize(self.wo, dim=-1)
+        
+        self.total_samples = self.rgb.shape[0]
+        
+        # For validation, use a fixed subset
+        if split == 'val':
+            val_size = min(10000, self.total_samples // 10)
+            indices = torch.arange(val_size, device=self.device)
+            self.rgb = self.rgb[indices]
+            self.wi = self.wi[indices]
+            self.wo = self.wo[indices]
+            self.total_samples = val_size
+        
+        print(f"Loaded {self.total_samples} BRDF samples")
+        print(f"RGB range: [{self.rgb.min().item():.4f}, {self.rgb.max().item():.4f}]")
+        print(f"wi range: [{self.wi.min().item():.4f}, {self.wi.max().item():.4f}]")
+        print(f"wo range: [{self.wo.min().item():.4f}, {self.wo.max().item():.4f}]")
+    
+    def __iter__(self):
+        """
+        Iterator yielding batches of wi, wo, and rgb.
+        
+        For training: yields infinite random batches
+        For validation: yields fixed batches once through the data
+        """
+        if self.split == 'train':
+            # Infinite random sampling for training
+            while True:
+                # Randomly sample batch_size indices
+                indices = torch.randint(0, self.total_samples, (self.batch_size,), device=self.device)
+                
+                yield {
+                    'material_id': self.material_ids[indices],
+                    'wi': self.wi[indices],
+                    'wo': self.wo[indices],
+                    'rgb': self.rgb[indices],
+                }
+        else:
+            # Sequential batches for validation
+            num_batches = (self.total_samples + self.batch_size - 1) // self.batch_size
+            
+            for i in range(num_batches):
+                start_idx = i * self.batch_size
+                end_idx = min((i + 1) * self.batch_size, self.total_samples)
+                
+                batch_size = end_idx - start_idx
+                indices = torch.arange(start_idx, end_idx, device=self.device)
+                
+                yield {
+                    'material_id': self.material_ids[indices],
+                    'wi': self.wi[indices],
+                    'wo': self.wo[indices],
+                    'rgb': self.rgb[indices],
+                }
+    
+    def __len__(self):
+        """Return number of batches in one epoch (for validation)."""
+        if self.split == 'val':
+            return (self.total_samples + self.batch_size - 1) // self.batch_size
+        else:
+            # For training, return a large number (infinite dataset)
+            return 10000
+
