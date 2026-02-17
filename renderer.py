@@ -115,6 +115,7 @@ class ForwardRenderer:
         L = torch.zeros_like(rays_x)
         ray_params = torch.zeros_like(rays)
         is_graypatch = self.material.__class__.__name__ == 'GreyPatchBRDF'
+        smooth_loss_accumulated = torch.tensor(0.0, device=rays_x.device)
         
         if is_graypatch:
             pixel_all_ok_accumulated = None
@@ -128,12 +129,13 @@ class ForwardRenderer:
 
         if emitter is None:
             for _ in range(spp // self.SPP_chunk):
-                L0, vis, ray_params, extra_output = self.ray_tracer(
+                L0, vis, ray_params, extra_output, smooth_loss = self.ray_tracer(
                     self.scene, self.emitter, self.material,
                     rays_x, rays_d, xyz, dxdu, dydv, 
                     light_idx, material_idx, point_ids, self.SPP_chunk, brdf_sampling=self.cfg.renderer.brdf_sampling, emitter_sampling=self.cfg.renderer.emitter_sampling, gt_params=gt_params, latent=latent
                 )
                 L += L0
+                smooth_loss_accumulated = smooth_loss_accumulated + smooth_loss
                 if is_graypatch:
                     pixel_all_ok, cosine_emitter_angle = extra_output
                     cosine_emitter_angle_accumulated += cosine_emitter_angle
@@ -146,12 +148,13 @@ class ForwardRenderer:
                     uv_offset_accumulated += uv_offset
         else:
             for _ in range(spp // self.SPP_chunk):
-                L0, vis, ray_params, extra_output = self.ray_tracer(
+                L0, vis, ray_params, extra_output, smooth_loss = self.ray_tracer(
                     self.scene, emitter, self.material,
                     rays_x, rays_d, xyz, dxdu, dydv, 
                     light_idx, material_idx, point_ids, self.SPP_chunk, brdf_sampling=self.cfg.renderer.brdf_sampling, emitter_sampling=self.cfg.renderer.emitter_sampling, gt_params=gt_params, latent=latent
                 )
                 L += L0
+                smooth_loss_accumulated = smooth_loss_accumulated + smooth_loss
                 if is_graypatch:
                     pixel_all_ok, cosine_emitter_angle = extra_output
                     cosine_emitter_angle_accumulated += cosine_emitter_angle
@@ -164,13 +167,14 @@ class ForwardRenderer:
                     uv_offset_accumulated += uv_offset
         rgbs = L / (spp // self.SPP_chunk)
         rgbs = rgbs.squeeze(0) # squeeze the batch dimension
+        smooth_loss_accumulated = smooth_loss_accumulated / (spp // self.SPP_chunk)
         
         if is_graypatch:
-            return rgbs, vis, ray_params, (pixel_all_ok_accumulated, cosine_emitter_angle_accumulated/(spp // self.SPP_chunk))
+            return rgbs, vis, ray_params, (pixel_all_ok_accumulated, cosine_emitter_angle_accumulated/(spp // self.SPP_chunk)), smooth_loss_accumulated
         else:
             uv_offset_accumulated = uv_offset_accumulated / (spp // self.SPP_chunk)
             uv_offset_accumulated = uv_offset_accumulated.squeeze(0)
-            return rgbs, vis, ray_params, uv_offset_accumulated
+            return rgbs, vis, ray_params, uv_offset_accumulated, smooth_loss_accumulated
         
     def stage2_render(self, emitter, rays, light_idx, spp, gt_params=None, latent=None, validation=False):
         rays_x, rays_d, dxdu, dydv = rays[..., :3], rays[..., 3:6], rays[..., 6:9], rays[..., 9:12]

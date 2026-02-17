@@ -1321,6 +1321,10 @@ class MultiMaterialLatentBRDF(LightningModule):
             different_decoder=self.different_decoder
         )
         
+        # L2 gradient smoothness regularization on BRDF lobe
+        self.smooth_reg = getattr(cfg.decoder, 'smooth_reg', False)
+        self.smooth_reg_eps = getattr(cfg.decoder, 'smooth_reg_eps', 0.01)
+        
         print("Initialization complete!")
     
     def _load_point_metadata(self, data_folder):
@@ -1561,13 +1565,35 @@ class MultiMaterialLatentBRDF(LightningModule):
             if brdf.shape[-1] == 1:
                 brdf = brdf.expand(-1, 3)  # Expand to RGB
         
+        # L2 gradient smoothness regularization via geodesic finite differences
+        if self.smooth_reg:
+            eps = self.smooth_reg_eps
+            # Random axis perpendicular to wi_local (tangent plane of S²)
+            rand_vec = torch.randn_like(wi_local)
+            rand_vec = rand_vec - (rand_vec * wi_local).sum(-1, keepdim=True) * wi_local
+            axis = NF.normalize(rand_vec, dim=-1)
+            # Geodesic perturbation via Rodrigues' rotation
+            wi_perturbed = wi_local * math.cos(eps) + torch.cross(axis, wi_local, dim=-1) * math.sin(eps)
+            # Evaluate BRDF at perturbed direction
+            enc_pert = self.decoder.encode_directions(wi_perturbed, wo_local, normal_local)
+            if self.different_decoder:
+                brdf_pert = self.decoder(enc_pert, latent[:, :self.latent_dim])
+            else:
+                brdf_pert = self.decoder(enc_pert, latent[:, :self.latent_dim])
+                if brdf_pert.shape[-1] == 1:
+                    brdf_pert = brdf_pert.expand(-1, 3)
+            # L2 squared gradient: || (f(wi+eps) - f(wi)) / eps ||^2
+            smooth_loss = ((brdf_pert - brdf) / eps).pow(2).mean()
+        else:
+            smooth_loss = torch.tensor(0.0, device=wi.device)
+        
         # Simple diffuse PDF (can be improved with importance sampling)
         pdf = NoL.clamp(min=0) / math.pi
         if torch.isnan(brdf).any():
             print("brdf is nan")
         if torch.isnan(predicted_normal).any():
             print("normal is nan")
-        return brdf, predicted_normal, pdf
+        return brdf, predicted_normal, pdf, smooth_loss
     
     def sample_brdf(
         self,

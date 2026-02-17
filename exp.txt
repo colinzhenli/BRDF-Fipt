@@ -1,5 +1,0 @@
-Read this project, and implement a new kind of dataloader in @utils/dataset/points.py , which loads the merl BRDF dataset. This dataset consists of BRDF data of different kind of materials. A data sample of one material is "/home/featurize/work/BRDF-Fipt/alum-bronze.binary"
-
-g++ BRDFRead.cpp -o brdf
-
-./brdf /home/featurize/data/alum-bronze.binary

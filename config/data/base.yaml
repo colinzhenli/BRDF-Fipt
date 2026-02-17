@@ -42,7 +42,7 @@ downsample_iter: [-1, -1]
 
 debug: False # no random permutation when debugging
 debug_num: 1
-training_list_path: ${dataset_folder}/training_list.txt
+training_list_path: ${dataset_folder}/training_list_debug.txt
 valid_on_train_set: False
 val_ratio: 0.01
 visualize_uv: False

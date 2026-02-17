@@ -17,7 +17,7 @@ trainer:
   devices: 1
   num_nodes: 1
   max_epochs: 1000          # ← will be respected
-  check_val_every_n_epoch: 50
+  check_val_every_n_epoch: 2
   limit_train_batches: 512 # 200 iterations per epoch
   num_sanity_val_steps: 0    # ← number of validation batches before training starts (default is 2)
 
@@ -46,6 +46,9 @@ loss:
     log_space:
       logrel_ref: 30000
       logrel_eps: 1e-3
+  reg_loss:
+    name: l2_smooth
+    weight: 1e7
   refiner_prior_loss:
     weight: 0.01
 

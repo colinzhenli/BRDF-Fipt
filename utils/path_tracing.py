@@ -1132,7 +1132,7 @@ def points_path_tracing_real_area_emitter(scene,emitter_net,material_net,rays_o,
             angle_ok_all = angle_ok
             cosine_emitter_angle_all = (-wi * emitter_normal).sum(-1).abs()
         else:
-            emit_brdf, normal, brdf_pdf = brdf_result
+            emit_brdf, normal, brdf_pdf, smooth_loss = brdf_result
         G = (wi*normal).sum(-1).abs() / (emit_position - position).pow(2).sum(-1).clamp_min(1e-6)
         emit_weight = emit_weight * G[..., None] / emit_pdf.clamp_min(1e-6)
         w_mis = torch.where((emit_pdf > 0) & (~brdf_pdf.isinf()), emit_pdf * emit_pdf / (emit_pdf * emit_pdf + brdf_pdf * brdf_pdf), 0)
@@ -1141,6 +1141,8 @@ def points_path_tracing_real_area_emitter(scene,emitter_net,material_net,rays_o,
         L = emit_brdf * emit_weight
         if torch.isnan(L).any():
             print("L is nan")
+    else:
+        smooth_loss = torch.tensor(0.0, device=device)
     
     # brdf_sampling is not used since normal is None
     # if brdf_sampling:
@@ -1156,12 +1158,12 @@ def points_path_tracing_real_area_emitter(scene,emitter_net,material_net,rays_o,
         pixel_all_ok = angle_ok.all(dim=1)
         # All points are visible
         vis = torch.ones(N, dtype=torch.bool, device=device)
-        return L, vis, ray_params, (pixel_all_ok, cosine_emitter_angle)
+        return L, vis, ray_params, (pixel_all_ok, cosine_emitter_angle), smooth_loss
     else:
         uv_offset = uv_offset.reshape(N, spp, 2).mean(1)
         # All points are visible
         vis = torch.ones(N, dtype=torch.bool, device=device)
-        return L, vis, ray_params, uv_offset
+        return L, vis, ray_params, uv_offset, smooth_loss
     
 # def batched_path_tracing_tbn_real_area_emitter(scene,emitter_net,material_net,rays_o,rays_d,dx_du,dy_dv, light_id, spp, brdf_sampling, emitter_sampling, gt_params=None, latent=None):
 #     """ Path trace with real capture
