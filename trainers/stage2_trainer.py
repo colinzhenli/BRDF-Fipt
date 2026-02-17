@@ -22,7 +22,7 @@ class Stage2Trainer(pl.LightningModule):
         self.cfg = cfg
         self.save_hyperparameters(cfg)
 
-        self.more_visualization = False
+        self.more_visualization = True
         self.use_tone_mapping = False  # When True, apply tone mapping + gamma and save as 8-bit PNG
         self.visualize_lobe = False
         self.material = material
@@ -815,6 +815,18 @@ class Stage2Trainer(pl.LightningModule):
             )
             os.makedirs(output_dir, exist_ok=True)
 
+            # --- CCM diagnostic images ---
+            ccm_tensor = torch.tensor([
+                [3.6724617, -0.94800931, 0.08428962],
+                [-0.44629176, 2.96095854, -1.17898539],
+                [-0.47909694, -0.39991418, 2.10705124]
+            ], dtype=torch.float64, device=sample_rgbs.device)
+            
+            # --- Apply inverse CCM to prediction ---
+            ccm_inv = torch.linalg.inv(ccm_tensor)
+            sample_rgbs = (sample_rgbs.double() @ ccm_inv).clamp(min=0).float()
+            ccm = ccm_tensor.cpu().numpy()
+            
             if self.more_visualization:
                 # Save original images as 32-bit EXR without clipping
                 sample_rgbs_gt_32bit = sample_rgbs_gt.cpu().numpy().astype(np.float32)/65535.0 
@@ -836,6 +848,85 @@ class Stage2Trainer(pl.LightningModule):
                     os.path.join(output_dir, f'error_view_{batch_idx}_{b}.exr'),
                     cv2.cvtColor(error_image, cv2.COLOR_RGB2BGR)
                 )
+                
+                # Save individual RGB channels separately
+                for ch_idx, ch_name in enumerate(['R', 'G', 'B']):
+                    cv2.imwrite(
+                        os.path.join(output_dir, f'gt_view_{batch_idx}_{b}_{ch_name}.exr'),
+                        sample_rgbs_gt_32bit[:, :, ch_idx]
+                    )
+                    cv2.imwrite(
+                        os.path.join(output_dir, f'result_view_{batch_idx}_{b}_{ch_name}.exr'),
+                        sample_rgbs_32bit[:, :, ch_idx]
+                    )
+                    cv2.imwrite(
+                        os.path.join(output_dir, f'error_view_{batch_idx}_{b}_{ch_name}.exr'),
+                        error_image[:, :, ch_idx]
+                    )
+                
+                
+                # Apply CCM to GT and result
+                gt_ccm = (sample_rgbs_gt_32bit.astype(np.float64) @ ccm).clip(0, None).astype(np.float32)
+                result_ccm = (sample_rgbs_32bit.astype(np.float64) @ ccm).clip(0, None).astype(np.float32)
+                error_ccm = (result_ccm - gt_ccm).astype(np.float32)
+                
+                cv2.imwrite(
+                    os.path.join(output_dir, f'gt_view_{batch_idx}_{b}_ccm.exr'),
+                    cv2.cvtColor(gt_ccm, cv2.COLOR_RGB2BGR)
+                )
+                cv2.imwrite(
+                    os.path.join(output_dir, f'result_view_{batch_idx}_{b}_ccm.exr'),
+                    cv2.cvtColor(result_ccm, cv2.COLOR_RGB2BGR)
+                )
+                cv2.imwrite(
+                    os.path.join(output_dir, f'error_view_{batch_idx}_{b}_ccm.exr'),
+                    cv2.cvtColor(error_ccm, cv2.COLOR_RGB2BGR)
+                )
+                
+                # Save per-channel CCM images
+                for ch_idx, ch_name in enumerate(['R', 'G', 'B']):
+                    cv2.imwrite(
+                        os.path.join(output_dir, f'gt_view_{batch_idx}_{b}_ccm_{ch_name}.exr'),
+                        gt_ccm[:, :, ch_idx]
+                    )
+                    cv2.imwrite(
+                        os.path.join(output_dir, f'result_view_{batch_idx}_{b}_ccm_{ch_name}.exr'),
+                        result_ccm[:, :, ch_idx]
+                    )
+                    cv2.imwrite(
+                        os.path.join(output_dir, f'error_view_{batch_idx}_{b}_ccm_{ch_name}.exr'),
+                        error_ccm[:, :, ch_idx]
+                    )
+                
+                # Print average error RGB before and after CCM
+                mask = sample_rgbs_gt_32bit.sum(axis=-1) > 1e-7
+                err_mean_r = error_image[mask, 0].mean()
+                err_mean_g = error_image[mask, 1].mean()
+                err_mean_b = error_image[mask, 2].mean()
+                err_ccm_mean_r = error_ccm[mask, 0].mean()
+                err_ccm_mean_g = error_ccm[mask, 1].mean()
+                err_ccm_mean_b = error_ccm[mask, 2].mean()
+                print(f"[View {batch_idx}_{b}] Error avg (before CCM): R={err_mean_r:.6f}, G={err_mean_g:.6f}, B={err_mean_b:.6f}")
+                print(f"[View {batch_idx}_{b}] Error avg (after  CCM): R={err_ccm_mean_r:.6f}, G={err_ccm_mean_g:.6f}, B={err_ccm_mean_b:.6f}")
+                
+                # Per-pixel inter-channel differences of the error, then averaged
+                # This measures the color shift: if error is achromatic, these are all ~0
+                err_rg = (error_image[mask, 0] - error_image[mask, 1]).mean()
+                err_gb = (error_image[mask, 1] - error_image[mask, 2]).mean()
+                err_br = (error_image[mask, 2] - error_image[mask, 0]).mean()
+                err_ccm_rg = (error_ccm[mask, 0] - error_ccm[mask, 1]).mean()
+                err_ccm_gb = (error_ccm[mask, 1] - error_ccm[mask, 2]).mean()
+                err_ccm_br = (error_ccm[mask, 2] - error_ccm[mask, 0]).mean()
+                print(f"[View {batch_idx}_{b}] Error channel diff (before CCM): R-G={err_rg:.6f}, G-B={err_gb:.6f}, B-R={err_br:.6f}")
+                print(f"[View {batch_idx}_{b}] Error channel diff (after  CCM): R-G={err_ccm_rg:.6f}, G-B={err_ccm_gb:.6f}, B-R={err_ccm_br:.6f}")
+                
+                # Amplification analysis: how much CCM boosts the color shift
+                amp_rg = err_ccm_rg / err_rg if abs(err_rg) > 1e-10 else float('nan')
+                amp_gb = err_ccm_gb / err_gb if abs(err_gb) > 1e-10 else float('nan')
+                amp_br = err_ccm_br / err_br if abs(err_br) > 1e-10 else float('nan')
+                print(f"[View {batch_idx}_{b}] CCM amplification of color shift: R-G={amp_rg:.2f}x, G-B={amp_gb:.2f}x, B-R={amp_br:.2f}x")
+                if abs(err_rg) > 1e-10 or abs(err_gb) > 1e-10:
+                    print(f"[View {batch_idx}_{b}]   -> If |amplification| > 1, CCM is boosting the color error")
             else:
                 psnr_str = f'{psnr.item():.2f}'
                 
@@ -946,11 +1037,21 @@ class Stage2Trainer(pl.LightningModule):
                 # Isotropic layout: [color(3), albedo(1), roughness(1), metallic(1)]
                 color_map = self.material.latent_texture.params[:, 0:3, :, :]  # [1, 3, H, W]
                 # Clamp to [0, 1] for visualization
-                color_map_vis = torch.clamp(color_map, 0.0, 1.0)
+                color_map = torch.sigmoid(color_map)
                 torchvision.utils.save_image(
-                    color_map_vis,
+                    color_map,
                     os.path.join(pbr_map_dir, 'color_map_batch0.png')
                 )
+                # # Save individual RGB channels separately
+                # for ch_idx, ch_name in enumerate(['R', 'G', 'B']):
+                #     cv2.imwrite(
+                #         os.path.join(output_dir, f'gt_view_{batch_idx}_{b}_{ch_name}.exr'),
+                #         sample_rgbs_gt_32bit[:, :, ch_idx]
+                #     )
+                #     cv2.imwrite(
+                #         os.path.join(output_dir, f'result_view_{batch_idx}_{b}_{ch_name}.exr'),
+                #         sample_rgbs_32bit[:, :, ch_idx]
+                #     )
             
         self.log('val/loss', loss)
         self.log('val/emitter_radiance', emitter_radiance.mean())

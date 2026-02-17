@@ -14,16 +14,16 @@ rays_num: 131072  # pixels per batch
 
 # Color correction matrix (CCM) for camera calibration
 # Applied to linear RGB values: corrected_rgb = raw_rgb @ CCM
-ccm: [
-  [3.6724617, -0.94800931, 0.08428962],
-  [-0.44629176, 2.96095854, -1.17898539],
-  [-0.47909694, -0.39991418, 2.10705124]
-] #
 # ccm: [
-#   [1.0, 0.0, 0.0],
-#   [0.0, 1.0, 0.0],
-#   [0.0, 0.0, 1.0]
-# ]
+#   [3.6724617, -0.94800931, 0.08428962],
+#   [-0.44629176, 2.96095854, -1.17898539],
+#   [-0.47909694, -0.39991418, 2.10705124]
+# ] #
+ccm: [
+  [1.0, 0.0, 0.0],
+  [0.0, 1.0, 0.0],
+  [0.0, 0.0, 1.0]
+]
 
 
 #load images chunk to memory
@@ -40,14 +40,14 @@ batch_size: 1 # equal to train_num
 multi_resolution: False
 downsample_iter: [-1, -1]
 
-debug: False # no random permutation when debugging
+debug: True # no random permutation when debugging
 debug_num: 1
 training_list_path: ${dataset_folder}/training_list.txt
-valid_on_train_set: False
+valid_on_train_set: True
 val_ratio: 0.01
 visualize_uv: False
-start_idx: 0
-valid_num: 240 # Actual validation number during training
+start_idx: 110
+valid_num: 1 # Actual validation number during training
 use_fixed_val: True
 hold_out_val_num: 240 # The first hold_out_val_num images are used for validation
 
