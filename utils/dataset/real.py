@@ -201,7 +201,7 @@ def load_metadata(colmap_camera, metadata_path, camera_metadata_path, gt_folder,
             # Use first fixed_val_num images for validation, rest for training
             # Split first, then permute each set separately
             if split == 'val':
-                selected_metadata = metadata[:fixed_val_num]
+                selected_metadata = metadata[300:fixed_val_num]
                 print(f"Fixed validation set: {len(selected_metadata)} images (first {fixed_val_num})")
             else:
                 selected_metadata = metadata[fixed_val_num:]
@@ -752,7 +752,7 @@ class RealValDataset(Dataset):
             img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
             img = img.astype(np.float64)
             img = img @ self.ccm
-            img = img.clip(0, None)
+            # img = img.clip(0, None)
             img = torch.from_numpy(img).float()
         elif img_path.endswith('.exr'):
             # Load EXR image (already linear)
