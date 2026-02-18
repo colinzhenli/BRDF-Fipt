@@ -192,9 +192,9 @@
                 "material.different_decoder=False",
                 "material.decoder.use_skip_connection=True",
                 "material.learnable_factor=True",
-                "experiment_name=New_227_Color_check_saved-metallic-run_1",
+                "experiment_name=Disney-model_Debug_run_1",
                 "model.stage=2",
-                "model.test=True",
+                "model.test=False",
                 "model.test_novel_view=False",
                 "material.use_latent_bank=False",
                 "material.latent_dim=16",
@@ -203,9 +203,9 @@
                 "model.freeze_decoder=True",
                 // "renderer.mesh.use_hemisphere=False",
                 "data.switch_iters=3000",
-                "data.debug=False",
+                "data.debug=True",
                 "data.valid_on_train_set=False",
-                "model.ckpt_path=/media/raid/cloth/output/BRDF/real/Visualizations/Real/real/Stage-2_Anisotropic_PBR_Material-227_run_1/training/model_0.20_0.20/last-v1.ckpt"
+                // "model.ckpt_path=/media/raid/cloth/output/BRDF/real/Visualizations/Real/real/Stage-2_Anisotropic_PBR_Material-227_run_1/training/model_0.20_0.20/last-v1.ckpt"
             ]
         }
 
