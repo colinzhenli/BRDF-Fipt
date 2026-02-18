@@ -192,7 +192,7 @@
                 "material.different_decoder=False",
                 "material.decoder.use_skip_connection=True",
                 "material.learnable_factor=True",
-                "experiment_name=Training-with-CCM_Debug_110",
+                "experiment_name=New_227_Color_check_saved-metallic-run_1",
                 "model.stage=2",
                 "model.test=True",
                 "model.test_novel_view=False",
@@ -204,7 +204,7 @@
                 // "renderer.mesh.use_hemisphere=False",
                 "data.switch_iters=3000",
                 "data.debug=False",
-                "data.valid_on_train_set=True",
+                "data.valid_on_train_set=False",
                 "model.ckpt_path=/media/raid/cloth/output/BRDF/real/Visualizations/Real/real/Stage-2_Anisotropic_PBR_Material-227_run_1/training/model_0.20_0.20/last-v1.ckpt"
             ]
         }

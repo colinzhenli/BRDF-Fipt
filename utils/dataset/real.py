@@ -201,7 +201,7 @@ def load_metadata(colmap_camera, metadata_path, camera_metadata_path, gt_folder,
             # Use first fixed_val_num images for validation, rest for training
             # Split first, then permute each set separately
             if split == 'val':
-                selected_metadata = metadata[300:fixed_val_num]
+                selected_metadata = metadata[0:fixed_val_num]
                 print(f"Fixed validation set: {len(selected_metadata)} images (first {fixed_val_num})")
             else:
                 selected_metadata = metadata[fixed_val_num:]
