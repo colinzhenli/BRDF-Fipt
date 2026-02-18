@@ -47,4 +47,5 @@ output_channels: 3
 
 
 anisotropic: True
+disney: False
 soft_constraint: True

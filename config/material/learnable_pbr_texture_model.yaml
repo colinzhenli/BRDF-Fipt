@@ -47,4 +47,5 @@ output_channels: 3
 
 
 anisotropic: True
+disney: True # True for Disney model
 soft_constraint: True

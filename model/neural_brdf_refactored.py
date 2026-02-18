@@ -468,6 +468,9 @@ class PBRDecoder(nn.Module):
     Latent structure:
         Isotropic: [color(3), albedo(1), roughness(1), metallic(1)] = 6 channels
         Anisotropic: [diffuse(3), ao(1), roughness(1), metallic(1), ior(1), aniso_strength(1), aniso_rot(1)] = 9 channels
+        Disney (anisotropic + Disney lobes):
+            [baseColor(3), ao(1), roughness(1), metallic(1), ior(1), aniso_strength(1), aniso_rot(1),
+             specularTint(1), sheen(1), sheenTint(1)] = 12 channels
     """
     def __init__(
         self,
@@ -483,6 +486,7 @@ class PBRDecoder(nn.Module):
         """
         super().__init__()
         self.anisotropic = getattr(cfg, 'anisotropic', False)
+        self.disney = getattr(cfg, 'disney', False)
         self.soft_constraint = soft_constraint
         
         # Canonical space basis vectors
@@ -579,7 +583,81 @@ class PBRDecoder(nn.Module):
         pdf = 0.5 * (pdf_spec + pdf_diff)
 
         return brdf, pdf
-    
+
+    def compute_disney_anisotropic_svbrdf_pdf(self,
+                                              baseColor, ao, ax, ay, metallic, ior,
+                                              specularTint, sheen, sheenTint,
+                                              wi, wo,
+                                              normal, tangent):
+        """
+        Disney Principled BRDF (anisotropic) with specularTint, Burley diffuse, and sheen.
+        Reference: Burley 2012, WDAS BRDF Explorer disney.brdf
+
+        Args:
+            baseColor: [N, 3] Base color (linear space)
+            ao: [N, 1] Ambient Occlusion
+            ax, ay: [N, 1] Directional roughness (tangent/bitangent)
+            metallic: [N, 1] Metallic factor
+            ior: [N, 1] Specular IOR (controls dielectric F0 magnitude)
+            specularTint: [N, 1] How much dielectric F0 takes baseColor hue (0=white, 1=tinted)
+            sheen: [N, 1] Sheen strength (fabric edge glow)
+            sheenTint: [N, 1] Sheen color (0=white, 1=baseColor tint)
+            wi, wo: [N, 3] Incident & outgoing directions (local space)
+            normal: [N, 3] Surface normal (local space)
+            tangent: [N, 3] Tangent vector (local space)
+        Returns:
+            brdf [N, 3], pdf [N, 1]
+        """
+        B = NF.normalize(torch.cross(normal, tangent, dim=-1), dim=-1)
+        h = NF.normalize(wi + wo, dim=-1)
+
+        NoL = (wi * normal).sum(-1, keepdim=True).clamp_min(0.0)
+        NoV = (wo * normal).sum(-1, keepdim=True).clamp_min(0.0)
+        VoH = (wo * h).sum(-1, keepdim=True).clamp_min(1e-4)
+        NoH = (normal * h).sum(-1, keepdim=True).clamp_min(1e-4)
+        LdotH = (wi * h).sum(-1, keepdim=True).clamp_min(0.0)
+
+        # --- Disney specularTint: colored dielectric F0 ---
+        Cdlum = 0.3 * baseColor[:, 0:1] + 0.6 * baseColor[:, 1:2] + 0.1 * baseColor[:, 2:3]
+        Ctint = baseColor / Cdlum.clamp(min=1e-6)
+
+        F0_dielectric = ((ior - 1) / (ior + 1)).pow(2)
+        Cspec0 = torch.lerp(
+            F0_dielectric * torch.lerp(torch.ones_like(baseColor), Ctint, specularTint),
+            baseColor,
+            metallic
+        )
+        F = fresnelSchlick(VoH, Cspec0)
+
+        # --- Specular: D * G * F (same NDF/G as anisotropic path) ---
+        D = D_GGX_aniso(h, normal, tangent, B, ax, ay)
+        G = G_Smith_aniso(wi, wo, normal, tangent, B, ax, ay)
+        brdf_spec = (D * G * F) / (4.0 * NoL * NoV + 1e-6)
+
+        # --- Burley diffuse (roughness-dependent retroreflection) ---
+        FL = (1.0 - NoL).pow(5)
+        FV = (1.0 - NoV).pow(5)
+        roughness = (ax + ay) * 0.5  # average roughness for diffuse term
+        Fd90 = 0.5 + 2.0 * LdotH * LdotH * roughness
+        Fd = (1.0 + (Fd90 - 1.0) * FL) * (1.0 + (Fd90 - 1.0) * FV)
+
+        kd = baseColor * (1.0 - metallic) * ao
+        brdf_diff = kd / math.pi * Fd
+
+        # --- Sheen lobe (fabric edge glow) ---
+        FH = (1.0 - LdotH).pow(5)
+        Csheen = torch.lerp(torch.ones_like(baseColor), Ctint, sheenTint)
+        brdf_sheen = FH * sheen * Csheen * (1.0 - metallic)
+
+        brdf = brdf_diff + brdf_sheen + brdf_spec
+
+        # PDF (half diffuse, half specular) — same as anisotropic path
+        pdf_spec = D * NoH / (4.0 * VoH)
+        pdf_diff = NoL / math.pi
+        pdf = 0.5 * (pdf_spec + pdf_diff)
+
+        return brdf, pdf
+
     def forward(
         self,
         wi: torch.Tensor,
@@ -596,6 +674,8 @@ class PBRDecoder(nn.Module):
             latent: [N, C] Material properties latent
                 Isotropic (C=6): [color(3), albedo(1), roughness(1), metallic(1)]
                 Anisotropic (C=9): [diffuse(3), ao(1), roughness(1), metallic(1), ior(1), aniso_strength(1), aniso_rot(1)]
+                Disney (C=12): [baseColor(3), ao(1), roughness(1), metallic(1), ior(1), aniso_strength(1), aniso_rot(1),
+                                specularTint(1), sheen(1), sheenTint(1)]
         
         Returns:
             brdf: [N, 3] BRDF values
@@ -616,9 +696,9 @@ class PBRDecoder(nn.Module):
         if not valid_geometry.any():
             return torch.zeros_like(wi), torch.zeros(N, 1, device=device)
         
-        if self.anisotropic:
-            # Parse anisotropic latent: [diffuse(3), ao(1), roughness(1), metallic(1), ior(1), aniso_strength(1), aniso_rot(1)]
-            diffuse = latent[:, 0:3]
+        if self.anisotropic or self.disney:
+            # Parse anisotropic latent: [baseColor(3), ao(1), roughness(1), metallic(1), ior(1), aniso_strength(1), aniso_rot(1)]
+            baseColor = latent[:, 0:3]
             ao = latent[:, 3:4]
             roughness = latent[:, 4:5]
             metallic = latent[:, 5:6]
@@ -626,9 +706,9 @@ class PBRDecoder(nn.Module):
             aniso_strength = latent[:, 7:8]
             aniso_rot = latent[:, 8:9]
             
-            # Apply constraints
+            # Apply constraints (shared between anisotropic and Disney)
             if self.soft_constraint:
-                diffuse = torch.sigmoid(diffuse)
+                baseColor = torch.sigmoid(baseColor)
                 ao = torch.sigmoid(ao)
                 roughness = torch.sigmoid(roughness)
                 metallic = torch.sigmoid(metallic)
@@ -636,7 +716,7 @@ class PBRDecoder(nn.Module):
                 aniso_strength = torch.sigmoid(aniso_strength)
                 aniso_rot = torch.sigmoid(aniso_rot)
             else:
-                diffuse = torch.clamp(diffuse, 0.01, 0.99)
+                baseColor = torch.clamp(baseColor, 0.01, 0.99)
                 ao = torch.clamp(ao, 0.01, 0.99)
                 roughness = torch.clamp(roughness, 0.01, 0.99)
                 metallic = torch.clamp(metallic, 0.01, 0.99)
@@ -657,10 +737,31 @@ class PBRDecoder(nn.Module):
             T_rot = cos_theta * tangent + sin_theta * bitangent
             T_rot = NF.normalize(T_rot, dim=-1)
             
-            brdf, pdf = self.compute_anisotropic_svbrdf_pdf(
-                diffuse, ao, ax, ay, metallic, ior,
-                wi, wo, normal, T_rot
-            )
+            if self.disney:
+                # Parse Disney-specific channels
+                specularTint = latent[:, 9:10]
+                sheen = latent[:, 10:11]
+                sheenTint = latent[:, 11:12]
+                
+                if self.soft_constraint:
+                    specularTint = torch.sigmoid(specularTint)
+                    sheen = torch.sigmoid(sheen)
+                    sheenTint = torch.sigmoid(sheenTint)
+                else:
+                    specularTint = torch.clamp(specularTint, 0.0, 1.0)
+                    sheen = torch.clamp(sheen, 0.0, 1.0)
+                    sheenTint = torch.clamp(sheenTint, 0.0, 1.0)
+                
+                brdf, pdf = self.compute_disney_anisotropic_svbrdf_pdf(
+                    baseColor, ao, ax, ay, metallic, ior,
+                    specularTint, sheen, sheenTint,
+                    wi, wo, normal, T_rot
+                )
+            else:
+                brdf, pdf = self.compute_anisotropic_svbrdf_pdf(
+                    baseColor, ao, ax, ay, metallic, ior,
+                    wi, wo, normal, T_rot
+                )
             
         else:
             # Parse isotropic latent: [color(3), albedo(1), roughness(1), metallic(1)]
@@ -1917,6 +2018,8 @@ class LearnablePBRTexturedModel(LightningModule):
     Uses PBRDecoder with latent structure:
         Isotropic (6 channels): [color(3), albedo(1), roughness(1), metallic(1)]
         Anisotropic (9 channels): [diffuse(3), ao(1), roughness(1), metallic(1), ior(1), aniso_strength(1), aniso_rot(1)]
+        Disney (12 channels): [baseColor(3), ao(1), roughness(1), metallic(1), ior(1), aniso_strength(1), aniso_rot(1),
+                                specularTint(1), sheen(1), sheenTint(1)]
     """
     def __init__(self, cfg):
         super().__init__()
@@ -1926,6 +2029,7 @@ class LearnablePBRTexturedModel(LightningModule):
         self.predict_frame = cfg.predict_frame
         self.gt_frame = cfg.gt_frame
         self.anisotropic = getattr(cfg, 'anisotropic', False)
+        self.disney = getattr(cfg, 'disney', False)
         self.Gaussian_blur = cfg.Gaussian_blur
         self.learnable_factor = cfg.learnable_factor
         self.soft_constraint = getattr(cfg, 'soft_constraint', True)
@@ -1942,10 +2046,10 @@ class LearnablePBRTexturedModel(LightningModule):
         self.recompute_frame = cfg.neural_geometry.recompute_frame if self.neural_geometry_enabled else False
         self.neural_geometry_factor = cfg.neural_geometry.factor if self.neural_geometry_enabled else 0.4
         
-        # Calculate PBR latent dimension based on anisotropic flag
-        # Isotropic: [color(3), albedo(1), roughness(1), metallic(1)] = 6 channels
-        # Anisotropic: [diffuse(3), ao(1), roughness(1), metallic(1), ior(1), aniso_strength(1), aniso_rot(1)] = 9 channels
-        if self.anisotropic:
+        # Calculate PBR latent dimension based on model type
+        if self.disney:
+            brdf_latent_dim = 12
+        elif self.anisotropic:
             brdf_latent_dim = 9
         else:
             brdf_latent_dim = 6

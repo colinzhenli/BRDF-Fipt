@@ -25,6 +25,7 @@ class Stage2Trainer(pl.LightningModule):
         self.more_visualization = False
         self.use_tone_mapping = False  # When True, apply tone mapping + gamma and save as 8-bit PNG
         self.visualize_lobe = False
+        self.compute_color_shift = False
         self.material = material
         self.freeze_decoder = cfg.model.freeze_decoder
         self.gt_material = gt_material
@@ -772,7 +773,66 @@ class Stage2Trainer(pl.LightningModule):
         }, prog_bar=True, batch_size=rays.shape[0])
 
         return loss
-    
+
+    def compute_color_shift_metrics(self, sample_rgbs_gt, sample_rgbs):
+        """
+        Compute Delta E (CIE76) and per-channel relative RGB error between
+        predicted and ground-truth images (uint16 range 0-65535).
+
+        Returns:
+            dict with keys: mean_delta_e, mean_dL, mean_da, mean_db,
+                            rel_R, rel_G, rel_B, avg_rgb_diff
+        """
+        gt_np = sample_rgbs_gt.cpu().numpy().astype(np.float64) / 65535.0
+        res_np = sample_rgbs.cpu().numpy().astype(np.float64) / 65535.0
+        mask = gt_np.sum(axis=-1) > 1e-7
+
+        M_rgb2xyz = np.array([
+            [0.4124564, 0.3575761, 0.1804375],
+            [0.2126729, 0.7151522, 0.0721750],
+            [0.0193339, 0.1191920, 0.9503041]
+        ])
+        xyz_ref = np.array([0.95047, 1.0, 1.08883])
+        delta_t = 6.0 / 29.0
+
+        def lab_f(t):
+            return np.where(t > delta_t**3, np.cbrt(t), t / (3 * delta_t**2) + 4.0 / 29.0)
+
+        def rgb_to_lab(rgb):
+            xyz = np.clip(rgb, 0, None) @ M_rgb2xyz.T
+            xyz_n = xyz / xyz_ref
+            fx, fy, fz = lab_f(xyz_n[..., 0]), lab_f(xyz_n[..., 1]), lab_f(xyz_n[..., 2])
+            return np.stack([116.0 * fy - 16.0, 500.0 * (fx - fy), 200.0 * (fy - fz)], axis=-1)
+
+        gt_lab = rgb_to_lab(gt_np)
+        res_lab = rgb_to_lab(res_np)
+        dL = (res_lab[..., 0] - gt_lab[..., 0])[mask]
+        da = (res_lab[..., 1] - gt_lab[..., 1])[mask]
+        db = (res_lab[..., 2] - gt_lab[..., 2])[mask]
+        delta_e_map = np.sqrt(dL**2 + da**2 + db**2)
+        mean_delta_e = float(delta_e_map.mean())
+        mean_dL = float(dL.mean())
+        mean_da = float(da.mean())
+        mean_db = float(db.mean())
+
+        eps = 1e-6
+        rel_err = (res_np - gt_np) / (gt_np + eps)
+        rel_R = float(rel_err[mask, 0].mean())
+        rel_G = float(rel_err[mask, 1].mean())
+        rel_B = float(rel_err[mask, 2].mean())
+        avg_rgb_diff = float((abs(rel_R - rel_G) + abs(rel_G - rel_B) + abs(rel_B - rel_R)) / 3.0)
+
+        return {
+            'mean_delta_e': mean_delta_e,
+            'mean_dL': mean_dL,
+            'mean_da': mean_da,
+            'mean_db': mean_db,
+            'rel_R': rel_R,
+            'rel_G': rel_G,
+            'rel_B': rel_B,
+            'avg_rgb_diff': avg_rgb_diff,
+        }
+
     def validation_step(self, batch, batch_idx):
         """ Unified validation step for both normal and radiometric calibration """
         rays, rgbs_gt, emitter_ids, camera_ids = batch['rays'], batch['rgbs'], batch['emitter_ids'], batch['camera_ids']
@@ -817,53 +877,16 @@ class Stage2Trainer(pl.LightningModule):
             )
             os.makedirs(output_dir, exist_ok=True)
 
-            # --- Compute color metrics (Delta E + relative RGB error) ---
-            gt_np = sample_rgbs_gt.cpu().numpy().astype(np.float64) / 65535.0
-            res_np = sample_rgbs.cpu().numpy().astype(np.float64) / 65535.0
-            mask = gt_np.sum(axis=-1) > 1e-7
-
-            M_rgb2xyz = np.array([
-                [0.4124564, 0.3575761, 0.1804375],
-                [0.2126729, 0.7151522, 0.0721750],
-                [0.0193339, 0.1191920, 0.9503041]
-            ])
-            xyz_ref = np.array([0.95047, 1.0, 1.08883])
-            delta_t = 6.0 / 29.0
-
-            def lab_f(t):
-                return np.where(t > delta_t**3, np.cbrt(t), t / (3 * delta_t**2) + 4.0 / 29.0)
-
-            def rgb_to_lab(rgb):
-                xyz = np.clip(rgb, 0, None) @ M_rgb2xyz.T
-                xyz_n = xyz / xyz_ref
-                fx, fy, fz = lab_f(xyz_n[..., 0]), lab_f(xyz_n[..., 1]), lab_f(xyz_n[..., 2])
-                return np.stack([116.0 * fy - 16.0, 500.0 * (fx - fy), 200.0 * (fy - fz)], axis=-1)
-
-            gt_lab = rgb_to_lab(gt_np)
-            res_lab = rgb_to_lab(res_np)
-            dL = (res_lab[..., 0] - gt_lab[..., 0])[mask]
-            da = (res_lab[..., 1] - gt_lab[..., 1])[mask]
-            db = (res_lab[..., 2] - gt_lab[..., 2])[mask]
-            delta_e_map = np.sqrt(dL**2 + da**2 + db**2)
-            mean_delta_e = float(delta_e_map.mean())
-            mean_dL = float(dL.mean())
-            mean_da = float(da.mean())
-            mean_db = float(db.mean())
-
-            eps = 1e-6
-            rel_err = (res_np - gt_np) / (gt_np + eps)
-            rel_R = float(rel_err[mask, 0].mean())
-            rel_G = float(rel_err[mask, 1].mean())
-            rel_B = float(rel_err[mask, 2].mean())
-            avg_rgb_diff = float((abs(rel_R - rel_G) + abs(rel_G - rel_B) + abs(rel_B - rel_R)) / 3.0)
-
-            self.val_delta_e_list.append(mean_delta_e)
-            self.val_rgb_rel_err_list.append([rel_R, rel_G, rel_B, avg_rgb_diff])
-
             psnr_str = f'{psnr.item():.2f}'
-            de_str = f'{mean_delta_e:.2f}'
-            cdiff_str = f'{avg_rgb_diff:.4f}'
-            metric_suffix = f'_psnr{psnr_str}_dE{de_str}_cd{cdiff_str}'
+            metric_suffix = f'_psnr{psnr_str}'
+
+            if self.compute_color_shift:
+                cm = self.compute_color_shift_metrics(sample_rgbs_gt, sample_rgbs)
+                self.val_delta_e_list.append(cm['mean_delta_e'])
+                self.val_rgb_rel_err_list.append([cm['rel_R'], cm['rel_G'], cm['rel_B'], cm['avg_rgb_diff']])
+                de_str = f'{cm["mean_delta_e"]:.2f}'
+                cdiff_str = f'{cm["avg_rgb_diff"]:.4f}'
+                metric_suffix += f'_dE{de_str}_cd{cdiff_str}'
 
             if self.more_visualization:
                 # Save original images as 32-bit EXR without clipping
