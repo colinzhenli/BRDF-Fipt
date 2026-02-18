@@ -20,8 +20,8 @@ def natural_sort_key(filename):
     Sort key for natural sorting of filenames like result_view_0_0_psnr25.32.png.
     Extracts the batch_idx from the filename.
     """
-    # Match pattern like result_view_0_0_psnr25.32.png or result_view_0_0.png
-    match = re.search(r'_(\d+)_(\d+)(?:_psnr[\d.]+)?\.png$', filename)
+    # Match pattern like result_view_0_0_psnr21.14_dE55.34_cd0.0030.png or result_view_0_0.png
+    match = re.search(r'_(\d+)_(\d+)(?:_psnr[\d.]+)?(?:_dE[\d.]+)?(?:_cd[\d.]+)?\.png$', filename)
     if match:
         batch_idx = int(match.group(1))
         b = int(match.group(2))
