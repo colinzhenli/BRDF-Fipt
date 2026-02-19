@@ -147,34 +147,34 @@
         //     ]
         // },
 
-        {
-            "name": "Python: Auto-decoder Points",
-            "type": "python",
-            "request": "launch",
-            "program": "main.py",
-            "console": "integratedTerminal",
-            "justMyCode": true,
-            "env": {
-                "CUDA_VISIBLE_DEVICES": "3"
-            },
-            "args": [
-                "dataset_folder=/media/raid/cloth/capture_data/Dataset_Nov11",
-                "data=points",
-                "renderer=multiarea_emitter",
-                "material=multi_material_latent",
-                "experiment_name=Smooth-loss_debug",
-                "model.stage=1",
-                "model.test=False",
-                "model.trainer.limit_train_batches=64",
-                "model.loss.reg_loss.weight=1e7",
-                "material.decoder.smooth_reg=True",
-                "material.decoder.smooth_reg_eps=0.01",
-                "material.decoder.use_skip_connection=True",
-                "data.chunk_size=2",
-                "data.switch_iters=2000",
-                "data.filter_observations=False",
-            ]
-        }
+        // {
+        //     "name": "Python: Auto-decoder Points",
+        //     "type": "python",
+        //     "request": "launch",
+        //     "program": "main.py",
+        //     "console": "integratedTerminal",
+        //     "justMyCode": true,
+        //     "env": {
+        //         "CUDA_VISIBLE_DEVICES": "3"
+        //     },
+        //     "args": [
+        //         "dataset_folder=/media/raid/cloth/capture_data/Dataset_Nov11",
+        //         "data=points",
+        //         "renderer=multiarea_emitter",
+        //         "material=multi_material_latent",
+        //         "experiment_name=Smooth-loss_debug",
+        //         "model.stage=1",
+        //         "model.test=False",
+        //         "model.trainer.limit_train_batches=64",
+        //         "model.loss.reg_loss.weight=1e7",
+        //         "material.decoder.smooth_reg=True",
+        //         "material.decoder.smooth_reg_eps=0.01",
+        //         "material.decoder.use_skip_connection=True",
+        //         "data.chunk_size=2",
+        //         "data.switch_iters=2000",
+        //         "data.filter_observations=False",
+        //     ]
+        // }
 
 
         // {
@@ -213,40 +213,41 @@
         // }
 
 
-        {
-            "name": "Python: stage 2 pretrained 119",
-            "type": "python",
-            "request": "launch",
-            "program": "main.py",
-            "console": "integratedTerminal",
-            "justMyCode": true,
-            "env": {
-                "CUDA_VISIBLE_DEVICES": "0"
-            },
-            "args": [
-                "dataset_folder=/media/raid/cloth/capture_data/Dataset_Debug_Feb10/227",
-                "data=real",
-                "renderer=multiarea_emitter",
-                "material=learnable_pbr_texture_model",
-                "material.different_decoder=False",
-                "material.decoder.use_skip_connection=True",
-                "material.learnable_factor=True",
-                "experiment_name=Disney-model_Debug_run_1",
-                "model.stage=2",
-                "model.test=False",
-                "model.test_novel_view=False",
-                "material.use_latent_bank=False",
-                "material.latent_dim=16",
-                "material.decoder.degree=3",
-                "material.neural_geometry.factor=0.04",
-                "model.freeze_decoder=True",
-                // "renderer.mesh.use_hemisphere=False",
-                "data.switch_iters=3000",
-                "data.debug=True",
-                "data.valid_on_train_set=False",
-                // "model.ckpt_path=/media/raid/cloth/output/BRDF/real/Visualizations/Real/real/Stage-2_Anisotropic_PBR_Material-227_run_1/training/model_0.20_0.20/last-v1.ckpt"
-            ]
-        }
+        // {
+        //     "name": "Python: stage 2 pretrained 119",
+        //     "type": "python",
+        //     "request": "launch",
+        //     "program": "main.py",
+        //     "console": "integratedTerminal",
+        //     "justMyCode": true,
+        //     "env": {
+        //         "CUDA_VISIBLE_DEVICES": "2"
+        //     },
+        //     "args": [
+        //         "dataset_folder=/media/raid/cloth/capture_data/Dataset_Debug_Feb10/227",
+        //         "data=real",
+        //         "renderer=multiarea_emitter",
+        //         "material=learnable_pbr_texture_model",
+        //         "material.different_decoder=False",
+        //         "material.disney=True",
+        //         "material.decoder.use_skip_connection=True",
+        //         "material.learnable_factor=True",
+        //         "experiment_name=Disney-model_test_1",
+        //         "model.stage=2",
+        //         "model.test=True",
+        //         // "model.test_novel_view=False",
+        //         "material.use_latent_bank=False",
+        //         "material.latent_dim=16",
+        //         "material.decoder.degree=3",
+        //         "material.neural_geometry.factor=0.04",
+        //         "model.freeze_decoder=False",
+        //         // "renderer.mesh.use_hemisphere=False",
+        //         "data.switch_iters=3000",
+        //         "data.debug=False",
+        //         "data.valid_on_train_set=False",
+        //         "model.ckpt_path=/media/raid/cloth/output/BRDF/real/Theia-1_Stage-2_Disney-PBR_Fixed-Val-227_run_1/training/model_0.20_0.20/last.ckpt"
+        //     ]
+        // }
 
         // {
         //     "name": "Python: Current File",
@@ -271,25 +272,24 @@
         //     ]
         // }
 
-        // {
-        //     "name": "Debug Color Matrix",
-        //     "type": "python",
-        //     "request": "launch",
-        //     "program": "./recon/calibration/color_matrix.py",
-        //     "console": "integratedTerminal",
-        //     "justMyCode": true,
-        //     "env": {
-        //         "CUDA_VISIBLE_DEVICES": "0"
-        //     },
-        //     "args": [
-        //         "--lab_file",
-        //         "ColorChecker24_After_Nov2014.txt",
-        //         "--images_folder",
-        //         "/media/raid/cloth/capture_data/BRDF_recon_Oct12_color_checker/hdr",
-        //         "--out_suffix",
-        //         "_ccorr.png"
-        //     ]
-        // },
+        {
+            "name": "Debug Color Matrix",
+            "type": "python",
+            "request": "launch",
+            "program": "./recon/calibration/color_matrix.py",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "env": {
+                "CUDA_VISIBLE_DEVICES": "0"
+            },
+            "args": [
+                "--lab_file",
+                "ColorChecker24_After_Nov2014.txt",
+                "--images_folder",
+                "/media/raid/cloth/capture_data/BRDF_recon_Oct12_color_checker/hdr_4000K",
+                "--illuminant_xy", "0.3818", "0.3797"
+            ]
+        },
 
         
         // {

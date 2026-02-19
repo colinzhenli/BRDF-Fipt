@@ -256,6 +256,27 @@ def bradford_D50_to_D65(XYZ_D50: np.ndarray) -> np.ndarray:
     XYZ_adapt = M_inv @ (D @ (M @ XYZ))
     return XYZ_adapt.T.reshape(XYZ_D50.shape)
 
+def bradford_D50_to_illuminant(XYZ_D50: np.ndarray, target_xy: Tuple[float, float]) -> np.ndarray:
+    """Bradford chromatic adaptation from D50 to an arbitrary illuminant.
+
+    Args:
+        XYZ_D50: input colors in XYZ under D50.
+        target_xy: CIE 1931 (x, y) chromaticity of the target illuminant.
+    """
+    M = np.array([[ 0.8951,  0.2664, -0.1614],
+                  [-0.7502,  1.7135,  0.0367],
+                  [ 0.0389, -0.0685,  1.0296]])
+    M_inv = np.linalg.inv(M)
+    D50 = np.array([0.9642, 1.0000, 0.8251])
+    x, y = target_xy
+    target_wp = np.array([x / y, 1.0, (1.0 - x - y) / y])
+    rho_D50 = M @ D50
+    rho_tgt = M @ target_wp
+    D = np.diag(rho_tgt / rho_D50)
+    XYZ = XYZ_D50.reshape(-1, 3).T
+    XYZ_adapt = M_inv @ (D @ (M @ XYZ))
+    return XYZ_adapt.T.reshape(XYZ_D50.shape)
+
 def bradford_D65_to_D50(XYZ_D65: np.ndarray) -> np.ndarray:
     M = np.array([[ 0.8951,  0.2664, -0.1614],
                   [-0.7502,  1.7135,  0.0367],
@@ -328,13 +349,24 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--lab_file", default="ColorChecker24_After_Nov2014.txt")
     ap.add_argument("--images_folder", required=True)
+    ap.add_argument("--illuminant_xy", type=float, nargs=2, default=None,
+                    metavar=("X", "Y"),
+                    help="CIE 1931 (x, y) of the actual illuminant. "
+                         "If omitted, adapts to D65 (standard sRGB). "
+                         "E.g. --illuminant_xy 0.3818 0.3797 for CMA1840 40G 4000K")
     args = ap.parse_args()
 
-    # 1) Reference Lab(D50) → linear sRGB(D65) in 0..1
+    # 1) Reference Lab(D50) → linear sRGB in 0..1
     lab_ref = parse_cgats_lab_d50(args.lab_file)
     XYZ_D50 = lab_to_xyz_D50(lab_ref)
-    XYZ_D65 = bradford_D50_to_D65(XYZ_D50)
-    ref_lin_srgb = xyz_to_linear_srgb_D65(XYZ_D65)  # (24,3), 0..1
+    if args.illuminant_xy is not None:
+        target_xy = tuple(args.illuminant_xy)
+        print(f"Adapting to illuminant (x, y) = {target_xy}")
+        XYZ_target = bradford_D50_to_illuminant(XYZ_D50, target_xy)
+    else:
+        print("Adapting to D65 (standard sRGB white point)")
+        XYZ_target = bradford_D50_to_D65(XYZ_D50)
+    ref_lin_srgb = xyz_to_linear_srgb_D65(XYZ_target)  # (24,3)
 
     # 2) List images
     exts = (".png", ".tif", ".tiff", ".exr")
