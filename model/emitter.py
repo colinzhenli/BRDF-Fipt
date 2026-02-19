@@ -308,6 +308,7 @@ class RealAreaEmitter(nn.Module):
         fwhm_deg = cfg.get('fwhm_deg', 115.0)
         # self.light_radiance = nn.Parameter(torch.tensor(cfg.get('radiance'), dtype=torch.float32, device='cuda'))
         self.register_buffer('light_radiance', torch.tensor(cfg.get('radiance'), dtype=torch.float32, device='cuda'))
+        print(f"RealAreaEmitter: Light radiance: {cfg.get('radiance')}")
 
         theta_half = math.radians(fwhm_deg * 0.5)
         m = math.log(0.5) / math.log(max(1e-8, math.cos(theta_half)))
