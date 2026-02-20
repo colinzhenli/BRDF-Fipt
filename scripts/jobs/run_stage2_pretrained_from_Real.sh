@@ -12,7 +12,7 @@ python main.py \
     material.different_decoder=True \
     material.neural_geometry.factor=0.04 \
     material.decoder.use_skip_connection=True \
-    experiment_name=Theia-1_Stage-2_Correct-4000K-light_Optimize-different-decoder_From-Real_Latent-dim-16_Degree-5_Fixed-Val-227_run_1 \
+    experiment_name=Theia-1_Stage-2_Train-on-all-data_Correct-4000K-light_Optimize-different-decoder_From-Real_Latent-dim-16_Degree-5_Fixed-Val-227_run_1 \
     model.stage=2 \
     model.test=False \
     model.continue_training=True \

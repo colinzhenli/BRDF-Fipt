@@ -16,7 +16,7 @@ init_std: 0.1
 #   degree: 3  # SH degree for positional encoding
 
 decoder:
-  smooth_reg: True
+  smooth_reg: False
   smooth_reg_eps: 0.01
   use_skip_connection: True
   skip_layer: 2

@@ -7,8 +7,9 @@ python main.py \
     data=points \
     renderer=multiarea_emitter \
     material=multi_material_latent \
-    experiment_name=L2_All-materials_Latent-dim-16_Large-batch_training_Single-color-head_degree-5_run_2 \
+    experiment_name=Stage1_All-materials_Correct-4000K-light_Different-decoder_SH-degree-5_run_2 \
     model.loss.recon_loss.name=l2 \
+    model.loss.reg_loss.weight=0.0 \
     model.stage=1 \
     model.test=False \
     model.trainer.max_epochs=3000 \
@@ -16,7 +17,8 @@ python main.py \
     material.decoder.use_skip_connection=True \
     material.latent_dim=16 \
     material.decoder.degree=5 \
-    material.different_decoder=False \
+    material.decoder.smooth_reg=False \
+    material.different_decoder=True \
     data.switch_iters=2000 \
     data.chunk_size=20 \
     data.filter_observations=False \

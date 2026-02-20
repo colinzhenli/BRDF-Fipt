@@ -23,6 +23,7 @@ class Stage2Trainer(pl.LightningModule):
         self.save_hyperparameters(cfg)
 
         self.more_visualization = False
+        self.use_white_balance = True
         self.use_tone_mapping = False  # When True, apply tone mapping + gamma and save as 8-bit PNG
         self.visualize_lobe = False
         self.compute_color_shift = False
@@ -119,7 +120,17 @@ class Stage2Trainer(pl.LightningModule):
         """
         # Simple Reinhard tone mapping: x / (1 + x)
         return x / (1 + x)
-    
+
+    def white_balance(self, x: torch.Tensor) -> torch.Tensor:
+        """Chromatic adaptation from 4000K illuminant space to D65 (neutral white).
+
+        Divides each channel by the 4000K-to-D65 illuminant ratio so that
+        a neutral surface appears white on a standard display.
+        Operates on the original HDR value range (e.g. 0-65535).
+        """
+        wb = torch.tensor([1.518, 1.000, 0.556], device=x.device, dtype=x.dtype)
+        return x / wb
+
     def configure_optimizers(self):  
         # Exclude material.decoder parameters from optimization
         if self.freeze_decoder:
@@ -890,8 +901,8 @@ class Stage2Trainer(pl.LightningModule):
 
             if self.more_visualization:
                 # Save original images as 32-bit EXR without clipping
-                sample_rgbs_gt_32bit = sample_rgbs_gt.cpu().numpy().astype(np.float32)/65535.0 
-                sample_rgbs_32bit = sample_rgbs.cpu().numpy().astype(np.float32)/65535.0
+                sample_rgbs_gt_32bit = sample_rgbs_gt.cpu().numpy().astype(np.float32)/(65535.0*3.0) 
+                sample_rgbs_32bit = sample_rgbs.cpu().numpy().astype(np.float32)/(65535.0*3.0)
                 
                 # Compute error image
                 error_image = (sample_rgbs_32bit - sample_rgbs_gt_32bit).astype(np.float32)
@@ -929,9 +940,15 @@ class Stage2Trainer(pl.LightningModule):
                         cv2.cvtColor(sample_rgbs_8bit, cv2.COLOR_RGB2BGR)
                     )
                 else:
-                    # Convert float32 (0-65535) to uint16 (0-65535)
-                    sample_rgbs_gt_16bit = np.clip(sample_rgbs_gt.cpu().numpy(), 0, 65535).astype(np.uint16)
-                    sample_rgbs_16bit = np.clip(sample_rgbs.cpu().numpy(), 0, 65535).astype(np.uint16)
+                    # White-balance from 4000K to D65 in HDR float, then save 16-bit PNG
+                    if self.use_white_balance:
+                        sample_rgbs_gt_wb = self.white_balance(sample_rgbs_gt)
+                        sample_rgbs_wb = self.white_balance(sample_rgbs)
+                        sample_rgbs_gt_16bit = np.clip(sample_rgbs_gt_wb.cpu().numpy(), 0, 65535).astype(np.uint16)
+                        sample_rgbs_16bit = np.clip(sample_rgbs_wb.cpu().numpy(), 0, 65535).astype(np.uint16)
+                    else:
+                        sample_rgbs_gt_16bit = np.clip(sample_rgbs_gt.cpu().numpy(), 0, 65535).astype(np.uint16)
+                        sample_rgbs_16bit = np.clip(sample_rgbs.cpu().numpy(), 0, 65535).astype(np.uint16)
 
                     # Save as 16-bit PNG (OpenCV expects BGR)
                     cv2.imwrite(
