@@ -23,7 +23,7 @@ class Stage2Trainer(pl.LightningModule):
         self.save_hyperparameters(cfg)
 
         self.more_visualization = False
-        self.use_white_balance = True
+        self.use_white_balance = False
         self.use_tone_mapping = False  # When True, apply tone mapping + gamma and save as 8-bit PNG
         self.visualize_lobe = False
         self.compute_color_shift = False

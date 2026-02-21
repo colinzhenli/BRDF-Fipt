@@ -3,7 +3,7 @@
 export CUDA_VISIBLE_DEVICES=0
 
 python main.py \
-    dataset_folder=/media/raid/cloth/capture_data/Dataset_Debug_Feb10/227 \
+    dataset_folder=/media/raid/cloth/capture_data/Dataset_Nov11/242 \
     data=real \
     renderer=multiarea_emitter \
     material=learnable_pbr_texture_model \
@@ -13,7 +13,7 @@ python main.py \
     material.different_decoder=False \
     material.neural_geometry.factor=0.04 \
     material.decoder.use_skip_connection=True \
-    experiment_name=Theia-2_Stage-2_All-data_Fixed-4000K-light_Disney-PBR_Fixed-Val-227_run_1 \
+    experiment_name=Theia-2_Stage-2_Disney_242_run_1 \
     model.stage=2 \
     model.test=False \
     model.continue_training=False \

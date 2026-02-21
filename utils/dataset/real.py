@@ -204,8 +204,8 @@ def load_metadata(colmap_camera, metadata_path, camera_metadata_path, gt_folder,
                 selected_metadata = metadata[0:fixed_val_num]
                 print(f"Fixed validation set: {len(selected_metadata)} images (first {fixed_val_num})")
             else:
-                selected_metadata = metadata
-                # selected_metadata = metadata[fixed_val_num:]
+                # selected_metadata = metadata
+                selected_metadata = metadata[fixed_val_num:]
                 print(f"Training set: {len(selected_metadata)} images (after first {fixed_val_num})")
                 # Permute the selected metadata
                 perm_indices = torch.randperm(len(selected_metadata)).tolist()
