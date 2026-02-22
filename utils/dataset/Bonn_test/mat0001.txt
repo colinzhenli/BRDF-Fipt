@@ -1,6 +1,0 @@
-name:	material 0001
-fabric type:	lycra
-glossiness:	low
-Fresnel F0:	0.0927
-pixel dimensions:	512 px x 512 px
-physical dimensions:	3.50 cm x 3.49 cm
