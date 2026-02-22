@@ -289,8 +289,8 @@ class BonnInterface:
         V_tensor = torch.stack(V_list, dim=0)
         self.L_tensor = L_tensor[::3].permute(1,2,0,3).reshape(-1,100,3)
         self.V_tensor = V_tensor[::3].permute(1,2,0,3).reshape(-1,100,3)
-        self.poly = torch.tensor(poly).reshape(512, 512, 100, 3).reshape(-1,100,3)
         print("poly",self.poly.shape)
+        self.poly = torch.tensor(poly).reshape(512, 512, 100, 3).reshape(-1,100,3)
         print("L_tensor",self.L_tensor.shape)
         print("V_tensor",self.V_tensor.shape)
         return poly
