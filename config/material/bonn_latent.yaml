@@ -1,0 +1,25 @@
+type: "BonnLatentBRDF"
+module: "model.neural_brdf_refactored"
+data_folder: ${dataset_folder}
+latent_dim: 16
+predict_frame: True
+use_pos_enc: True
+different_decoder: False
+init_std: 0.1
+
+# Decoder config (passed to BRDFDecoder)
+# decoder:
+#   hidden_layers: [128, 128, 64, 32, 16]
+#   activation: "relu"
+#   output_channels: 3
+#   degree: 3  # SH degree for positional encoding
+
+decoder:
+  smooth_reg: False
+  smooth_reg_eps: 0.01
+  use_skip_connection: True
+  skip_layer: 2
+  hidden_layers: [256, 128, 128, 64, 32]
+  activation: "leakyrelu" # only for output layer
+  output_channels: 3
+  degree: 5  # SH degree for positional encoding

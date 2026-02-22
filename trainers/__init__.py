@@ -2,6 +2,7 @@ from .stage1_trainer import Stage1Trainer
 from .stage2_trainer import Stage2Trainer
 from .stage1_trainer_merl import Stage1Trainer_MERL
 from .stage2_trainer_merl import Stage2Trainer_MERL
+from .stage1_trainer_bonn import Stage1Trainer_Bonn
 
 # Registry for easy lookup
 TRAINER_REGISTRY = {
@@ -13,6 +14,9 @@ TRAINER_REGISTRY = {
         1: Stage1Trainer_MERL,
         2: Stage2Trainer_MERL,
     },
+    'bonn': {
+        1: Stage1Trainer_Bonn,
+    },
 }
 
 def get_trainer_class(stage: int, data_type: str = 'default'):
@@ -20,10 +24,9 @@ def get_trainer_class(stage: int, data_type: str = 'default'):
     
     Args:
         stage: Training stage (1 or 2)
-        data_type: Data config name ('merl' for MERL dataset, otherwise 'default')
+        data_type: Data config name ('merl' for MERL dataset, 'bonn' for Bonn, otherwise 'default')
     """
-    # Determine which registry to use
-    registry_key = 'merl' if data_type == 'merl' else 'default'
+    registry_key = data_type if data_type in TRAINER_REGISTRY else 'default'
     registry = TRAINER_REGISTRY[registry_key]
     
     if stage not in registry:

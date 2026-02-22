@@ -1768,6 +1768,267 @@ class MultiMaterialLatentBRDF(LightningModule):
         
         return wi, pdf, brdf_weight
 
+# 7. BONN LATENT BRDF - Auto-decoder for Bonn SVBRDF dataset
+# ============================================================================
+class BonnLatentBRDF(LightningModule):
+    """BRDF model for the Bonn SVBRDF dataset (UBOFAB19).
+
+    Same architecture as MultiMaterialLatentBRDF:
+    - Per-point latent codes (sum of H*W across all materials)
+    - Shared MLP decoder across all materials
+    - Optional predicted normal + tangent frame from latent
+
+    Metadata is loaded from a single ``bonn_point_metadata.json`` in the
+    data folder (no per-material subfolders or training list needed).
+
+    Generate the metadata file with::
+
+        python scripts/generate_bonn_metadata.py /path/to/Bonn_train
+    """
+
+    def __init__(self, cfg):
+        super().__init__()
+
+        self.cfg = cfg
+        data_folder = getattr(cfg, 'data_folder', None)
+
+        self.latent_dim = cfg.latent_dim
+        self.predict_frame = cfg.predict_frame
+        self.total_latent_dim = self.latent_dim + (6 if self.predict_frame else 0)
+        self.use_pos_enc = cfg.use_pos_enc
+        self.different_decoder = cfg.different_decoder
+
+        print(f"Loading Bonn point metadata from {data_folder} ...")
+        self.metadata = self._load_point_metadata(data_folder)
+
+        num_materials = self.metadata['num_materials']
+        total_points = self.metadata['total_points']
+        print(f"Loaded {num_materials} materials with {total_points:,} total points")
+
+        self.point_latent_bank = nn.Embedding(
+            num_embeddings=total_points,
+            embedding_dim=self.total_latent_dim,
+        )
+        nn.init.normal_(self.point_latent_bank.weight, mean=0.0, std=cfg.init_std)
+
+        if self.predict_frame:
+            with torch.no_grad():
+                self.point_latent_bank.weight[:, -6:-3] = torch.tensor([0.0, 0.0, 1.0])
+                self.point_latent_bank.weight[:, -3:]   = torch.tensor([0.0, 1.0, 0.0])
+
+        self.decoder = BRDFDecoder(
+            cfg=cfg.decoder,
+            latent_dim=self.latent_dim,
+            use_pos_enc=self.use_pos_enc,
+            different_decoder=self.different_decoder,
+        )
+
+        self.smooth_reg = getattr(cfg.decoder, 'smooth_reg', False)
+        self.smooth_reg_eps = getattr(cfg.decoder, 'smooth_reg_eps', 0.01)
+        print("BonnLatentBRDF initialisation complete!")
+
+    # ------------------------------------------------------------------
+    # Metadata
+    # ------------------------------------------------------------------
+    def _load_point_metadata(self, data_folder):
+        """Load from ``bonn_point_metadata.json``.
+
+        JSON format:  { "1": {"H": 512, "W": 512, "num_points": 262144}, ... }
+        All materials in the file are included.
+        """
+        import json
+        from pathlib import Path
+
+        meta_path = Path(data_folder) / "bonn_point_metadata.json"
+        if not meta_path.exists():
+            raise FileNotFoundError(
+                f"{meta_path} not found.  Run:\n"
+                f"  python scripts/generate_bonn_metadata.py {data_folder}")
+
+        with open(meta_path) as f:
+            raw = json.load(f)
+
+        materials = []
+        material_point_offsets = {}
+        global_offset = 0
+
+        for mat_id_str in sorted(raw.keys(), key=lambda k: int(k)):
+            mat_id = int(mat_id_str)
+            entry = raw[mat_id_str]
+            num_points = entry['num_points']
+
+            materials.append({
+                'material_id': mat_id,
+                'name': f'mat{mat_id:04d}',
+                'num_points': num_points,
+                'num_observations': 0,
+                'point_range': (global_offset, global_offset + num_points),
+                'folder': str(data_folder),
+            })
+            material_point_offsets[mat_id] = global_offset
+            global_offset += num_points
+            print(f"  mat{mat_id:04d}: {entry['H']}x{entry['W']} = {num_points:,} points")
+
+        if not materials:
+            raise ValueError(f"No materials found in {meta_path}")
+
+        metadata = {
+            'num_materials': len(materials),
+            'total_points': global_offset,
+            'materials': materials,
+            'material_point_offsets': material_point_offsets,
+        }
+
+        max_mat_id = max(m['material_id'] for m in materials)
+        offset_tensor = torch.zeros(max_mat_id + 1, dtype=torch.long)
+        for m in materials:
+            offset_tensor[m['material_id']] = material_point_offsets[m['material_id']]
+        self.register_buffer('material_offset_tensor', offset_tensor)
+
+        return metadata
+
+    # ------------------------------------------------------------------
+    # Point-ID mapping
+    # ------------------------------------------------------------------
+    def get_global_point_id(self, material_id, local_point_id):
+        offsets = self.material_offset_tensor[material_id]
+        return local_point_id + offsets
+
+    # ------------------------------------------------------------------
+    # Frame helpers
+    # ------------------------------------------------------------------
+    def extract_frame_from_latent(self, latent: torch.Tensor):
+        predicted_normal  = latent[..., -6:-3]
+        predicted_tangent = latent[..., -3:]
+
+        predicted_normal  = NF.normalize(predicted_normal, dim=-1)
+        predicted_tangent = NF.normalize(predicted_tangent, dim=-1)
+
+        predicted_tangent = predicted_tangent - \
+            torch.sum(predicted_tangent * predicted_normal, dim=-1, keepdim=True) * predicted_normal
+        predicted_tangent = NF.normalize(predicted_tangent, dim=-1)
+        if torch.isnan(predicted_tangent).any():
+            print("predicted_tangent is nan")
+
+        return predicted_normal, predicted_tangent
+
+    def world_to_local(self, v, normal, tangent=None):
+        if tangent is None:
+            up = torch.tensor([0.0, 1.0, 0.0], device=normal.device).expand_as(normal)
+            tangent = torch.cross(up, normal)
+            tangent_len = tangent.norm(dim=-1, keepdim=True)
+            collinear_mask = tangent_len.squeeze(-1) < 1e-6
+            if collinear_mask.any():
+                right = torch.tensor([1.0, 0.0, 0.0], device=normal.device).expand_as(normal)
+                tangent[collinear_mask] = torch.cross(right[collinear_mask], normal[collinear_mask])
+                tangent_len = tangent.norm(dim=-1, keepdim=True)
+        else:
+            tangent_len = tangent.norm(dim=-1, keepdim=True)
+
+        tangent = tangent / (tangent_len + 1e-8)
+        bitangent = torch.cross(normal, tangent)
+
+        return torch.stack([
+            (v * tangent).sum(dim=-1),
+            (v * bitangent).sum(dim=-1),
+            (v * normal).sum(dim=-1),
+        ], dim=-1)
+
+    # ------------------------------------------------------------------
+    # BRDF evaluation
+    # ------------------------------------------------------------------
+    def eval_brdf(
+        self,
+        pos,
+        wi,
+        wo,
+        normal,
+        latent=None,
+        point_ids=None,
+        material_ids=None,
+    ):
+        if point_ids is None or material_ids is None:
+            raise ValueError("point_ids and material_ids must be provided")
+
+        global_point_ids = self.get_global_point_id(material_ids, point_ids)
+        latent = self.point_latent_bank(global_point_ids)
+
+        if self.predict_frame:
+            predicted_normal, predicted_tangent = self.extract_frame_from_latent(latent)
+
+        NoL = (wi * predicted_normal).sum(-1, keepdim=True)
+        NoV = (wo * predicted_normal).sum(-1, keepdim=True)
+        wi_local = self.world_to_local(wi, predicted_normal, predicted_tangent)
+        wo_local = self.world_to_local(wo, predicted_normal, predicted_tangent)
+        normal_local = torch.zeros_like(wi_local)
+        normal_local[..., 2] = 1.0
+
+        enc_dir = self.decoder.encode_directions(wi_local, wo_local, normal_local)
+
+        if self.different_decoder:
+            brdf = self.decoder(enc_dir, latent[:, :self.latent_dim])
+        else:
+            brdf = self.decoder(enc_dir, latent[:, :self.latent_dim])
+            if brdf.shape[-1] == 1:
+                brdf = brdf.expand(-1, 3)
+
+        if self.smooth_reg:
+            eps = self.smooth_reg_eps
+            rand_vec = torch.randn_like(wi_local)
+            rand_vec = rand_vec - (rand_vec * wi_local).sum(-1, keepdim=True) * wi_local
+            axis = NF.normalize(rand_vec, dim=-1)
+            wi_perturbed = wi_local * math.cos(eps) + torch.cross(axis, wi_local, dim=-1) * math.sin(eps)
+            enc_pert = self.decoder.encode_directions(wi_perturbed, wo_local, normal_local)
+            if self.different_decoder:
+                brdf_pert = self.decoder(enc_pert, latent[:, :self.latent_dim])
+            else:
+                brdf_pert = self.decoder(enc_pert, latent[:, :self.latent_dim])
+                if brdf_pert.shape[-1] == 1:
+                    brdf_pert = brdf_pert.expand(-1, 3)
+            smooth_loss = ((brdf_pert - brdf) / eps).pow(2).mean()
+        else:
+            smooth_loss = torch.tensor(0.0, device=wi.device)
+
+        pdf = NoL.clamp(min=0) / math.pi
+        if torch.isnan(brdf).any():
+            print("brdf is nan")
+        if torch.isnan(predicted_normal).any():
+            print("normal is nan")
+        return brdf, predicted_normal, pdf, smooth_loss
+
+    # ------------------------------------------------------------------
+    # BRDF sampling (cosine-weighted hemisphere)
+    # ------------------------------------------------------------------
+    def sample_brdf(
+        self, params, pos, sample1, sample2, wo, normal,
+        latent=None, batch_mask=None, point_ids=None, material_ids=None,
+    ):
+        theta = torch.asin(torch.sqrt(sample2[..., 0]))
+        phi = 2 * math.pi * sample2[..., 1]
+
+        wi_local = torch.stack([
+            torch.sin(theta) * torch.cos(phi),
+            torch.sin(theta) * torch.sin(phi),
+            torch.cos(theta),
+        ], dim=-1)
+
+        up = torch.tensor([0.0, 1.0, 0.0], device=normal.device).expand_as(normal)
+        tangent = torch.cross(up, normal)
+        tangent = tangent / (tangent.norm(dim=-1, keepdim=True) + 1e-8)
+        bitangent = torch.cross(normal, tangent)
+
+        wi = (wi_local[..., 0:1] * tangent +
+              wi_local[..., 1:2] * bitangent +
+              wi_local[..., 2:3] * normal)
+
+        brdf, pdf, _ = self.eval_brdf(
+            None, pos, wi, wo, normal,
+            point_ids=point_ids, material_ids=material_ids)
+
+        brdf_weight = brdf / pdf.clamp(min=1e-6)
+        return wi, pdf, brdf_weight
+
+
 class MERLBRDF(LightningModule):
     """
     Multi-material BRDF model using auto-decoder architecture.
