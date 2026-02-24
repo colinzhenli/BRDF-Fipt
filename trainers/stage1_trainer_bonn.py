@@ -51,6 +51,7 @@ class Stage1Trainer_Bonn(pl.LightningModule):
         super().__init__()
         self.cfg = cfg
         self.save_hyperparameters(cfg)
+        self.automatic_optimization = False
 
         self.material = material
         self.freeze_decoder = cfg.model.freeze_decoder
@@ -69,35 +70,29 @@ class Stage1Trainer_Bonn(pl.LightningModule):
     # Optimiser
     # ------------------------------------------------------------------
     def configure_optimizers(self):
-        if self.freeze_decoder:
-            for p in self.material.decoder.parameters():
-                p.requires_grad = False
-            params = [self.material.point_latent_bank.weight]
-            print("Decoder frozen – optimising latent bank only.")
-        else:
-            params = list(self.parameters())
-            print("Optimising all parameters.")
-
-        name = self.hparams.model.optimizer.name
         lr = self.hparams.model.optimizer.lr
+        wd = self.hparams.model.optimizer.weight_decay
 
-        if name == 'Adam':
-            return torch.optim.Adam(
-                params, lr=lr, betas=(0.9, 0.999),
-                weight_decay=self.hparams.model.optimizer.weight_decay,
-            )
-        elif name == 'SGD':
-            opt = torch.optim.SGD(params, lr=lr, momentum=0.9, weight_decay=1e-4)
-            sched = pl_bolts.optimizers.LinearWarmupCosineAnnealingLR(
-                opt,
-                warmup_epochs=int(
-                    self.hparams.model.optimizer.warmup_steps_ratio
-                    * self.hparams.model.trainer.max_steps),
-                max_epochs=self.hparams.model.trainer.max_steps,
-                eta_min=0,
-            )
-            return {"optimizer": opt,
-                    "lr_scheduler": {"scheduler": sched, "interval": "step"}}
+        embedding_params = list(self.material.point_latent_bank.parameters())
+        decoder_params = [p for p in self.parameters()
+                          if p not in set(embedding_params)]
+
+        if self.freeze_decoder:
+            for p in decoder_params:
+                p.requires_grad = False
+            print("Decoder frozen – optimising latent bank only.")
+
+        sparse_opt = torch.optim.SparseAdam(embedding_params, lr=lr)
+        dense_opt = torch.optim.Adam(
+            decoder_params, lr=lr, betas=(0.9, 0.999), weight_decay=wd,
+        ) if not self.freeze_decoder else None
+
+        if dense_opt is not None:
+            print(f"Using SparseAdam (embedding) + Adam (decoder), lr={lr}")
+            return [sparse_opt, dense_opt]
+        else:
+            print(f"Using SparseAdam (embedding only), lr={lr}")
+            return sparse_opt
 
     # ------------------------------------------------------------------
     # BRDF helpers
@@ -249,13 +244,22 @@ class Stage1Trainer_Bonn(pl.LightningModule):
         if poly_pred is not None and poly_pred.numel() > 0:
             gt_poly = rgbs_gt[poly_mask]
             mse = NF.mse_loss(poly_pred, gt_poly)
-            max_val = torch.max(torch.stack([poly_pred.max(), gt_poly.max()])).clamp_min(1e-8)
+            max_val = gt_poly.max().clamp_min(1e-8)
             psnr = 10.0 * torch.log10(max_val ** 2 / mse.clamp_min(1e-8))
 
         self.log_dict({
             'train/total_loss': total_loss,
             'train/psnr':       psnr,
         }, prog_bar=True, batch_size=xyz.shape[0])
+
+        opts = self.optimizers()
+        if not isinstance(opts, list):
+            opts = [opts]
+        for opt in opts:
+            opt.zero_grad()
+        self.manual_backward(total_loss)
+        for opt in opts:
+            opt.step()
 
         return total_loss
 
@@ -269,14 +273,13 @@ class Stage1Trainer_Bonn(pl.LightningModule):
         rgbs_gt      = batch['rgbs'].squeeze(0)
         point_ids    = batch['point_ids'].squeeze(0)
         material_ids = batch['material_ids'].squeeze(0)
-        valid_mask   = batch['valid_mask'].squeeze(0)          # (H*W,) bool
         img_hw       = batch['img_hw'].squeeze(0)              # (2,)
 
         brdf, _, _ = self._eval_brdf(xyz, wi, wo, point_ids, material_ids)
 
         loss = self._compute_loss(brdf, rgbs_gt)
         mse  = NF.mse_loss(brdf, rgbs_gt)
-        max_val = torch.max(torch.stack([brdf.max(), rgbs_gt.max()])).clamp_min(1e-8)
+        max_val = rgbs_gt.max().clamp_min(1e-8)
         psnr = 10.0 * torch.log10(max_val ** 2 / mse.clamp_min(1e-8))
 
         self.log_dict({
@@ -286,15 +289,9 @@ class Stage1Trainer_Bonn(pl.LightningModule):
 
         # ---- reconstruct 2-D images and save ----------------------------
         H, W = img_hw[0].item(), img_hw[1].item()
-        device = xyz.device
 
-        gt_img = torch.zeros(H * W, 3, device=device)
-        gt_img[valid_mask] = rgbs_gt
-        gt_img = gt_img.reshape(H, W, 3)
-
-        pred_img = torch.zeros(H * W, 3, device=device)
-        pred_img[valid_mask] = brdf
-        pred_img = pred_img.reshape(H, W, 3)
+        gt_img   = rgbs_gt.reshape(H, W, 3)
+        pred_img = brdf.reshape(H, W, 3)
 
         output_dir = os.path.join(self.cfg.exp_output_root_path, 'images')
         os.makedirs(output_dir, exist_ok=True)
@@ -302,16 +299,16 @@ class Stage1Trainer_Bonn(pl.LightningModule):
         psnr_str = f'{psnr.item():.2f}'
         mat_id   = material_ids[0].item()
 
-        # Save EXR (full HDR precision)
-        gt_exr   = gt_img.cpu().numpy().astype(np.float32)
-        pred_exr = pred_img.cpu().numpy().astype(np.float32)
-        cv2.imwrite(
-            os.path.join(output_dir, f'gt_mat{mat_id:04d}_view{batch_idx}.exr'),
-            cv2.cvtColor(gt_exr, cv2.COLOR_RGB2BGR))
-        cv2.imwrite(
-            os.path.join(output_dir,
-                         f'pred_mat{mat_id:04d}_view{batch_idx}_psnr{psnr_str}.exr'),
-            cv2.cvtColor(pred_exr, cv2.COLOR_RGB2BGR))
+        # # Save EXR (full HDR precision)
+        # gt_exr   = gt_img.cpu().numpy().astype(np.float32)
+        # pred_exr = pred_img.cpu().numpy().astype(np.float32)
+        # cv2.imwrite(
+        #     os.path.join(output_dir, f'gt_mat{mat_id:04d}_view{batch_idx}.exr'),
+        #     cv2.cvtColor(gt_exr, cv2.COLOR_RGB2BGR))
+        # cv2.imwrite(
+        #     os.path.join(output_dir,
+        #                  f'pred_mat{mat_id:04d}_view{batch_idx}_psnr{psnr_str}.exr'),
+        #     cv2.cvtColor(pred_exr, cv2.COLOR_RGB2BGR))
 
         # Save 8-bit PNG (tone-mapped + gamma for quick inspection)
         gt_png   = self._tonemap_for_display(gt_img)
@@ -321,7 +318,7 @@ class Stage1Trainer_Bonn(pl.LightningModule):
             cv2.cvtColor(gt_png, cv2.COLOR_RGB2BGR))
         cv2.imwrite(
             os.path.join(output_dir,
-                         f'pred_mat{mat_id:04d}_view{batch_idx}_psnr{psnr_str}.png'),
+                         f'pred_mat{mat_id:04d}_view{batch_idx}.png'),
             cv2.cvtColor(pred_png, cv2.COLOR_RGB2BGR))
 
         return loss

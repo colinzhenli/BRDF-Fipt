@@ -1808,6 +1808,7 @@ class BonnLatentBRDF(LightningModule):
         self.point_latent_bank = nn.Embedding(
             num_embeddings=total_points,
             embedding_dim=self.total_latent_dim,
+            sparse=True,
         )
         nn.init.normal_(self.point_latent_bank.weight, mean=0.0, std=cfg.init_std)
 

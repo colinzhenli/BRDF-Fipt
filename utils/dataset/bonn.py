@@ -10,6 +10,7 @@ from tqdm import tqdm
 import threading, queue, time
 from dataclasses import dataclass
 import random
+import pyexr
 
 DTYPE_POLY = 0
 DTYPE_PAN = 1
@@ -21,27 +22,25 @@ DTYPE_LLS = 2
 # ---------------------------------------------------------------------------
 
 def _parse_poly_channels(channel_names):
-    """Group poly channel names into per-image RGB descriptors.
+    """Parse poly channel names into per-image descriptors.
 
-    Channel format: 'poly_cv01_il026_rot000_R'
-    Returns: list of dicts with keys camera, led, rotation, ch_r, ch_g, ch_b
+    pyexr returns channels sorted alphabetically.  Every 3 consecutive
+    channels form one RGB image: (_B, _G, _R) which correspond to
+    visual (R, G, B) — matching the official Bonn reference code that
+    passes ``poly[:, :, :3]`` directly to ``plt.imshow``.
+
+    Returns: list of dicts with keys camera, led, rotation, ch_start
+             (ch_start = starting index of the 3-channel group).
     """
-    pattern = re.compile(r'poly_(cv\d+)_(il\d+)_(rot\d+)_([RGB])')
-    groups = {}
-    for name in channel_names:
-        m = pattern.match(name)
-        if m:
-            cam, led, rot, color = m.groups()
-            key = (cam, led, rot)
-            if key not in groups:
-                groups[key] = {}
-            groups[key][color] = name
-
+    pattern = re.compile(r'poly_(cv\d+)_(il\d+)_(rot\d+)_[BGR]')
     images = []
-    for (cam, led, rot), colors in sorted(groups.items()):
-        if len(colors) == 3:
-            images.append(dict(camera=cam, led=led, rotation=rot,
-                               ch_r=colors['R'], ch_g=colors['G'], ch_b=colors['B']))
+    for i in range(0, len(channel_names), 3):
+        if i + 2 >= len(channel_names):
+            break
+        m = pattern.match(channel_names[i])
+        if m:
+            cam, led, rot = m.groups()
+            images.append(dict(camera=cam, led=led, rotation=rot, ch_start=i))
     return images
 
 
@@ -78,46 +77,26 @@ def _parse_lls_channels(channel_names):
 
 
 # ---------------------------------------------------------------------------
-# EXR reading helpers  (requires OpenEXR + Imath)
+# EXR reading helpers  (uses pyexr, matching the official Bonn reference code)
 # ---------------------------------------------------------------------------
 
-def _open_exr(filepath):
-    """Open an EXR file and return (InputFile, H, W, sorted_channel_names)."""
-    import OpenEXR
-    f = OpenEXR.InputFile(str(filepath))
-    hdr = f.header()
-    dw = hdr['dataWindow']
-    W = dw.max.x - dw.min.x + 1
-    H = dw.max.y - dw.min.y + 1
-    ch_names = sorted(hdr['channels'].keys())
-    return f, H, W, ch_names
+def _read_exr(filepath):
+    """Read all channels from an EXR using pyexr.
 
-
-def _read_channel(exr_file, ch_name, H, W, precision='half'):
-    """Read a single channel from an already-opened EXR file."""
-    import Imath
-    if precision == 'half':
-        pt = Imath.PixelType(Imath.PixelType.HALF)
-        dtype = np.float16
-    else:
-        pt = Imath.PixelType(Imath.PixelType.FLOAT)
-        dtype = np.float32
-    raw = exr_file.channel(ch_name, pt)
-    return np.frombuffer(raw, dtype=dtype).reshape(H, W)
+    Returns (data (H,W,C) float32, channel_names list, H, W).
+    """
+    exr = pyexr.open(str(filepath))
+    ch_names = exr.channel_map['all']
+    data = exr.get(group='all', precision=pyexr.HALF).astype(np.float32)
+    H, W = data.shape[:2]
+    return data, ch_names, H, W
 
 
 def _read_xyz_map(filepath):
-    """Read xyz_rot000.exr → (xyz (H,W,3) float32, valid_mask (H,W) bool, H, W)."""
-    import Imath
-    f, H, W, ch_names = _open_exr(filepath)
-    pt = Imath.PixelType(Imath.PixelType.FLOAT)
-    channels = []
-    for name in ch_names:
-        raw = f.channel(name, pt)
-        channels.append(np.frombuffer(raw, dtype=np.float32).reshape(H, W))
-    xyz = np.stack(channels, axis=-1)  # (H, W, 3)
-    valid_mask = ~np.all(xyz < -0.5, axis=2)
-    return xyz, valid_mask, H, W
+    """Read xyz_rot000.exr → (xyz (H,W,3) float32, H, W)."""
+    xyz = pyexr.read(str(filepath))
+    H, W = xyz.shape[:2]
+    return xyz, H, W
 
 
 # ---------------------------------------------------------------------------
@@ -144,16 +123,15 @@ class BonnDataset(IterableDataset):
     # ------------------------------------------------------------------
     @dataclass
     class ChunkData:
-        xyz: torch.Tensor           # (N, 3)  surface position in mm
-        wi: torch.Tensor            # (N, 3)  light dir, world space, normalised
-        wo: torch.Tensor            # (N, 3)  view  dir, world space, normalised
-        rgbs: torch.Tensor          # (N, 3)  calibrated measurement
-        point_ids: torch.Tensor     # (N,)    row*W + col  (local per material)
-        material_ids: torch.Tensor  # (N,)    material index
-        emitter_ids: torch.Tensor   # (N,)    sequential emitter index
-        data_type: torch.Tensor     # (N,)    0/1/2
-        lls_corners: torch.Tensor   # (N, 4, 3)  quad corners (valid when data_type==2)
-        confidence: torch.Tensor    # (N,)    loss weight
+        """Per-material arrays loaded from EXR (no pixel×image expansion).
+
+        Each entry in *materials* is a dict from ``_load_single_material``:
+        mat_id, n_pixels, n_images, xyz (H*W,3), point_ids (H*W,),
+        rgbs (K,V,3), light_pos (K,3), cam_pos (K,3), data_type (K,),
+        emitter_ids (K,), lls_corners (K,4,3).
+        """
+        materials: list            # list of per-material dicts
+        total_obs: int             # sum(n_pixels * n_images) across materials
 
     # ------------------------------------------------------------------
     class _DoubleBuffer:
@@ -198,8 +176,16 @@ class BonnDataset(IterableDataset):
                 old = self.active
                 self.active = nxt
                 self.ready[old].clear()
-                return True
-            return False
+                return old
+            return None
+
+        def force_swap(self):
+            nxt = 1 - self.active
+            self.ready[nxt].wait()
+            old = self.active
+            self.active = nxt
+            self.ready[old].clear()
+            return old
 
         def current(self):
             self.ready[self.active].wait()
@@ -221,6 +207,7 @@ class BonnDataset(IterableDataset):
         self.use_pan = getattr(cfg.data, 'use_pan', False)
         self.use_lls = getattr(cfg.data, 'use_lls', False)
         self.debug = getattr(cfg.data, 'debug', False)
+        self.debug_num = getattr(cfg.data, 'debug_num', 1)
         self.points_per_material = getattr(cfg.data, 'points_per_material', 2000)
         self.switch_iters = getattr(cfg.data, 'switch_iters', 3000)
         self.chunk_size = getattr(cfg.data, 'chunk_size', 20)
@@ -234,7 +221,7 @@ class BonnDataset(IterableDataset):
         # Discover materials
         self.mat_ids = self._discover_materials()
         if self.debug:
-            self.mat_ids = self.mat_ids[:1]
+            self.mat_ids = self.mat_ids[:self.debug_num]
             print(f"[DEBUG] Using single material: mat{self.mat_ids[0]:04d}")
 
         print(f"\n{'='*60}")
@@ -304,6 +291,13 @@ class BonnDataset(IterableDataset):
                     rot_dict[field] = np.array(val, dtype=np.float32)   # (3,4,14)
                 else:
                     rot_dict[field] = np.array(val, dtype=np.float32).flatten()  # (3,)
+                # Calibration uses 2-digit names (il01, cv01) but EXR
+                # channels use 3-digit (il001, cv01).  Store both keys
+                # so lookups from either convention work.
+                m = re.match(r'(il|cv)(\d+)', field)
+                if m and len(m.group(2)) < 3:
+                    padded = f'{m.group(1)}{int(m.group(2)):03d}'
+                    rot_dict[padded] = rot_dict[field]
             calib[rot_key] = rot_dict
         calib['llsAnglesDegrees'] = raw['llsAnglesDegrees'].flatten().astype(np.float64)
         return calib
@@ -311,145 +305,169 @@ class BonnDataset(IterableDataset):
     # ------------------------------------------------------------------
     # Single-material loader
     # ------------------------------------------------------------------
-    def _load_single_material(self, mat_id, num_points):
-        """Load one Bonn material, sample *num_points* pixels, build all
-        (pixel × image) observations.  Returns dict of tensors or None."""
+    def _load_single_material(self, mat_id):
+        """Load one Bonn material with ALL valid pixels.
+
+        Uses pyexr (matching the official Bonn reference code) to read
+        all EXR data.  Poly channels come in alphabetically sorted groups
+        of 3 (_B, _G, _R) which map to visual (R, G, B).
+
+        Returns compact dict or None on failure.
+        """
         try:
             prefix = self._mat_prefix(mat_id)
             calib = self.calibrations[mat_id]
 
             # ---- xyz map ------------------------------------------------
-            xyz_map, valid_mask, H, W = _read_xyz_map(f'{prefix}_xyz_rot000.exr')
-            valid_rows, valid_cols = np.where(valid_mask)
-            n_valid = len(valid_rows)
-            if n_valid == 0:
-                return None
+            xyz_map, H, W = _read_xyz_map(f'{prefix}_xyz_rot000.exr')
+            n_pixels = H * W
+            xyz_pts = xyz_map.reshape(n_pixels, 3).astype(np.float32)
+            pids = np.arange(n_pixels, dtype=np.int64)
 
-            n_sample = min(num_points, n_valid)
-            chosen = np.random.choice(n_valid, n_sample, replace=False)
-            srows = valid_rows[chosen]
-            scols = valid_cols[chosen]
-            xyz_pts = xyz_map[srows, scols]                     # (P, 3)
-            pids = (srows * W + scols).astype(np.int64)         # (P,)
-
-            # ---- collect image descriptors ------------------------------
-            images = []   # list of dicts describing each measurement image
-            eid = 0       # running emitter_id counter
-
-            # Poly
-            poly_exr, pH, pW, poly_ch_names = _open_exr(f'{prefix}_poly.exr')
+            # ============================================================
+            # Read all channels from each EXR using pyexr
+            # ============================================================
+            poly_data, poly_ch_names, pH, pW = _read_exr(f'{prefix}_poly.exr')
             assert (pH, pW) == (H, W)
-            for img in _parse_poly_channels(poly_ch_names):
-                img['type'] = DTYPE_POLY
-                img['emitter_id'] = eid; eid += 1
-                images.append(img)
 
-            # Pan (optional, unfiltered LEDs only: il001-il024)
-            pan_exr = None
+            pan_data, pan_ch_names = None, None
             if self.use_pan:
-                pan_exr, panH, panW, pan_ch_names = _open_exr(f'{prefix}_pan.exr')
+                pan_data, pan_ch_names, panH, panW = _read_exr(f'{prefix}_pan.exr')
                 assert (panH, panW) == (H, W)
-                for img in _parse_pan_channels(pan_ch_names):
-                    led_num = int(img['led'][2:])
-                    if led_num > 24:
-                        continue
-                    img['type'] = DTYPE_PAN
-                    img['emitter_id'] = eid; eid += 1
-                    images.append(img)
 
-            # LLS (optional)
-            lls_exr = None
+            lls_data, lls_ch_names = None, None
             lls_angle_to_idx = {}
             if self.use_lls:
                 lls_angles = calib['llsAnglesDegrees']
                 lls_angle_to_idx = {float(a): i for i, a in enumerate(lls_angles)}
-                lls_exr, lH, lW, lls_ch_names = _open_exr(f'{prefix}_lls.exr')
+                lls_data, lls_ch_names, lH, lW = _read_exr(f'{prefix}_lls.exr')
                 assert (lH, lW) == (H, W)
-                for img in _parse_lls_channels(lls_ch_names):
-                    img['type'] = DTYPE_LLS
-                    img['emitter_id'] = eid; eid += 1
-                    images.append(img)
 
-            n_images = len(images)
-            n_obs = n_sample * n_images
+            # ============================================================
+            # Assembly
+            # ============================================================
+            rgbs_parts      = []
+            light_parts     = []
+            cam_parts       = []
+            dtype_parts     = []
+            eid_parts       = []
+            lls_corner_parts = []
+            eid = 0
 
-            # ---- pre-allocate outputs -----------------------------------
-            out_xyz        = np.tile(xyz_pts, (n_images, 1))               # (N, 3)
-            out_wi         = np.zeros((n_obs, 3), dtype=np.float32)
-            out_wo         = np.zeros((n_obs, 3), dtype=np.float32)
-            out_rgbs       = np.zeros((n_obs, 3), dtype=np.float32)
-            out_pids       = np.tile(pids, n_images)                       # (N,)
-            out_eid        = np.zeros(n_obs, dtype=np.int64)
-            out_dtype      = np.zeros(n_obs, dtype=np.int64)
-            out_lls_corner = np.zeros((n_obs, 4, 3), dtype=np.float32)
-            out_conf       = np.ones(n_obs, dtype=np.float32)
+            # --- Poly (RGB) ---------------------------------------------
+            # pyexr gives (H, W, K*3) with every 3 channels = one image
+            # in alphabetical order (_B, _G, _R) = visual (R, G, B)
+            poly_images = _parse_poly_channels(poly_ch_names)
+            n_poly = len(poly_images)
+            if n_poly > 0:
+                poly_rgbs = poly_data.reshape(n_pixels, n_poly, 3)  # (V, K, 3)
+                poly_rgbs = poly_rgbs.transpose(1, 0, 2)            # (K, V, 3)
 
-            # ---- per-image processing -----------------------------------
-            for img_idx, img in enumerate(images):
-                s = img_idx * n_sample
-                e = s + n_sample
-                rot_data = calib[img['rotation']]
+                poly_light = np.array([
+                    calib[im['rotation']][im['led']] for im in poly_images])
+                poly_cam = np.array([
+                    calib[im['rotation']][im['camera']] for im in poly_images])
 
-                # View direction  wo = normalize(cam_pos - xyz)
-                cam_pos = rot_data[img['camera']]               # (3,)
-                wo = cam_pos[None, :] - xyz_pts                 # (P, 3)
-                wo /= np.maximum(np.linalg.norm(wo, axis=1, keepdims=True), 1e-8)
-                out_wo[s:e] = wo
+                rgbs_parts.append(poly_rgbs)
+                light_parts.append(poly_light)
+                cam_parts.append(poly_cam)
+                dtype_parts.append(np.full(n_poly, DTYPE_POLY, dtype=np.int64))
+                eid_parts.append(np.arange(eid, eid + n_poly, dtype=np.int64))
+                lls_corner_parts.append(np.zeros((n_poly, 4, 3), dtype=np.float32))
+                eid += n_poly
+            del poly_data
 
-                out_eid[s:e] = img['emitter_id']
-                out_dtype[s:e] = img['type']
+            # --- Pan (grayscale, il001-il024 only) -----------------------
+            if self.use_pan and pan_data is not None:
+                pan_name_to_idx = {n: i for i, n in enumerate(pan_ch_names)}
+                pan_images = [im for im in _parse_pan_channels(pan_ch_names)
+                              if int(im['led'][2:]) <= 24]
+                n_pan = len(pan_images)
+                if n_pan > 0:
+                    pan_flat = pan_data.reshape(n_pixels, -1)       # (V, C)
+                    ch_ci = np.array([pan_name_to_idx[im['channel']]
+                                      for im in pan_images])
+                    pan_gray = pan_flat[:, ch_ci].T                  # (K, V)
+                    pan_rgbs = np.stack([pan_gray, pan_gray, pan_gray], axis=-1)
 
-                if img['type'] == DTYPE_POLY:
-                    led_pos = rot_data[img['led']]
-                    wi = led_pos[None, :] - xyz_pts
-                    wi /= np.maximum(np.linalg.norm(wi, axis=1, keepdims=True), 1e-8)
-                    out_wi[s:e] = wi
-                    r = _read_channel(poly_exr, img['ch_r'], H, W).astype(np.float32)
-                    g = _read_channel(poly_exr, img['ch_g'], H, W).astype(np.float32)
-                    b = _read_channel(poly_exr, img['ch_b'], H, W).astype(np.float32)
-                    out_rgbs[s:e, 0] = r[srows, scols]
-                    out_rgbs[s:e, 1] = g[srows, scols]
-                    out_rgbs[s:e, 2] = b[srows, scols]
+                    pan_light = np.array([
+                        calib[im['rotation']][im['led']] for im in pan_images])
+                    pan_cam = np.array([
+                        calib[im['rotation']][im['camera']] for im in pan_images])
+                    rgbs_parts.append(pan_rgbs)
+                    light_parts.append(pan_light)
+                    cam_parts.append(pan_cam)
+                    dtype_parts.append(np.full(n_pan, DTYPE_PAN, dtype=np.int64))
+                    eid_parts.append(np.arange(eid, eid + n_pan, dtype=np.int64))
+                    lls_corner_parts.append(np.zeros((n_pan, 4, 3), dtype=np.float32))
+                    eid += n_pan
+                del pan_data
 
-                elif img['type'] == DTYPE_PAN:
-                    led_pos = rot_data[img['led']]
-                    wi = led_pos[None, :] - xyz_pts
-                    wi /= np.maximum(np.linalg.norm(wi, axis=1, keepdims=True), 1e-8)
-                    out_wi[s:e] = wi
-                    gray = _read_channel(pan_exr, img['channel'], H, W).astype(np.float32)
-                    g = gray[srows, scols]
-                    out_rgbs[s:e, 0] = g
-                    out_rgbs[s:e, 1] = g
-                    out_rgbs[s:e, 2] = g
+            # --- LLS (grayscale) -----------------------------------------
+            if self.use_lls and lls_data is not None:
+                lls_name_to_idx = {n: i for i, n in enumerate(lls_ch_names)}
+                lls_images = _parse_lls_channels(lls_ch_names)
+                n_lls = len(lls_images)
+                if n_lls > 0:
+                    lls_flat = lls_data.reshape(n_pixels, -1)       # (V, C)
+                    ch_ci = np.array([lls_name_to_idx[im['channel']]
+                                      for im in lls_images])
+                    lls_gray = lls_flat[:, ch_ci].T                  # (K, V)
+                    lls_rgbs = np.stack([lls_gray, lls_gray, lls_gray], axis=-1)
 
-                elif img['type'] == DTYPE_LLS:
-                    angle_idx = lls_angle_to_idx[img['angle']]
-                    corners = rot_data['llsCorners'][:, :, angle_idx].T   # (4, 3)
-                    lls_center = corners.mean(axis=0)                     # (3,)
-                    wi = lls_center[None, :] - xyz_pts
-                    wi /= np.maximum(np.linalg.norm(wi, axis=1, keepdims=True), 1e-8)
-                    out_wi[s:e] = wi
-                    gray = _read_channel(lls_exr, img['channel'], H, W).astype(np.float32)
-                    g = gray[srows, scols]
-                    out_rgbs[s:e, 0] = g
-                    out_rgbs[s:e, 1] = g
-                    out_rgbs[s:e, 2] = g
-                    out_lls_corner[s:e] = corners[None, :, :]
+                    corners_list = []
+                    center_list = []
+                    for im in lls_images:
+                        rd = calib[im['rotation']]
+                        ai = lls_angle_to_idx[im['angle']]
+                        c = rd['llsCorners'][:, :, ai].T             # (4, 3)
+                        corners_list.append(c)
+                        center_list.append(c.mean(axis=0))
 
-            # ---- filter negatives (rare, but safety) --------------------
-            keep = np.all(out_rgbs >= -0.5, axis=1)
+                    lls_light = np.array(center_list, dtype=np.float32)
+                    lls_cam = np.array([
+                        calib[im['rotation']][im['camera']] for im in lls_images])
+                    lls_corners_arr = np.array(corners_list, dtype=np.float32)
+
+                    rgbs_parts.append(lls_rgbs)
+                    light_parts.append(lls_light)
+                    cam_parts.append(lls_cam)
+                    dtype_parts.append(np.full(n_lls, DTYPE_LLS, dtype=np.int64))
+                    eid_parts.append(np.arange(eid, eid + n_lls, dtype=np.int64))
+                    lls_corner_parts.append(lls_corners_arr)
+                    eid += n_lls
+                del lls_data
+
+            # ---- concatenate across source types ------------------------
+            if not rgbs_parts:
+                return None
+
+            all_rgbs       = np.concatenate(rgbs_parts, axis=0)
+            all_light_pos  = np.concatenate(light_parts, axis=0)
+            all_cam_pos    = np.concatenate(cam_parts, axis=0)
+            all_data_type  = np.concatenate(dtype_parts, axis=0)
+            all_emitter_id = np.concatenate(eid_parts, axis=0)
+            all_lls_corner = np.concatenate(lls_corner_parts, axis=0)
+
+            np.clip(all_rgbs, 0, None, out=all_rgbs)
+            n_images = all_rgbs.shape[0]
+
+            mem_mb = all_rgbs.nbytes / 1e6
+            print(f"  mat{mat_id:04d}: {n_pixels:,} pixels × {n_images} images "
+                  f"= {n_pixels * n_images:,} obs  (rgbs {mem_mb:.0f} MB)")
 
             return {
-                'xyz':          torch.from_numpy(out_xyz[keep]).float(),
-                'wi':           torch.from_numpy(out_wi[keep]).float(),
-                'wo':           torch.from_numpy(out_wo[keep]).float(),
-                'rgbs':         torch.from_numpy(np.clip(out_rgbs[keep], 0, None)).float(),
-                'point_ids':    torch.from_numpy(out_pids[keep]).long(),
-                'material_ids': torch.full((int(keep.sum()),), mat_id, dtype=torch.long),
-                'emitter_ids':  torch.from_numpy(out_eid[keep]).long(),
-                'data_type':    torch.from_numpy(out_dtype[keep]).long(),
-                'lls_corners':  torch.from_numpy(out_lls_corner[keep]).float(),
-                'confidence':   torch.from_numpy(out_conf[keep]).float(),
+                'mat_id':      mat_id,
+                'n_pixels':    n_pixels,
+                'n_images':    n_images,
+                'xyz':         xyz_pts,           # (V, 3)  float32
+                'point_ids':   pids,              # (V,)    int64
+                'rgbs':        all_rgbs,          # (K, V, 3) float32
+                'light_pos':   all_light_pos,     # (K, 3)  float32
+                'cam_pos':     all_cam_pos,       # (K, 3)  float32
+                'data_type':   all_data_type,     # (K,)    int64
+                'emitter_ids': all_emitter_id,    # (K,)    int64
+                'lls_corners': all_lls_corner,    # (K, 4, 3) float32
             }
 
         except Exception as exc:
@@ -463,36 +481,31 @@ class BonnDataset(IterableDataset):
     def _load_chunk(self, val_mode=False):
         if val_mode:
             selected = self.mat_ids[:min(self.val_materials, len(self.mat_ids))]
-            pts = self.val_points
         elif self.debug:
-            selected = self.mat_ids[:1]
-            pts = self.points_per_material
+            selected = self.mat_ids[:self.debug_num]
         else:
             n = min(self.chunk_size, len(self.mat_ids))
             selected = random.sample(self.mat_ids, n)
-            pts = self.points_per_material
 
-        keys = ['xyz', 'wi', 'wo', 'rgbs', 'point_ids',
-                'material_ids', 'emitter_ids', 'data_type',
-                'lls_corners', 'confidence']
-        accum = {k: [] for k in keys}
-
+        materials = []
         tag = 'val' if val_mode else 'train'
         for mid in tqdm(selected, desc=f"Loading {tag} chunk"):
-            result = self._load_single_material(mid, pts)
+            result = self._load_single_material(mid)
             if result is not None:
-                for k in keys:
-                    accum[k].append(result[k])
+                materials.append(result)
 
-        if all(len(v) > 0 for v in accum.values()):
-            merged = {k: torch.cat(v, 0) for k, v in accum.items()}
-        else:
-            merged = {k: torch.zeros(0) for k in keys}
+        if not materials:
+            return BonnDataset.ChunkData(materials=[], total_obs=0)
 
-        n_obs = merged['xyz'].shape[0] if merged['xyz'].dim() > 0 else 0
-        print(f"[{tag}] Chunk built: {n_obs:,} observations "
-              f"from {len(selected)} materials")
-        return BonnDataset.ChunkData(**merged)
+        total_obs = sum(m['n_pixels'] * m['n_images'] for m in materials)
+        total_pix = sum(m['n_pixels'] for m in materials)
+        total_rgb_mb = sum(m['rgbs'].nbytes for m in materials) / 1e6
+
+        print(f"[{tag}] Chunk built: {total_obs:,} observations "
+              f"from {len(materials)} materials  "
+              f"({total_pix:,} pixels, rgbs {total_rgb_mb:.0f} MB)")
+
+        return BonnDataset.ChunkData(materials=materials, total_obs=total_obs)
 
     # ------------------------------------------------------------------
     # Training-loop interface
@@ -500,68 +513,99 @@ class BonnDataset(IterableDataset):
     def set_step(self, step: int):
         self.step = step
         if hasattr(self, '_dbuf') and step > 0 and step % self.switch_iters == 0:
-            next_slot = 1 - self._dbuf.active
-            print(f"[Step {step}] Requesting new chunk → slot {next_slot}")
-            self._dbuf.request_fill(next_slot)
+            old_slot = self._dbuf.force_swap()
+            print(f"[Step {step}] Forced switch to slot {self._dbuf.active}")
+            self._dbuf.request_fill(old_slot)
 
     def __len__(self):
         if hasattr(self, '_val_data'):
-            n = self._val_data.xyz.shape[0]
-            return max(1, math.ceil(n / self.rays_num))
+            return max(1, math.ceil(self._val_data.total_obs / self.rays_num))
         return 1_000_000
 
+    # ------------------------------------------------------------------
+    def _sample_batch(self, chunk, n_rays):
+        """Randomly sample n_rays from chunk by drawing (img, pixel) pairs
+        per material, proportional to each material's observation count."""
+        materials = chunk.materials
+        n_mats = len(materials)
+        obs_counts = np.array(
+            [m['n_pixels'] * m['n_images'] for m in materials], dtype=np.float64)
+        weights = obs_counts / obs_counts.sum()
+        rays_per_mat = np.round(weights * n_rays).astype(int)
+        rays_per_mat[-1] = n_rays - rays_per_mat[:-1].sum()
+
+        parts_xyz   = []
+        parts_rgbs  = []
+        parts_pids  = []
+        parts_mids  = []
+        parts_dtype = []
+        parts_eids  = []
+        parts_lls   = []
+        parts_light = []
+        parts_cam   = []
+
+        for mi, mat in enumerate(materials):
+            n = int(rays_per_mat[mi])
+            if n <= 0:
+                continue
+            img_i = np.random.randint(0, mat['n_images'], n)
+            pix_i = np.random.randint(0, mat['n_pixels'], n)
+
+            parts_xyz.append(mat['xyz'][pix_i])
+            parts_rgbs.append(mat['rgbs'][img_i, pix_i])
+            parts_pids.append(mat['point_ids'][pix_i])
+            parts_mids.append(np.full(n, mat['mat_id'], dtype=np.int64))
+            parts_dtype.append(mat['data_type'][img_i])
+            parts_eids.append(mat['emitter_ids'][img_i])
+            parts_lls.append(mat['lls_corners'][img_i])
+            parts_light.append(mat['light_pos'][img_i])
+            parts_cam.append(mat['cam_pos'][img_i])
+
+        xyz   = np.concatenate(parts_xyz)
+        rgbs  = np.concatenate(parts_rgbs)
+        light = np.concatenate(parts_light)
+        cam   = np.concatenate(parts_cam)
+
+        wi = light - xyz
+        wi /= np.maximum(np.linalg.norm(wi, axis=1, keepdims=True), 1e-8)
+        wo = cam - xyz
+        wo /= np.maximum(np.linalg.norm(wo, axis=1, keepdims=True), 1e-8)
+
+        return {
+            'xyz':          torch.from_numpy(xyz).float(),
+            'wi':           torch.from_numpy(wi).float(),
+            'wo':           torch.from_numpy(wo).float(),
+            'rgbs':         torch.from_numpy(rgbs).float(),
+            'point_ids':    torch.from_numpy(np.concatenate(parts_pids)).long(),
+            'material_ids': torch.from_numpy(np.concatenate(parts_mids)).long(),
+            'emitter_ids':  torch.from_numpy(np.concatenate(parts_eids)).long(),
+            'data_type':    torch.from_numpy(np.concatenate(parts_dtype)).long(),
+            'lls_corners':  torch.from_numpy(np.concatenate(parts_lls)).float(),
+            'confidence':   torch.ones(n_rays, dtype=torch.float32),
+            'gt_params':    torch.zeros(1),
+        }
+
+    # ------------------------------------------------------------------
     def __iter__(self):
         # ----- training (infinite, double-buffered) -----
         if hasattr(self, '_dbuf'):
             while True:
-                if self._dbuf.try_swap():
-                    print(f"[Step {self.step}] Switched to new chunk "
-                          f"(slot {self._dbuf.active})")
-
                 chunk = self._dbuf.current()
-                if chunk is None or chunk.xyz.numel() == 0:
+                if chunk is None or chunk.total_obs == 0:
                     time.sleep(0.01)
                     continue
 
-                total = chunk.xyz.shape[0]
-                idx = torch.randint(0, total, (self.rays_num,))
-
-                yield {
-                    'xyz':          chunk.xyz[idx],
-                    'wi':           chunk.wi[idx],
-                    'wo':           chunk.wo[idx],
-                    'rgbs':         chunk.rgbs[idx],
-                    'point_ids':    chunk.point_ids[idx],
-                    'material_ids': chunk.material_ids[idx],
-                    'emitter_ids':  chunk.emitter_ids[idx],
-                    'data_type':    chunk.data_type[idx],
-                    'lls_corners':  chunk.lls_corners[idx],
-                    'confidence':   chunk.confidence[idx],
-                    'gt_params':    torch.zeros(1),
-                }
+                yield self._sample_batch(chunk, self.rays_num)
 
         # ----- validation (finite, sequential) -----
         else:
-            data = self._val_data
-            total = data.xyz.shape[0]
+            chunk = self._val_data
+            total = chunk.total_obs
             n_batches = max(1, math.ceil(total / self.rays_num))
 
             for i in range(n_batches):
-                s = i * self.rays_num
-                e = min(s + self.rays_num, total)
-                yield {
-                    'xyz':          data.xyz[s:e],
-                    'wi':           data.wi[s:e],
-                    'wo':           data.wo[s:e],
-                    'rgbs':         data.rgbs[s:e],
-                    'point_ids':    data.point_ids[s:e],
-                    'material_ids': data.material_ids[s:e],
-                    'emitter_ids':  data.emitter_ids[s:e],
-                    'data_type':    data.data_type[s:e],
-                    'lls_corners':  data.lls_corners[s:e],
-                    'confidence':   data.confidence[s:e],
-                    'gt_params':    torch.zeros(1),
-                }
+                n = min(self.rays_num, total - i * self.rays_num)
+                yield self._sample_batch(chunk, n)
 
 
 # ---------------------------------------------------------------------------
@@ -572,9 +616,9 @@ class BonnValDataset(Dataset):
     """Validation dataset for Bonn SVBRDF.
 
     Randomly picks one material, selects ``valid_num`` poly images.
-    Each ``__getitem__`` returns **all valid pixels** for one image,
-    together with ``valid_mask`` and ``img_hw`` so the trainer can
-    reconstruct the 2-D image for side-by-side visualisation.
+    Each ``__getitem__`` returns **all pixels** (H*W) for one image,
+    together with ``img_hw`` so the trainer can reconstruct the 2-D
+    image for side-by-side visualisation.
 
     Return dict keys match the training batch (xyz, wi, wo, rgbs, …)
     so the same forward-model code can be reused.
@@ -586,10 +630,14 @@ class BonnValDataset(Dataset):
         self.valid_num = getattr(cfg.data, 'valid_num', 5)
         self.use_pan = getattr(cfg.data, 'use_pan', False)
         self.use_lls = getattr(cfg.data, 'use_lls', False)
+        self.debug = getattr(cfg.data, 'debug', False)
 
-        # ---- discover materials & pick one randomly ---------------------
+        # ---- discover materials & pick one ---------------------
         mat_ids = self._discover_materials()
-        self.mat_id = random.choice(mat_ids)
+        if self.debug:
+            self.mat_id = 2
+        else:
+            self.mat_id = random.choice(mat_ids)
         prefix = self.root_folder / f'mat{self.mat_id:04d}'
 
         print(f"\n{'='*60}")
@@ -598,76 +646,64 @@ class BonnValDataset(Dataset):
         print(f"{'='*60}")
 
         # ---- load xyz map & calibration ---------------------------------
-        self.xyz_map, self.valid_mask_2d, self.H, self.W = \
+        self.xyz_map, self.H, self.W = \
             _read_xyz_map(f'{prefix}_xyz_rot000.exr')
-        self.valid_mask_flat = self.valid_mask_2d.reshape(-1)   # (H*W,)
-        self.n_valid = int(self.valid_mask_flat.sum())
+        self.n_pixels = self.H * self.W
 
         calib = self._load_calibration(self.mat_id)
 
-        # valid pixel positions  (n_valid, 3)
-        vrows, vcols = np.where(self.valid_mask_2d)
-        xyz_valid = self.xyz_map[vrows, vcols]                  # (V, 3)
-        pids_valid = (vrows * self.W + vcols).astype(np.int64)  # (V,)
+        xyz_flat = self.xyz_map.reshape(self.n_pixels, 3).astype(np.float32)
+        pids = np.arange(self.n_pixels, dtype=np.int64)
 
-        # ---- parse poly images ------------------------------------------
-        poly_exr, pH, pW, poly_ch_names = _open_exr(f'{prefix}_poly.exr')
+        # ---- read poly data using pyexr (same as official Bonn code) -----
+        poly_data, poly_ch_names, pH, pW = _read_exr(f'{prefix}_poly.exr')
         assert (pH, pW) == (self.H, self.W)
         poly_images = _parse_poly_channels(poly_ch_names)
 
         n_select = min(self.valid_num, len(poly_images))
         selected = random.sample(poly_images, n_select)
         print(f"Selected {n_select} poly images for validation "
-              f"({self.n_valid} valid pixels each)")
+              f"({self.n_pixels} pixels each)")
 
         # ---- preload every selected image --------------------------------
         self._items = []
         for eid, img in enumerate(selected):
             rot_data = calib[img['rotation']]
 
-            # wo = normalize(cam_pos - xyz)
             cam_pos = rot_data[img['camera']]
-            wo = cam_pos[None, :] - xyz_valid
+            wo = cam_pos[None, :] - xyz_flat
             wo /= np.maximum(np.linalg.norm(wo, axis=1, keepdims=True), 1e-8)
 
-            # wi = normalize(led_pos - xyz)
             led_pos = rot_data[img['led']]
-            wi = led_pos[None, :] - xyz_valid
+            wi = led_pos[None, :] - xyz_flat
             wi /= np.maximum(np.linalg.norm(wi, axis=1, keepdims=True), 1e-8)
 
-            # read RGB channels  (full H×W, then index valid)
-            r = _read_channel(poly_exr, img['ch_r'], self.H, self.W) \
-                .astype(np.float32)[vrows, vcols]
-            g = _read_channel(poly_exr, img['ch_g'], self.H, self.W) \
-                .astype(np.float32)[vrows, vcols]
-            b = _read_channel(poly_exr, img['ch_b'], self.H, self.W) \
-                .astype(np.float32)[vrows, vcols]
-            rgbs = np.stack([r, g, b], axis=-1)                 # (V, 3)
+            idx = img['ch_start']
+            rgbs = poly_data[:, :, idx:idx+3].reshape(-1, 3)    # (H*W, 3)
             np.clip(rgbs, 0, None, out=rgbs)
 
             label = (f"mat{self.mat_id:04d}_{img['camera']}_"
                      f"{img['led']}_{img['rotation']}")
 
             self._items.append({
-                'xyz':          torch.from_numpy(xyz_valid.copy()).float(),
+                'xyz':          torch.from_numpy(xyz_flat.copy()).float(),
                 'wi':           torch.from_numpy(wi).float(),
                 'wo':           torch.from_numpy(wo).float(),
                 'rgbs':         torch.from_numpy(rgbs).float(),
-                'point_ids':    torch.from_numpy(pids_valid.copy()).long(),
-                'material_ids': torch.full((self.n_valid,), self.mat_id,
+                'point_ids':    torch.from_numpy(pids.copy()).long(),
+                'material_ids': torch.full((self.n_pixels,), self.mat_id,
                                            dtype=torch.long),
-                'emitter_ids':  torch.full((self.n_valid,), eid,
+                'emitter_ids':  torch.full((self.n_pixels,), eid,
                                            dtype=torch.long),
-                'data_type':    torch.full((self.n_valid,), DTYPE_POLY,
+                'data_type':    torch.full((self.n_pixels,), DTYPE_POLY,
                                            dtype=torch.long),
-                'lls_corners':  torch.zeros(self.n_valid, 4, 3),
-                'confidence':   torch.ones(self.n_valid),
-                'valid_mask':   torch.from_numpy(
-                                    self.valid_mask_flat.copy()).bool(),
+                'lls_corners':  torch.zeros(self.n_pixels, 4, 3),
+                'confidence':   torch.ones(self.n_pixels),
                 'img_hw':       torch.tensor([self.H, self.W]),
                 'gt_params':    torch.zeros(1),
                 'label':        label,
             })
+        del poly_data
 
         print(f"BonnValDataset ready  ({len(self._items)} images)\n"
               f"{'='*60}\n")
@@ -699,6 +735,10 @@ class BonnValDataset(Dataset):
                     rot_dict[field] = np.array(val, dtype=np.float32)
                 else:
                     rot_dict[field] = np.array(val, dtype=np.float32).flatten()
+                m = re.match(r'(il|cv)(\d+)', field)
+                if m and len(m.group(2)) < 3:
+                    padded = f'{m.group(1)}{int(m.group(2)):03d}'
+                    rot_dict[padded] = rot_dict[field]
             calib[rot_key] = rot_dict
         calib['llsAnglesDegrees'] = raw['llsAnglesDegrees'].flatten() \
                                          .astype(np.float64)
