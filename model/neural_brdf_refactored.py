@@ -2395,13 +2395,10 @@ class LearnablePBRTexturedModel(LightningModule):
         Returns:
             brdf: [B, 3] BRDF values
             pdf: [B, 1] probability density
-            uv_offset: [B, 2] UV offset (if neural geometry enabled, else zeros)
+            base_color: [B, 3] activated base color from latent (for visualization)
         """
         NoL = (wi * normal).sum(-1, keepdim=True)
         NoV = (wo * normal).sum(-1, keepdim=True)
-        
-        # Initialize uv_offset (used in return, always needed)
-        uv_offset = torch.zeros_like(uv)
         
         # =====================================================================
         # LATENT BANK MODE: Sample latent from point bank using position
@@ -2456,8 +2453,8 @@ class LearnablePBRTexturedModel(LightningModule):
                     wo_for_geo = wo
                 
                 # Predict UV offset
-                uv_offset = self.neural_geometry(wi_for_geo, wo_for_geo, geometry_latent) * self.neural_geometry_factor
-                uv = uv + uv_offset
+                uv_offset_val = self.neural_geometry(wi_for_geo, wo_for_geo, geometry_latent) * self.neural_geometry_factor
+                uv = uv + uv_offset_val
                 uv = ((uv%1)+1)%1
                 # Sample from the SAME blurred texture
                 latent = self._sample_from_texture(uv, tex)
@@ -2469,22 +2466,42 @@ class LearnablePBRTexturedModel(LightningModule):
         # =====================================================================
         # Common code path for both modes
         # =====================================================================
-        # 5. Transform directions to local space (canonical space: normal=(0,0,1), tangent=(0,1,0))
+        # 5. Compute UV occupancy map from the final UVs (after neural geometry offset)
+        tex_res = self.texture_resolution
+        uv_occupancy = torch.zeros(tex_res, tex_res, dtype=torch.bool, device=pos.device)
+        if not self.use_latent_bank and uv is not None and uv.shape[0] > 0:
+            px = uv[:, 0] * tex_res - 0.5
+            py = uv[:, 1] * tex_res - 0.5
+            x0 = torch.floor(px).long().clamp(0, tex_res - 1)
+            x1 = (x0 + 1).clamp(0, tex_res - 1)
+            y0 = torch.floor(py).long().clamp(0, tex_res - 1)
+            y1 = (y0 + 1).clamp(0, tex_res - 1)
+            uv_occupancy[y0, x0] = True
+            uv_occupancy[y0, x1] = True
+            uv_occupancy[y1, x0] = True
+            uv_occupancy[y1, x1] = True
+        
+        # 6. Transform directions to local space (canonical space: normal=(0,0,1), tangent=(0,1,0))
         wi_local = self.world_to_local(wi, predicted_normal, predicted_tangent)
         wo_local = self.world_to_local(wo, predicted_normal, predicted_tangent)
         
-        # 6. Extract BRDF latent (first brdf_latent_dim channels)
+        # 7. Extract BRDF latent (first brdf_latent_dim channels)
         brdf_latent = latent[..., :self.brdf_latent_dim]
         
-        # 7. Evaluate PBR BRDF using the decoder
-        # PBRDecoder takes (wi, wo, latent) in canonical space and returns (brdf, pdf)
+        # 8. Extract activated base color for visualization (first 3 channels after activation)
+        if self.soft_constraint:
+            base_color = torch.sigmoid(brdf_latent[..., :3])
+        else:
+            base_color = torch.clamp(brdf_latent[..., :3], 0.01, 0.99)
+        
+        # 9. Evaluate PBR BRDF using the decoder
         brdf, pdf = self.decoder(wi_local, wo_local, brdf_latent)
         
-        # 8. Apply learnable factor if enabled
+        # 10. Apply learnable factor if enabled
         if self.learnable_factor:
             brdf = brdf * self.factor
         
-        return brdf, predicted_normal, pdf, uv_offset
+        return brdf, predicted_normal, pdf, base_color, uv_occupancy
     
     def sample_brdf(
         self,

@@ -14,21 +14,21 @@ rays_num: 131072  # pixels per batch
 
 # Color correction matrix (CCM) for camera calibration
 # Applied to linear RGB values: corrected_rgb = raw_rgb @ CCM
-# ccm: [
-#   [3.6724617, -0.94800931, 0.08428962],
-#   [-0.44629176, 2.96095854, -1.17898539],
-#   [-0.47909694, -0.39991418, 2.10705124]
-# ] # Original CCM
+ccm: [
+  [3.6724617, -0.94800931, 0.08428962],
+  [-0.44629176, 2.96095854, -1.17898539],
+  [-0.47909694, -0.39991418, 2.10705124]
+] # Original CCM
 # ccm: [
 #   [1.0, 0.0, 0.0],
 #   [0.0, 1.0, 0.0],
 #   [0.0, 0.0, 1.0]
 # ]
-ccm: [
-  [3.99072468, -0.92449413, 0.04120384],
-  [0.15118072, 2.7562835, -0.77412727],
-  [-0.58523552, -0.35197345, 1.21288619]
-] # Newer CCM under 4000K light condition
+# ccm: [
+#   [3.99072468, -0.92449413, 0.04120384],
+#   [0.15118072, 2.7562835, -0.77412727],
+#   [-0.58523552, -0.35197345, 1.21288619]
+# ] # Newer CCM under 4000K light condition
 
 #load images chunk to memory
 chunk_size: 200 # 0 means no chunking

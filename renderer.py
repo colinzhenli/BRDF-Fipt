@@ -186,7 +186,8 @@ class ForwardRenderer:
             pixel_all_ok_accumulated = None
             cosine_emitter_angle_accumulated = torch.zeros_like(rays_x[..., :1]).squeeze(0).squeeze(-1)
         else:
-            uv_offset_accumulated = torch.zeros_like(rays_x[..., :2])
+            base_color_accumulated = torch.zeros_like(rays_x[..., :3])
+            uv_occupancy_accumulated = None
         if validation:
             self.SPP_chunk = 2
         if spp < self.SPP_chunk:
@@ -208,8 +209,12 @@ class ForwardRenderer:
                     else:
                         pixel_all_ok_accumulated = pixel_all_ok_accumulated & pixel_all_ok
                 else:
-                    uv_offset = extra_output
-                    uv_offset_accumulated += uv_offset
+                    base_color, uv_occupancy = extra_output
+                    base_color_accumulated += base_color
+                    if uv_occupancy_accumulated is None:
+                        uv_occupancy_accumulated = uv_occupancy
+                    else:
+                        uv_occupancy_accumulated = uv_occupancy_accumulated | uv_occupancy
         else:
             for _ in range(spp // self.SPP_chunk):
                 L0, vis, ray_params, extra_output = self.ray_tracer(
@@ -226,14 +231,18 @@ class ForwardRenderer:
                     else:
                         pixel_all_ok_accumulated = pixel_all_ok_accumulated & pixel_all_ok
                 else:
-                    uv_offset = extra_output
-                    uv_offset_accumulated += uv_offset
+                    base_color, uv_occupancy = extra_output
+                    base_color_accumulated += base_color
+                    if uv_occupancy_accumulated is None:
+                        uv_occupancy_accumulated = uv_occupancy
+                    else:
+                        uv_occupancy_accumulated = uv_occupancy_accumulated | uv_occupancy
         rgbs = L / (spp // self.SPP_chunk)
         rgbs = rgbs.squeeze(0) # squeeze the batch dimension
         
         if is_graypatch:
             return rgbs, vis, ray_params, (pixel_all_ok_accumulated, cosine_emitter_angle_accumulated/(spp // self.SPP_chunk))
         else:
-            uv_offset_accumulated = uv_offset_accumulated / (spp // self.SPP_chunk)
-            uv_offset_accumulated = uv_offset_accumulated.squeeze(0)
-            return rgbs, vis, ray_params, uv_offset_accumulated
+            base_color_accumulated = base_color_accumulated / (spp // self.SPP_chunk)
+            base_color_accumulated = base_color_accumulated.squeeze(0)
+            return rgbs, vis, ray_params, (base_color_accumulated, uv_occupancy_accumulated)

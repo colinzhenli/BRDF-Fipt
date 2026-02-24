@@ -188,14 +188,14 @@
                 "CUDA_VISIBLE_DEVICES": "0"
             },
             "args": [
-                "dataset_folder=/media/raid/cloth/capture_data/Dataset_Debug_Feb10/227",
+                "dataset_folder=/media/raid/cloth/capture_data/Dataset_Nov11/242",
                 "data=real",
                 "renderer=multiarea_emitter",
-                "material=ani_latent_texture_model",
-                "material.different_decoder=True",
+                "material=learnable_pbr_texture_model",
+                "material.different_decoder=False",
                 "material.decoder.use_skip_connection=True",
                 "material.learnable_factor=True",
-                "experiment_name=Neural-model_Trained-on-all-data_test",
+                "experiment_name=Disney-model_color_debug_test_2",
                 "model.stage=2",
                 "model.test=True",
                 "model.test_novel_view=False",
@@ -207,8 +207,9 @@
                 // "renderer.mesh.use_hemisphere=False",
                 "data.switch_iters=3000",
                 "data.debug=False",
+                "data.visualize_uv=True",
                 "data.valid_on_train_set=False",
-                "model.ckpt_path=/media/raid/cloth/output/BRDF/real/Theia-1_Stage-2_Train-on-all-data_Correct-4000K-light_Optimize-different-decoder_From-Real_Latent-dim-16_Degree-5_Fixed-Val-227_run_1/training/model_0.20_0.20/last.ckpt"
+                "model.ckpt_path=/media/raid/cloth/output/BRDF/real/Theia-2_Stage-2_Disney_242_run_1/training/model_0.20_0.20/last.ckpt"
             ]
         }
 

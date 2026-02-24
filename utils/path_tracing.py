@@ -968,7 +968,9 @@ def batched_path_tracing_tbn_real_area_emitter(scene,emitter_net,material_net,ra
         angle_ok_all = torch.zeros(N*spp, dtype=torch.bool, device=device)
         cosine_emitter_angle_all = torch.zeros(N*spp, dtype=torch.float32, device=device)
     else:
-        uv_offset = torch.zeros(vis.shape[0], 2, device=device)
+        base_color_map = torch.zeros(vis.shape[0], 3, device=device)
+        tex_res = getattr(material_net, 'texture_resolution', 256)
+        uv_occupancy = torch.zeros(tex_res, tex_res, dtype=torch.bool, device=device)
     
     # deterministic sampling
     if emitter_sampling:
@@ -995,7 +997,8 @@ def batched_path_tracing_tbn_real_area_emitter(scene,emitter_net,material_net,ra
             angle_ok_all[vis] = angle_ok
             cosine_emitter_angle_all[vis] = (-wi*emitter_normal).sum(-1).abs()
         else:
-            emit_brdf, normal, brdf_pdf, uv_offset[vis] = brdf_result
+            emit_brdf, normal, brdf_pdf, base_color_map[vis], brdf_uv_occupancy = brdf_result
+            uv_occupancy = uv_occupancy | brdf_uv_occupancy
 
         G = (wi*normal).sum(-1).abs() / (emit_position-position).pow(2).sum(-1).clamp_min(1e-6) # B, 1
         emit_weight = emit_weight*G[...,None]/emit_pdf.clamp_min(1e-6)
@@ -1046,9 +1049,9 @@ def batched_path_tracing_tbn_real_area_emitter(scene,emitter_net,material_net,ra
         vis = vis_reshaped.any(dim=1)
         return L, vis, ray_params, (pixel_all_ok, cosine_emitter_angle)
     else:
-        uv_offset = uv_offset.reshape(N, spp, 2).mean(1)
+        base_color_map = base_color_map.reshape(N, spp, 3).mean(1)
         vis = vis_reshaped.all(dim=1)
-        return L, vis, ray_params, uv_offset 
+        return L, vis, ray_params, (base_color_map, uv_occupancy)
 
 def points_path_tracing_real_area_emitter(scene,emitter_net,material_net,rays_o,rays_d, xyz, dx_du,dy_dv, light_id, material_id, point_ids, spp, brdf_sampling, emitter_sampling, gt_params=None, latent=None):
     """ Path trace with real capture

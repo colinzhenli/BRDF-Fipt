@@ -857,7 +857,7 @@ class Stage2Trainer(pl.LightningModule):
             pixel_all_ok, cosine_emitter_angle = extra_output
             self._radiometric_calibration_step(batch_idx, rgbs, rgbs_gt, vis, pixel_all_ok, cosine_emitter_angle)
         else:
-            uv_offset = extra_output
+            base_color_map, uv_occupancy = extra_output
         rgbs = rgbs * self.camera_factor
         psnr_loss = torch.nn.functional.mse_loss(rgbs[vis], rgbs_gt.squeeze(0)[vis], reduction='mean')
         max_val = rgbs_gt.squeeze(0)[vis].max().clamp_min(1e-8)
@@ -871,9 +871,9 @@ class Stage2Trainer(pl.LightningModule):
         batched_rgbs = rgbs.reshape(batch_size, *self.img_hw, -1)
         batched_rgbs_gt = rgbs_gt.reshape(batch_size, *self.img_hw, -1)
         
-        # Reshape uv_offset for visualization if not graypatch
+        # Reshape base_color_map for visualization if not graypatch
         if not self.is_graypatch and self.visualize_uv:
-            batched_uv_offset = uv_offset.reshape(batch_size, *self.img_hw, 2)
+            batched_base_color = base_color_map.reshape(batch_size, *self.img_hw, 3)
         
         for b in range(batch_size):
             # Reshape individual sample in batch
@@ -940,8 +940,8 @@ class Stage2Trainer(pl.LightningModule):
                     )
                 else:
                     # White-balance from 4000K to D65 in HDR float, then save 16-bit PNG
-                    sample_rgbs_gt_wb = self.white_balance(sample_rgbs_gt)
-                    sample_rgbs_wb = self.white_balance(sample_rgbs)
+                    sample_rgbs_gt_wb = sample_rgbs_gt
+                    sample_rgbs_wb = sample_rgbs
 
                     sample_rgbs_gt_16bit = np.clip(sample_rgbs_gt_wb.cpu().numpy(), 0, 65535).astype(np.uint16)
                     sample_rgbs_16bit = np.clip(sample_rgbs_wb.cpu().numpy(), 0, 65535).astype(np.uint16)
@@ -956,50 +956,22 @@ class Stage2Trainer(pl.LightningModule):
                         cv2.cvtColor(sample_rgbs_16bit, cv2.COLOR_RGB2BGR)
                     )
             
-            # Visualize UV offsets as grayscale images
+            # Visualize base color map (activated latent color the PBR renders from)
             if not self.is_graypatch and self.visualize_uv:
-                sample_uv_offset = batched_uv_offset[b].cpu().numpy()  # Shape: [H, W, 2]
-                u_offset = sample_uv_offset[:, :, 0]  # U offset
-                v_offset = sample_uv_offset[:, :, 1]  # V offset
-                
-                # Normalize offsets to [0, 255] for visualization
-                # Map the range of values to 0-255, with 127 representing zero offset
-                u_min, u_max = u_offset.min(), u_offset.max()
-                v_min, v_max = v_offset.min(), v_offset.max()
-                
-                # Normalize to [0, 255] with proper handling of positive and negative values
-                u_range = max(abs(u_min), abs(u_max))
-                v_range = max(abs(v_min), abs(v_max))
-                
-                if u_range > 0:
-                    u_offset_vis = ((u_offset / u_range) * 127 + 127).astype(np.uint8)
-                else:
-                    u_offset_vis = np.full_like(u_offset, 127, dtype=np.uint8)
-                    
-                if v_range > 0:
-                    v_offset_vis = ((v_offset / v_range) * 127 + 127).astype(np.uint8)
-                else:
-                    v_offset_vis = np.full_like(v_offset, 127, dtype=np.uint8)
-                
-                # Save grayscale offset images
+                sample_base_color = batched_base_color[b].cpu().numpy()  # Shape: [H, W, 3], values in [0, 1]
+                base_color_8bit = np.clip(sample_base_color * 255, 0, 255).astype(np.uint8)
                 cv2.imwrite(
-                    os.path.join(output_dir, f'u_offset_{batch_idx}_{b}.png'),
-                    u_offset_vis
+                    os.path.join(output_dir, f'base_color_{batch_idx}_{b}.png'),
+                    cv2.cvtColor(base_color_8bit, cv2.COLOR_RGB2BGR)
                 )
-                cv2.imwrite(
-                    os.path.join(output_dir, f'v_offset_{batch_idx}_{b}.png'),
-                    v_offset_vis
-                ) 
-                
-                # Create colorful merged visualization using Red and Green channels
-                # R=U offset, G=V offset, B=neutral (127)
-                blue_channel = np.full_like(u_offset_vis, 127, dtype=np.uint8)
-                uv_color = np.stack([u_offset_vis, v_offset_vis, blue_channel], axis=2)
-                cv2.imwrite(
-                    os.path.join(output_dir, f'uv_offset_color_{batch_idx}_{b}.png'),
-                    cv2.cvtColor(uv_color, cv2.COLOR_RGB2BGR)
-                )          
-            # )
+        
+        # Save UV occupancy map (which latent grid cells are hit by rays)
+        if not self.is_graypatch and self.visualize_uv and uv_occupancy is not None:
+            occupancy_img = (uv_occupancy.cpu().numpy().astype(np.uint8)) * 255
+            cv2.imwrite(
+                os.path.join(output_dir, f'uv_occupancy_{batch_idx}.png'),
+                occupancy_img
+            )
             
         os.makedirs(os.path.join(self.cfg.exp_output_root_path, f'pbr_map_images'), exist_ok=True)
         self.save_pbr_texture(os.path.join(self.cfg.exp_output_root_path, f'pbr_map_images'), batch_idx, b)
@@ -1064,7 +1036,7 @@ class Stage2Trainer(pl.LightningModule):
         # forward renders
         rgbs, vis, ray_params, extra_output = self.renderer.stage2_render(self.emitter, rays, emitter_ids, self.cfg.renderer.spp.val, None, None, validation=True)
         # Handle radiometric calibration
-        uv_offset = extra_output
+        base_color_map, uv_occupancy = extra_output
         rgbs = rgbs * self.camera_factor
         psnr_loss = torch.nn.functional.mse_loss(rgbs[vis], rgbs_gt.squeeze(0)[vis], reduction='mean')
         MAX_VAL = 65535.0
@@ -1078,6 +1050,7 @@ class Stage2Trainer(pl.LightningModule):
         batch_size = 1
         batched_rgbs = rgbs.reshape(batch_size, *self.img_hw, -1)
         batched_rgbs_gt = rgbs_gt.reshape(batch_size, *self.img_hw, -1)
+        batched_base_color = base_color_map.reshape(batch_size, *self.img_hw, 3)
         
         for b in range(batch_size):
             # Reshape individual sample in batch
@@ -1126,6 +1099,22 @@ class Stage2Trainer(pl.LightningModule):
                     os.path.join(output_dir, f'result_view_{batch_idx}_{b}.png'),
                     cv2.cvtColor(sample_rgbs_16bit, cv2.COLOR_RGB2BGR)
                 )
+            
+            # Save base color map (activated latent color the PBR renders from)
+            sample_base_color = batched_base_color[b].cpu().numpy()  # [H, W, 3], values in [0, 1]
+            base_color_8bit = np.clip(sample_base_color * 255, 0, 255).astype(np.uint8)
+            cv2.imwrite(
+                os.path.join(output_dir, f'base_color_{batch_idx}_{b}.png'),
+                cv2.cvtColor(base_color_8bit, cv2.COLOR_RGB2BGR)
+            )
+        
+        # Save UV occupancy map (which latent grid cells are hit by rays)
+        if uv_occupancy is not None:
+            occupancy_img = (uv_occupancy.cpu().numpy().astype(np.uint8)) * 255
+            cv2.imwrite(
+                os.path.join(output_dir, f'uv_occupancy_{batch_idx}.png'),
+                occupancy_img
+            )
             
         self.log('test/loss', loss)
         self.log('test/emitter_radiance', emitter_radiance.mean())
