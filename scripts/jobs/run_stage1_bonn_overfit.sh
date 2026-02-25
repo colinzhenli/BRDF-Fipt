@@ -1,13 +1,20 @@
 #!/bin/bash
 
-export CUDA_VISIBLE_DEVICES=3
+export CUDA_VISIBLE_DEVICES=2
 
 python main.py \
-    dataset_folder=/media/raid/cloth/capture_data/Dataset_Nov11 \
-    data=points \
+    dataset_folder=/media/raid/cloth/Bonn_train \
+    data=bonn \
+    data.use_pan=False \
+    data.use_lls=False \
+    data.debug=True \
+    data.debug_num=10 \
+    data.rays_num=131072 \
+    data.pixel_subsample_ratio=1.0 \
     renderer=multiarea_emitter \
-    material=multi_material_latent \
-    experiment_name=Stage1_All-materials_Correct-4000K-light_Different-decoder_SH-degree-5_run_2 \
+    material=bonn_latent \
+    experiment_name=Stage-1_Bonn_Overfit-10-materials-Decoder-lr-0.0001-All-pixels-no-switch-RGB-only_run_1 \
+    model.optimizer.decoder_lr=0.0001 \
     model.loss.recon_loss.name=l2 \
     model.loss.reg_loss.weight=0.0 \
     model.stage=1 \
@@ -16,11 +23,11 @@ python main.py \
     model.trainer.limit_train_batches=512 \
     material.decoder.use_skip_connection=True \
     material.latent_dim=16 \
-    material.decoder.degree=5 \
+    material.decoder.degree=3 \
     material.decoder.smooth_reg=False \
     material.different_decoder=True \
-    data.switch_iters=5000 \
-    data.chunk_size=20 \
+    data.switch_iters=400000 \
+    data.chunk_size=10 \
     data.filter_observations=False \
     # model.ckpt_path=/media/raid/cloth/output/BRDF/points/Stage-1_ReLU_Overfit-Material-0_run_1/training/model_0.20_0.20/last.ckpt
 

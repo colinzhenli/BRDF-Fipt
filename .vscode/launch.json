@@ -147,37 +147,38 @@
         //     ]
         // },
 
-        {
-            "name": "Python: Auto-decoder Points",
-            "type": "python",
-            "request": "launch",
-            "program": "main.py",
-            "console": "integratedTerminal",
-            "justMyCode": true,
-            "env": {
-                "CUDA_VISIBLE_DEVICES": "2"
-            },
-            "args": [
-                "dataset_folder=/media/raid/cloth/Bonn_train",
-                "data=bonn",
-                "renderer=multiarea_emitter",
-                "material=bonn_latent",
-                "experiment_name=Correct-channel-order_2-materials_Bonn-latent_debug",
-                "model.stage=1",
-                "model.test=False",
-                "model.trainer.limit_train_batches=512",
-                "model.loss.reg_loss.weight=0.0",
-                "material.decoder.smooth_reg=False",
-                "material.decoder.smooth_reg_eps=0.01",
-                "material.decoder.use_skip_connection=True",
-                "data.chunk_size=2",
-                "data.switch_iters=200000",
-                "data.debug_num=2",
-                // "data.rays_num=6553",
-                "data.filter_observations=False",
-                "data.debug=True",
-            ]
-        }
+        // {
+        //     "name": "Python: Auto-decoder Points",
+        //     "type": "python",
+        //     "request": "launch",
+        //     "program": "main.py",
+        //     "console": "integratedTerminal",
+        //     "justMyCode": true,
+        //     "env": {
+        //         "CUDA_VISIBLE_DEVICES": "2"
+        //     },
+        //     "args": [
+        //         "dataset_folder=/media/raid/cloth/Bonn_train",
+        //         "data=bonn",
+        //         "data.rays_num=65536",
+        //         "renderer=multiarea_emitter",
+        //         "material=bonn_latent",
+        //         "experiment_name=Correct-channel-order_1-materials_Bonn-latent_run_1",
+        //         "model.stage=1",
+        //         "model.test=False",
+        //         "model.trainer.limit_train_batches=512",
+        //         "model.loss.reg_loss.weight=0.0",
+        //         "material.decoder.smooth_reg=False",
+        //         "material.decoder.smooth_reg_eps=0.01",
+        //         "material.decoder.use_skip_connection=True",
+        //         "data.chunk_size=2",
+        //         "data.switch_iters=200000",
+        //         "data.debug_num=1",
+        //         // "data.rays_num=6553",
+        //         "data.filter_observations=False",
+        //         "data.debug=True",
+        //     ]
+        // }
 
 
         // {
@@ -216,41 +217,40 @@
         // }
 
 
-        // {
-        //     "name": "Python: stage 2 pretrained 119",
-        //     "type": "python",
-        //     "request": "launch",
-        //     "program": "main.py",
-        //     "console": "integratedTerminal",
-        //     "justMyCode": true,
-        //     "env": {
-        //         "CUDA_VISIBLE_DEVICES": "2"
-        //     },
-        //     "args": [
-        //         "dataset_folder=/media/raid/cloth/capture_data/Dataset_Debug_Feb10/227",
-        //         "data=real",
-        //         "renderer=multiarea_emitter",
-        //         "material=learnable_pbr_texture_model",
-        //         "material.different_decoder=False",
-        //         "material.disney=True",
-        //         "material.decoder.use_skip_connection=True",
-        //         "material.learnable_factor=True",
-        //         "experiment_name=Disney-model_test_1",
-        //         "model.stage=2",
-        //         "model.test=True",
-        //         // "model.test_novel_view=False",
-        //         "material.use_latent_bank=False",
-        //         "material.latent_dim=16",
-        //         "material.decoder.degree=3",
-        //         "material.neural_geometry.factor=0.04",
-        //         "model.freeze_decoder=False",
-        //         // "renderer.mesh.use_hemisphere=False",
-        //         "data.switch_iters=3000",
-        //         "data.debug=False",
-        //         "data.valid_on_train_set=False",
-        //         "model.ckpt_path=/media/raid/cloth/output/BRDF/real/Theia-1_Stage-2_Disney-PBR_Fixed-Val-227_run_1/training/model_0.20_0.20/last.ckpt"
-        //     ]
-        // }
+        {
+            "name": "Python: stage 2 pretrained 119",
+            "type": "python",
+            "request": "launch",
+            "program": "main.py",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "env": {
+                "CUDA_VISIBLE_DEVICES": ""
+            },
+            "args": [
+                "dataset_folder=/media/raid/cloth/capture_data/Dataset_Nov11/242",
+                "data=real",
+                "renderer=multiarea_emitter",
+                "material=learnable_pbr_texture_model",
+                "material.different_decoder=False",
+                "material.disney=True",
+                "material.decoder.use_skip_connection=True",
+                "material.learnable_factor=True",
+                "experiment_name=Learnable-Disney-model_sigmoid_color_map_1",
+                "model.stage=2",
+                "model.test=False",
+                // "model.test_novel_view=False",
+                "material.latent_dim=16",
+                "material.decoder.degree=3",
+                "material.neural_geometry.factor=0.04",
+                "model.freeze_decoder=False",
+                // "renderer.mesh.use_hemisphere=False",
+                "data.switch_iters=3000",
+                "data.debug=False",
+                "data.valid_on_train_set=False",
+                "model.ckpt_path=/media/raid/cloth/output/BRDF/real/Theia-2_Stage-2_Disney_242_run_1/training/model_0.20_0.20/last.ckpt"
+            ]
+        }
 
         // {
         //     "name": "Python: Current File",

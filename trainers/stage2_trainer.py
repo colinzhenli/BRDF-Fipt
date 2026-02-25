@@ -1016,35 +1016,42 @@ class Stage2Trainer(pl.LightningModule):
                 resolution=64
             )
         
-        # Save normal map at first batch
+        # Save PBR maps at first batch
         if batch_idx == 0:
             pbr_map_dir = os.path.join(self.cfg.exp_output_root_path, 'pbr_map_images')
             os.makedirs(pbr_map_dir, exist_ok=True)
-            if hasattr(self.material, 'latent_texture'):
-                # Normal is stored at channels -6:-3 in latent_texture.params [1, latent_dim, H, W]
-                normal_map = self.material.latent_texture.params[:, -6:-3, :, :]  # [1, 3, H, W]
-                # Normalize for visualization (normal values can be negative)
-                normal_map_vis = (normal_map + 1.0) / 2.0  # Map from [-1,1] to [0,1]
-                torchvision.utils.save_image(
-                    normal_map_vis,
-                    os.path.join(pbr_map_dir, 'normal_map_batch0.png')
-                )
-                
-                # Color is stored at channels 0:3 in latent_texture.params [1, latent_dim, H, W]
-                # Isotropic layout: [color(3), albedo(1), roughness(1), metallic(1)]
-                color_map = self.material.latent_texture.params[:, 0:3, :, :]  # [1, 3, H, W]
-                # Clamp to [0, 1] for visualization
-                color_map_vis = torch.clamp(color_map, 0.0, 1.0)
-                torchvision.utils.save_image(
-                    color_map_vis,
-                    os.path.join(pbr_map_dir, 'color_map_batch0.png')
-                )
-                
-                # Roughness at channel 4, metallic at channel 5
-                # Both iso [color(3),albedo(1),roughness(1),metallic(1)]
-                # and aniso [diffuse(3),ao(1),roughness(1),metallic(1),ior(1),aniso_strength(1),aniso_rot(1)]
-                roughness_map = torch.sigmoid(self.material.latent_texture.params[:, 4:5, :, :])
-                metallic_map = torch.sigmoid(self.material.latent_texture.params[:, 5:6, :, :])
+            if hasattr(self.material, 'mipmap_latent_texture'):
+                mlt = self.material.mipmap_latent_texture
+                tex_pyramid = mlt.get_mipmap_textures(step=self.global_step, apply_blur=False)
+                finest = tex_pyramid[0]  # [1, C, H, W]
+
+                # Normal is stored at channels -6:-3 (only when predict_frame)
+                if self.material.predict_frame:
+                    normal_map = finest[:, -6:-3, :, :]
+                    normal_map_vis = (normal_map + 1.0) / 2.0
+                    torchvision.utils.save_image(
+                        normal_map_vis,
+                        os.path.join(pbr_map_dir, 'normal_map_batch0.png')
+                    )
+
+                # Color map: channels 0:3
+                if mlt.prefilter:
+                    color_map_vis = torch.sigmoid(finest[:, 0:3, :, :])
+                    torchvision.utils.save_image(
+                        color_map_vis,
+                        os.path.join(pbr_map_dir, 'color_map_batch0.png')
+                    )
+                else:
+                    for lvl, tex_lvl in enumerate(tex_pyramid):
+                        color_map_vis = torch.sigmoid(tex_lvl[:, 0:3, :, :])
+                        torchvision.utils.save_image(
+                            color_map_vis,
+                            os.path.join(pbr_map_dir, f'color_map_level{lvl}.png')
+                        )
+
+                # Roughness (channel 4) and metallic (channel 5) — finest level only
+                roughness_map = torch.sigmoid(finest[:, 4:5, :, :])
+                metallic_map = torch.sigmoid(finest[:, 5:6, :, :])
                 torchvision.utils.save_image(
                     roughness_map,
                     os.path.join(pbr_map_dir, 'roughness_map_batch0.png')

@@ -8,7 +8,7 @@ experiment_name: test
 # exp_folder: /media/raid/cloth/No_cable_capture_Sep22/BRDF_recon_Sep30/Controlled_light/hdr
 dataset_folder: /home/featurize/data
 output_folder: /media/raid/cloth/output/BRDF
-exp_output_root_path: ${output_folder}/${data.dataset_name}/${experiment_name}
+exp_output_root_path: ${output_folder}/bonn_Theia-2/${experiment_name}
 gt_folder: ${dataset_folder}/hdr
 test_on_train: True
 global_train_seed: 42

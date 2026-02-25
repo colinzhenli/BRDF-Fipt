@@ -1,11 +1,14 @@
-type: "LearnablePBRTexturedModel"
+type: "MipmapPBRTexturedModel"
 module: "model.neural_brdf_refactored"
 latent_dim: 16
 predict_frame: True
 
 use_nerfstudio_sh: False
 learnable_factor: True # True only learned from merl data
-use_latent_bank: False
+mipmap_levels: 4
+base_footprint: 1e-7
+prefilter: False  # True: build pyramid from single texture; False: separate learnable texture per level
+
 initialize_from_std: True
 observations_folder: ${dataset_folder}/observations
 

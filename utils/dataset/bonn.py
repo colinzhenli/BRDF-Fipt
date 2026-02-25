@@ -209,6 +209,7 @@ class BonnDataset(IterableDataset):
         self.debug = getattr(cfg.data, 'debug', False)
         self.debug_num = getattr(cfg.data, 'debug_num', 1)
         self.points_per_material = getattr(cfg.data, 'points_per_material', 2000)
+        self.pixel_subsample_ratio = getattr(cfg.data, 'pixel_subsample_ratio', 0.05)
         self.switch_iters = getattr(cfg.data, 'switch_iters', 3000)
         self.chunk_size = getattr(cfg.data, 'chunk_size', 20)
         self.val_materials = getattr(cfg.data, 'val_materials', 2)
@@ -343,6 +344,19 @@ class BonnDataset(IterableDataset):
                 lls_data, lls_ch_names, lH, lW = _read_exr(f'{prefix}_lls.exr')
                 assert (lH, lW) == (H, W)
 
+            # ---- subsample pixels to control latent access rate -----------
+            n_full = n_pixels
+            n_keep = max(1, int(n_pixels * self.pixel_subsample_ratio))
+            keep_idx = np.sort(np.random.choice(n_pixels, n_keep, replace=False))
+            xyz_pts = xyz_pts[keep_idx]
+            pids = pids[keep_idx]
+            poly_data = poly_data.reshape(n_pixels, -1)[keep_idx]     # (V', C)
+            if pan_data is not None:
+                pan_data = pan_data.reshape(n_pixels, -1)[keep_idx]
+            if lls_data is not None:
+                lls_data = lls_data.reshape(n_pixels, -1)[keep_idx]
+            n_pixels = n_keep
+
             # ============================================================
             # Assembly
             # ============================================================
@@ -453,7 +467,8 @@ class BonnDataset(IterableDataset):
             n_images = all_rgbs.shape[0]
 
             mem_mb = all_rgbs.nbytes / 1e6
-            print(f"  mat{mat_id:04d}: {n_pixels:,} pixels × {n_images} images "
+            print(f"  mat{mat_id:04d}: {n_pixels:,}/{n_full:,} pixels "
+                  f"({self.pixel_subsample_ratio:.0%}) × {n_images} images "
                   f"= {n_pixels * n_images:,} obs  (rgbs {mem_mb:.0f} MB)")
 
             return {
@@ -635,7 +650,7 @@ class BonnValDataset(Dataset):
         # ---- discover materials & pick one ---------------------
         mat_ids = self._discover_materials()
         if self.debug:
-            self.mat_id = 2
+            self.mat_id = 1
         else:
             self.mat_id = random.choice(mat_ids)
         prefix = self.root_folder / f'mat{self.mat_id:04d}'

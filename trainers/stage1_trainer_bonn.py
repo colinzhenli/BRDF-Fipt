@@ -71,6 +71,7 @@ class Stage1Trainer_Bonn(pl.LightningModule):
     # ------------------------------------------------------------------
     def configure_optimizers(self):
         lr = self.hparams.model.optimizer.lr
+        decoder_lr = getattr(self.hparams.model.optimizer, 'decoder_lr', lr)
         wd = self.hparams.model.optimizer.weight_decay
 
         embedding_params = list(self.material.point_latent_bank.parameters())
@@ -84,11 +85,11 @@ class Stage1Trainer_Bonn(pl.LightningModule):
 
         sparse_opt = torch.optim.SparseAdam(embedding_params, lr=lr)
         dense_opt = torch.optim.Adam(
-            decoder_params, lr=lr, betas=(0.9, 0.999), weight_decay=wd,
+            decoder_params, lr=decoder_lr, betas=(0.9, 0.999), weight_decay=wd,
         ) if not self.freeze_decoder else None
 
         if dense_opt is not None:
-            print(f"Using SparseAdam (embedding) + Adam (decoder), lr={lr}")
+            print(f"Using SparseAdam (embedding lr={lr}) + Adam (decoder lr={decoder_lr})")
             return [sparse_opt, dense_opt]
         else:
             print(f"Using SparseAdam (embedding only), lr={lr}")
