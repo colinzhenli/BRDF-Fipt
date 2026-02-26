@@ -23,8 +23,9 @@ handeye_refiner: False # whether to learn the refiner
 use_pan: False
 use_lls: False
 debug: False
-pixel_subsample_ratio: 0.05 # used instead of points_per_material
 points_per_material: 2000
+random_observations: True  # True: subsample rays from K*V pool; False: subsample pixels (keep all K images)
+subsample_ratio: 0.05     # fraction of rays (random_observations=True) or pixels (False) to keep per material
 switch_iters: 1000 # Used to test override
 chunk_size: 20
 val_materials: 2

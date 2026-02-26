@@ -209,7 +209,8 @@ class BonnDataset(IterableDataset):
         self.debug = getattr(cfg.data, 'debug', False)
         self.debug_num = getattr(cfg.data, 'debug_num', 1)
         self.points_per_material = getattr(cfg.data, 'points_per_material', 2000)
-        self.pixel_subsample_ratio = getattr(cfg.data, 'pixel_subsample_ratio', 0.05)
+        self.random_observations = getattr(cfg.data, 'random_observations', False)
+        self.subsample_ratio = getattr(cfg.data, 'subsample_ratio', 1.0)
         self.switch_iters = getattr(cfg.data, 'switch_iters', 3000)
         self.chunk_size = getattr(cfg.data, 'chunk_size', 20)
         self.val_materials = getattr(cfg.data, 'val_materials', 2)
@@ -344,19 +345,6 @@ class BonnDataset(IterableDataset):
                 lls_data, lls_ch_names, lH, lW = _read_exr(f'{prefix}_lls.exr')
                 assert (lH, lW) == (H, W)
 
-            # ---- subsample pixels to control latent access rate -----------
-            n_full = n_pixels
-            n_keep = max(1, int(n_pixels * self.pixel_subsample_ratio))
-            keep_idx = np.sort(np.random.choice(n_pixels, n_keep, replace=False))
-            xyz_pts = xyz_pts[keep_idx]
-            pids = pids[keep_idx]
-            poly_data = poly_data.reshape(n_pixels, -1)[keep_idx]     # (V', C)
-            if pan_data is not None:
-                pan_data = pan_data.reshape(n_pixels, -1)[keep_idx]
-            if lls_data is not None:
-                lls_data = lls_data.reshape(n_pixels, -1)[keep_idx]
-            n_pixels = n_keep
-
             # ============================================================
             # Assembly
             # ============================================================
@@ -466,18 +454,86 @@ class BonnDataset(IterableDataset):
             np.clip(all_rgbs, 0, None, out=all_rgbs)
             n_images = all_rgbs.shape[0]
 
+            # ----------------------------------------------------------
+            # Per-ray flattening (random_observations mode)
+            # ----------------------------------------------------------
+            if self.random_observations:
+                K, V = n_images, n_pixels
+                total_rays = K * V
+
+                # rgbs: (K, V, 3) -> (K*V, 3)
+                flat_rgbs = all_rgbs.reshape(total_rays, 3)
+
+                # xyz: (V, 3) -> tile K times -> (K*V, 3)
+                flat_xyz = np.tile(xyz_pts, (K, 1))
+
+                # point_ids: (V,) -> tile K times -> (K*V,)
+                flat_pids = np.tile(pids, K)
+
+                # per-image arrays: repeat each entry V times
+                flat_light_pos  = np.repeat(all_light_pos, V, axis=0)    # (K*V, 3)
+                flat_cam_pos    = np.repeat(all_cam_pos, V, axis=0)      # (K*V, 3)
+                flat_data_type  = np.repeat(all_data_type, V)            # (K*V,)
+                flat_emitter_id = np.repeat(all_emitter_id, V)           # (K*V,)
+                flat_lls_corner = np.repeat(all_lls_corner, V, axis=0)   # (K*V, 4, 3)
+
+                # subsample rays by ratio
+                n_rays_kept = max(1, int(total_rays * self.subsample_ratio))
+                if n_rays_kept < total_rays:
+                    keep = np.sort(np.random.choice(
+                        total_rays, n_rays_kept, replace=False))
+                    flat_rgbs       = flat_rgbs[keep]
+                    flat_xyz        = flat_xyz[keep]
+                    flat_pids       = flat_pids[keep]
+                    flat_light_pos  = flat_light_pos[keep]
+                    flat_cam_pos    = flat_cam_pos[keep]
+                    flat_data_type  = flat_data_type[keep]
+                    flat_emitter_id = flat_emitter_id[keep]
+                    flat_lls_corner = flat_lls_corner[keep]
+
+                mem_mb = flat_rgbs.nbytes / 1e6
+                print(f"  mat{mat_id:04d}: {n_rays_kept:,}/{total_rays:,} rays "
+                      f"(from {n_pixels:,} px × {n_images} img)  "
+                      f"(rgbs {mem_mb:.0f} MB)")
+
+                return {
+                    'mat_id':      mat_id,
+                    'n_rays':      n_rays_kept,
+                    'flat':        True,
+                    'xyz':         flat_xyz,           # (M, 3)
+                    'point_ids':   flat_pids,          # (M,)
+                    'rgbs':        flat_rgbs,          # (M, 3)
+                    'light_pos':   flat_light_pos,     # (M, 3)
+                    'cam_pos':     flat_cam_pos,       # (M, 3)
+                    'data_type':   flat_data_type,     # (M,)
+                    'emitter_ids': flat_emitter_id,    # (M,)
+                    'lls_corners': flat_lls_corner,    # (M, 4, 3)
+                }
+
+            # ----------------------------------------------------------
+            # Per-pixel mode: subsample pixels, keep all K images
+            # ----------------------------------------------------------
+            n_full = n_pixels
+            n_keep = max(1, int(n_pixels * self.subsample_ratio))
+            if n_keep < n_pixels:
+                keep_idx = np.sort(np.random.choice(n_pixels, n_keep, replace=False))
+                xyz_pts  = xyz_pts[keep_idx]
+                pids     = pids[keep_idx]
+                all_rgbs = all_rgbs[:, keep_idx, :]       # (K, V', 3)
+                n_pixels = n_keep
+
             mem_mb = all_rgbs.nbytes / 1e6
             print(f"  mat{mat_id:04d}: {n_pixels:,}/{n_full:,} pixels "
-                  f"({self.pixel_subsample_ratio:.0%}) × {n_images} images "
+                  f"({self.subsample_ratio:.0%}) × {n_images} images "
                   f"= {n_pixels * n_images:,} obs  (rgbs {mem_mb:.0f} MB)")
 
             return {
                 'mat_id':      mat_id,
                 'n_pixels':    n_pixels,
                 'n_images':    n_images,
-                'xyz':         xyz_pts,           # (V, 3)  float32
-                'point_ids':   pids,              # (V,)    int64
-                'rgbs':        all_rgbs,          # (K, V, 3) float32
+                'xyz':         xyz_pts,           # (V', 3)  float32
+                'point_ids':   pids,              # (V',)    int64
+                'rgbs':        all_rgbs,          # (K, V', 3) float32
                 'light_pos':   all_light_pos,     # (K, 3)  float32
                 'cam_pos':     all_cam_pos,       # (K, 3)  float32
                 'data_type':   all_data_type,     # (K,)    int64
@@ -512,13 +568,16 @@ class BonnDataset(IterableDataset):
         if not materials:
             return BonnDataset.ChunkData(materials=[], total_obs=0)
 
-        total_obs = sum(m['n_pixels'] * m['n_images'] for m in materials)
-        total_pix = sum(m['n_pixels'] for m in materials)
+        is_flat = materials[0].get('flat', False)
+        if is_flat:
+            total_obs = sum(m['n_rays'] for m in materials)
+        else:
+            total_obs = sum(m['n_pixels'] * m['n_images'] for m in materials)
         total_rgb_mb = sum(m['rgbs'].nbytes for m in materials) / 1e6
 
         print(f"[{tag}] Chunk built: {total_obs:,} observations "
               f"from {len(materials)} materials  "
-              f"({total_pix:,} pixels, rgbs {total_rgb_mb:.0f} MB)")
+              f"(rgbs {total_rgb_mb:.0f} MB)")
 
         return BonnDataset.ChunkData(materials=materials, total_obs=total_obs)
 
@@ -539,10 +598,81 @@ class BonnDataset(IterableDataset):
 
     # ------------------------------------------------------------------
     def _sample_batch(self, chunk, n_rays):
-        """Randomly sample n_rays from chunk by drawing (img, pixel) pairs
-        per material, proportional to each material's observation count."""
+        """Randomly sample n_rays from chunk.
+
+        Two modes depending on the chunk format:
+        - flat (random_observations): each material stores (M, ...) rays;
+          draw random indices from the flat ray pool.
+        - per-pixel (original): each material stores (K, V, 3) rgbs;
+          draw random (img, pixel) pairs.
+        """
         materials = chunk.materials
-        n_mats = len(materials)
+        is_flat = materials[0].get('flat', False)
+
+        if is_flat:
+            return self._sample_batch_flat(materials, n_rays)
+        return self._sample_batch_perpixel(materials, n_rays)
+
+    def _sample_batch_flat(self, materials, n_rays):
+        """Sample from pre-flattened (M, ...) per-material ray pools."""
+        obs_counts = np.array(
+            [m['n_rays'] for m in materials], dtype=np.float64)
+        weights = obs_counts / obs_counts.sum()
+        rays_per_mat = np.round(weights * n_rays).astype(int)
+        rays_per_mat[-1] = n_rays - rays_per_mat[:-1].sum()
+
+        parts_xyz   = []
+        parts_rgbs  = []
+        parts_pids  = []
+        parts_mids  = []
+        parts_dtype = []
+        parts_eids  = []
+        parts_lls   = []
+        parts_light = []
+        parts_cam   = []
+
+        for mi, mat in enumerate(materials):
+            n = int(rays_per_mat[mi])
+            if n <= 0:
+                continue
+            idx = np.random.randint(0, mat['n_rays'], n)
+
+            parts_xyz.append(mat['xyz'][idx])
+            parts_rgbs.append(mat['rgbs'][idx])
+            parts_pids.append(mat['point_ids'][idx])
+            parts_mids.append(np.full(n, mat['mat_id'], dtype=np.int64))
+            parts_dtype.append(mat['data_type'][idx])
+            parts_eids.append(mat['emitter_ids'][idx])
+            parts_lls.append(mat['lls_corners'][idx])
+            parts_light.append(mat['light_pos'][idx])
+            parts_cam.append(mat['cam_pos'][idx])
+
+        xyz   = np.concatenate(parts_xyz)
+        rgbs  = np.concatenate(parts_rgbs)
+        light = np.concatenate(parts_light)
+        cam   = np.concatenate(parts_cam)
+
+        wi = light - xyz
+        wi /= np.maximum(np.linalg.norm(wi, axis=1, keepdims=True), 1e-8)
+        wo = cam - xyz
+        wo /= np.maximum(np.linalg.norm(wo, axis=1, keepdims=True), 1e-8)
+
+        return {
+            'xyz':          torch.from_numpy(xyz).float(),
+            'wi':           torch.from_numpy(wi).float(),
+            'wo':           torch.from_numpy(wo).float(),
+            'rgbs':         torch.from_numpy(rgbs).float(),
+            'point_ids':    torch.from_numpy(np.concatenate(parts_pids)).long(),
+            'material_ids': torch.from_numpy(np.concatenate(parts_mids)).long(),
+            'emitter_ids':  torch.from_numpy(np.concatenate(parts_eids)).long(),
+            'data_type':    torch.from_numpy(np.concatenate(parts_dtype)).long(),
+            'lls_corners':  torch.from_numpy(np.concatenate(parts_lls)).float(),
+            'confidence':   torch.ones(n_rays, dtype=torch.float32),
+            'gt_params':    torch.zeros(1),
+        }
+
+    def _sample_batch_perpixel(self, materials, n_rays):
+        """Sample by drawing random (img, pixel) pairs per material."""
         obs_counts = np.array(
             [m['n_pixels'] * m['n_images'] for m in materials], dtype=np.float64)
         weights = obs_counts / obs_counts.sum()
