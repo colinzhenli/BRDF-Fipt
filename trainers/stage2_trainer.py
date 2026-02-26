@@ -1060,6 +1060,34 @@ class Stage2Trainer(pl.LightningModule):
                     metallic_map,
                     os.path.join(pbr_map_dir, 'metallic_map_batch0.png')
                 )
+            elif hasattr(self.material, 'latent_texture'):
+                # Non-mipmap path: single latent_texture.params [1, latent_dim, H, W]
+                params = self.material.latent_texture.params
+
+                if self.material.predict_frame:
+                    normal_map = params[:, -6:-3, :, :]
+                    normal_map_vis = (normal_map + 1.0) / 2.0
+                    torchvision.utils.save_image(
+                        normal_map_vis,
+                        os.path.join(pbr_map_dir, 'normal_map_batch0.png')
+                    )
+
+                color_map_vis = torch.sigmoid(params[:, 0:3, :, :])
+                torchvision.utils.save_image(
+                    color_map_vis,
+                    os.path.join(pbr_map_dir, 'color_map_batch0.png')
+                )
+
+                roughness_map = torch.sigmoid(params[:, 4:5, :, :])
+                metallic_map = torch.sigmoid(params[:, 5:6, :, :])
+                torchvision.utils.save_image(
+                    roughness_map,
+                    os.path.join(pbr_map_dir, 'roughness_map_batch0.png')
+                )
+                torchvision.utils.save_image(
+                    metallic_map,
+                    os.path.join(pbr_map_dir, 'metallic_map_batch0.png')
+                )
             
         self.log('val/loss', loss)
         self.log('val/emitter_radiance', emitter_radiance.mean())

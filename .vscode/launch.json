@@ -225,7 +225,7 @@
             "console": "integratedTerminal",
             "justMyCode": true,
             "env": {
-                "CUDA_VISIBLE_DEVICES": ""
+                "CUDA_VISIBLE_DEVICES": "3"
             },
             "args": [
                 "dataset_folder=/media/raid/cloth/capture_data/Dataset_Nov11/242",
@@ -236,9 +236,9 @@
                 "material.disney=True",
                 "material.decoder.use_skip_connection=True",
                 "material.learnable_factor=True",
-                "experiment_name=Learnable-Disney-model_sigmoid_color_map_1",
+                "experiment_name=UV-visualize_Learnable-Disney-model_sigmoid_color_map_2",
                 "model.stage=2",
-                "model.test=False",
+                "model.test=True",
                 // "model.test_novel_view=False",
                 "material.latent_dim=16",
                 "material.decoder.degree=3",
@@ -247,6 +247,7 @@
                 // "renderer.mesh.use_hemisphere=False",
                 "data.switch_iters=3000",
                 "data.debug=False",
+                "data.visualize_uv=True",
                 "data.valid_on_train_set=False",
                 "model.ckpt_path=/media/raid/cloth/output/BRDF/real/Theia-2_Stage-2_Disney_242_run_1/training/model_0.20_0.20/last.ckpt"
             ]

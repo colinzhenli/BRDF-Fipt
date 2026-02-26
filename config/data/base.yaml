@@ -50,8 +50,8 @@ training_list_path: ${dataset_folder}/training_list.txt
 valid_on_train_set: False
 val_ratio: 0.01
 visualize_uv: False
-start_idx: 100
-valid_num: 10 # Actual validation number during training
+start_idx: 0
+valid_num: 100 # Actual validation number during training
 use_fixed_val: False
 hold_out_val_num: 240 # The first hold_out_val_num images are used for validation
 

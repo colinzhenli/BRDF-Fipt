@@ -2,6 +2,7 @@ type: "MipmapPBRTexturedModel"
 module: "model.neural_brdf_refactored"
 latent_dim: 16
 predict_frame: True
+use_latent_bank: False
 
 use_nerfstudio_sh: False
 learnable_factor: True # True only learned from merl data
