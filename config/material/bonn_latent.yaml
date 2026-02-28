@@ -5,7 +5,10 @@ latent_dim: 16
 predict_frame: True
 use_pos_enc: True
 different_decoder: False
+learnable_factor: False
 init_std: 0.1
+
+single_material_id: ${data.overfit_mat_id}
 
 # Decoder config (passed to BRDFDecoder)
 # decoder:

@@ -228,28 +228,28 @@
                 "CUDA_VISIBLE_DEVICES": "3"
             },
             "args": [
-                "dataset_folder=/media/raid/cloth/capture_data/Dataset_Nov11/242",
-                "data=real",
+                "dataset_folder=/media/raid/cloth/Bonn_val",
+                "data=bonn",
                 "renderer=multiarea_emitter",
-                "material=learnable_pbr_texture_model",
+                "material=bonn_latent",
                 "material.different_decoder=False",
-                "material.disney=True",
+                // "material.disney=True",
                 "material.decoder.use_skip_connection=True",
                 "material.learnable_factor=True",
-                "experiment_name=UV-visualize_Learnable-Disney-model_sigmoid_color_map_2",
+                "experiment_name=Stage-2_Bonn_debug",
                 "model.stage=2",
-                "model.test=True",
+                "model.test=False",
                 // "model.test_novel_view=False",
                 "material.latent_dim=16",
                 "material.decoder.degree=3",
-                "material.neural_geometry.factor=0.04",
+                // "material.neural_geometry.factor=0.04",
                 "model.freeze_decoder=False",
                 // "renderer.mesh.use_hemisphere=False",
-                "data.switch_iters=3000",
+                // "data.switch_iters=3000",
                 "data.debug=False",
-                "data.visualize_uv=True",
+                // "data.visualize_uv=True",
                 "data.valid_on_train_set=False",
-                "model.ckpt_path=/media/raid/cloth/output/BRDF/real/Theia-2_Stage-2_Disney_242_run_1/training/model_0.20_0.20/last.ckpt"
+                "model.ckpt_path=/media/raid/cloth/output/BRDF/bonn_Theia-2/Stage-1_Bonn_Observations-Subsample-0.05-Chunk-20-Decoder-lr-0.0003-Switch-2K-RGB-only_run_1/training/model_0.20_0.20/epoch_1099.ckpt"
             ]
         }
 

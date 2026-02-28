@@ -5,5 +5,5 @@ from .points import MultiMaterialPointDataset
 from .MERLInterface import MerlTorch
 from .real import RealNovelViewDataset
 from .merl import MERLBRDFIterableDataset, MERLBRDFIterableDataset_hd, MERLBRDFFixedDataset_hd,MERLBRDFFixedDataset
-from .bonn import BonnDataset, BonnValDataset
-__all__ = [RealImageDataset, RealValDataset, SphereIterableDataset, SphereTestDataset, SphereValDataset, SphereImageDataset, MultiMaterialPointDataset, MERLBRDFIterableDataset, MERLBRDFIterableDataset_hd, MERLBRDFFixedDataset_hd, MERLBRDFFixedDataset, MerlTorch, RealNovelViewDataset, BonnDataset, BonnValDataset]
+from .bonn import BonnDataset, BonnValDataset, BonnSingleMaterialDataset, BonnSingleMaterialValDataset
+__all__ = [RealImageDataset, RealValDataset, SphereIterableDataset, SphereTestDataset, SphereValDataset, SphereImageDataset, MultiMaterialPointDataset, MERLBRDFIterableDataset, MERLBRDFIterableDataset_hd, MERLBRDFFixedDataset_hd, MERLBRDFFixedDataset, MerlTorch, RealNovelViewDataset, BonnDataset, BonnValDataset, BonnSingleMaterialDataset, BonnSingleMaterialValDataset]

@@ -1918,18 +1918,39 @@ class BonnLatentBRDF(LightningModule):
         self.use_pos_enc = cfg.use_pos_enc
         self.different_decoder = cfg.different_decoder
 
-        print(f"Loading Bonn point metadata from {data_folder} ...")
-        self.metadata = self._load_point_metadata(data_folder)
+        self.learnable_factor = getattr(cfg, 'learnable_factor', False)
+        if self.learnable_factor:
+            self.factor = nn.Parameter(torch.tensor(1.0))
 
-        num_materials = self.metadata['num_materials']
-        total_points = self.metadata['total_points']
-        print(f"Loaded {num_materials} materials with {total_points:,} total points")
+        # Single-material mode: load only one material from the metadata
+        # file and use a dense (non-sparse) embedding for dense Adam.
+        self.single_material_id = getattr(cfg, 'single_material_id', None)
+        self.single_material = self.single_material_id is not None
 
-        self.point_latent_bank = nn.Embedding(
-            num_embeddings=total_points,
-            embedding_dim=self.total_latent_dim,
-            sparse=True,
-        )
+        if self.single_material:
+            total_points = self._load_single_material_num_points(
+                data_folder, self.single_material_id)
+            print(f"BonnLatentBRDF single-material mode: mat{self.single_material_id:04d}, "
+                  f"{total_points:,} points")
+            self.point_latent_bank = nn.Embedding(
+                num_embeddings=total_points,
+                embedding_dim=self.total_latent_dim,
+                sparse=False,
+            )
+        else:
+            print(f"Loading Bonn point metadata from {data_folder} ...")
+            self.metadata = self._load_point_metadata(data_folder)
+
+            num_materials = self.metadata['num_materials']
+            total_points = self.metadata['total_points']
+            print(f"Loaded {num_materials} materials with {total_points:,} total points")
+
+            self.point_latent_bank = nn.Embedding(
+                num_embeddings=total_points,
+                embedding_dim=self.total_latent_dim,
+                sparse=True,
+            )
+
         nn.init.normal_(self.point_latent_bank.weight, mean=0.0, std=cfg.init_std)
 
         if self.predict_frame:
@@ -2008,10 +2029,32 @@ class BonnLatentBRDF(LightningModule):
 
         return metadata
 
+    @staticmethod
+    def _load_single_material_num_points(data_folder, mat_id):
+        """Read ``num_points`` for *one* material from ``bonn_point_metadata.json``."""
+        import json
+        from pathlib import Path
+
+        meta_path = Path(data_folder) / "bonn_point_metadata.json"
+        if not meta_path.exists():
+            raise FileNotFoundError(
+                f"{meta_path} not found.  Run:\n"
+                f"  python scripts/generate_bonn_metadata.py {data_folder}")
+        with open(meta_path) as f:
+            raw = json.load(f)
+        key = str(mat_id)
+        if key not in raw:
+            raise KeyError(
+                f"Material {mat_id} not found in {meta_path}. "
+                f"Available: {sorted(raw.keys(), key=lambda k: int(k))}")
+        return raw[key]['num_points']
+
     # ------------------------------------------------------------------
     # Point-ID mapping
     # ------------------------------------------------------------------
     def get_global_point_id(self, material_id, local_point_id):
+        if self.single_material:
+            return local_point_id
         offsets = self.material_offset_tensor[material_id]
         return local_point_id + offsets
 
@@ -2109,6 +2152,9 @@ class BonnLatentBRDF(LightningModule):
             smooth_loss = ((brdf_pert - brdf) / eps).pow(2).mean()
         else:
             smooth_loss = torch.tensor(0.0, device=wi.device)
+
+        if self.learnable_factor:
+            brdf = brdf * self.factor
 
         pdf = NoL.clamp(min=0) / math.pi
         if torch.isnan(brdf).any():

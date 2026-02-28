@@ -11,7 +11,7 @@ from renderer import ForwardRenderer
 from trainers import get_trainer_class
 from model.brdf import SvPBRBRDF
 from torch.utils.data import DataLoader
-from utils.dataset import RealImageDataset, RealValDataset, MultiMaterialPointDataset, MERLBRDFIterableDataset,MERLBRDFIterableDataset_hd,MERLBRDFFixedDataset_hd,MERLBRDFFixedDataset, RealNovelViewDataset, BonnDataset, BonnValDataset
+from utils.dataset import RealImageDataset, RealValDataset, MultiMaterialPointDataset, MERLBRDFIterableDataset,MERLBRDFIterableDataset_hd,MERLBRDFFixedDataset_hd,MERLBRDFFixedDataset, RealNovelViewDataset, BonnDataset, BonnValDataset, BonnSingleMaterialDataset, BonnSingleMaterialValDataset
 import hydra
 from omegaconf import DictConfig
 from pytorch_lightning.strategies import DDPStrategy
@@ -78,7 +78,7 @@ def main(cfg):
             resume_ckpt_path = cfg.model.ckpt_path
         else:
             # Manual weight loading for transfer learning / partial loading
-            checkpoint = torch.load(cfg.model.ckpt_path, map_location='cuda' if torch.cuda.is_available() else 'cpu', weights_only=False)
+            checkpoint = torch.load(cfg.model.ckpt_path, map_location='cpu', weights_only=False)
             
             if stage == 2:
                 if cfg.model.test:
@@ -183,11 +183,19 @@ def main(cfg):
         else:
             val_dataset = MultiMaterialPointDataset(cfg, root_folder=cfg.dataset_folder, split="val")
     elif cfg.data.dataset_name == "bonn":
-        train_dataset = BonnDataset(cfg, root_folder=cfg.dataset_folder, split="train")
-        if cfg.data.debug & cfg.data.valid_on_train_set:
-            val_dataset = BonnValDataset(cfg, root_folder=cfg.dataset_folder)
+        if cfg.model.stage == 1:
+            train_dataset = BonnDataset(cfg, root_folder=cfg.dataset_folder, split="train")
+            if cfg.data.debug & cfg.data.valid_on_train_set:
+                val_dataset = BonnValDataset(cfg, root_folder=cfg.dataset_folder)
+            else:
+                val_dataset = BonnValDataset(cfg, root_folder=cfg.dataset_folder)
         else:
-            val_dataset = BonnValDataset(cfg, root_folder=cfg.dataset_folder)
+            train_dataset = BonnSingleMaterialDataset(cfg, root_folder=cfg.dataset_folder, split="train")
+            if cfg.data.debug & cfg.data.valid_on_train_set:
+                val_dataset = BonnSingleMaterialValDataset(cfg, root_folder=cfg.dataset_folder)
+            else:
+                val_dataset = BonnSingleMaterialValDataset(cfg, root_folder=cfg.dataset_folder)
+        
     else:
         raise ValueError(f"Invalid dataset name: {cfg.data.dataset_name}")
     if not cfg.model.test:
