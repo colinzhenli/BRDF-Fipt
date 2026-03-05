@@ -1,8 +1,8 @@
-import mitsuba as mi
+# import mitsuba as mi
 import os
 import numpy as np
 
-mi.set_variant("cuda_ad_rgb")  # 或 "scalar_rgb" / "llvm_ad_rgb"
+# mi.set_variant("cuda_ad_rgb")
 
 def load_uv_obj_to_mitsuba_scene(obj_path="mesh_test/cube_with_uv.obj"):
     """

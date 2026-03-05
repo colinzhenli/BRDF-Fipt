@@ -2,8 +2,8 @@ import torch
 import json
 from utils.path_tracing import path_tracing_envmap_emitter, batched_path_tracing_dynamic_emitter, batched_path_tracing_preset_emitter, batched_path_tracing_tbn_preset_emitter, batched_path_tracing_tbn_real_area_emitter, points_path_tracing_real_area_emitter
 from utils.scene_loader import load_uv_obj_to_mitsuba_scene, create_rectangle_scene, create_rectangle_scene_params, create_hemisphere_scene_params  
-from mitsuba import load_dict
-import mitsuba as mi
+# from mitsuba import load_dict
+# import mitsuba as mi
 from model.emitter import EnvMapEmitter, DynamicPointEmitter
 class ForwardRenderer:
     def __init__(self, cfg, material):

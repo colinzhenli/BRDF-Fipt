@@ -1,8 +1,8 @@
 import torch
 import torch.nn.functional as NF
 
-import mitsuba
-mitsuba.set_variant('cuda_ad_rgb')
+# import mitsuba
+# mitsuba.set_variant('cuda_ad_rgb')
 
 from .ops import *
 

@@ -32,9 +32,9 @@ val_materials: 2
 val_points: 500
 
 # Stage-2 single-material overfitting
-overfit_mat_id: 3          # material ID to overfit (used when stage=2)
+overfit_mat_id:           # material ID to overfit (used when stage=2)
 val_view_ratio: 0.2        # fraction of images held out for validation
 val_seed: 42               # fixed seed for reproducible train/val split
-valid_num: -1              # max val images (-1 = use all from val split)
+valid_num: 20              # max val images (-1 = use all from val split)
 learnable_factor: True     # per-material scalar factor (stage 2 only)
 
