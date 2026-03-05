@@ -52,6 +52,7 @@ class Stage1Trainer_Bonn(pl.LightningModule):
         self.cfg = cfg
         self.save_hyperparameters(cfg)
         self.automatic_optimization = False
+        self.more_visualizations = False
 
         self.material = material
         self.freeze_decoder = cfg.model.freeze_decoder
@@ -73,6 +74,7 @@ class Stage1Trainer_Bonn(pl.LightningModule):
         lr = self.hparams.model.optimizer.lr
         decoder_lr = getattr(self.hparams.model.optimizer, 'decoder_lr', lr)
         wd = self.hparams.model.optimizer.weight_decay
+        opt_name = getattr(self.hparams.model.optimizer, 'name', 'SparseAdam')
 
         embedding_params = list(self.material.point_latent_bank.parameters())
         decoder_params = [p for p in self.parameters()
@@ -83,17 +85,39 @@ class Stage1Trainer_Bonn(pl.LightningModule):
                 p.requires_grad = False
             print("Decoder frozen – optimising latent bank only.")
 
-        sparse_opt = torch.optim.SparseAdam(embedding_params, lr=lr)
-        dense_opt = torch.optim.Adam(
-            decoder_params, lr=decoder_lr, betas=(0.9, 0.999), weight_decay=wd,
-        ) if not self.freeze_decoder else None
+        if opt_name == 'SparseAdam':
+            latent_opt = torch.optim.SparseAdam(embedding_params, lr=lr)
+            dense_opt = torch.optim.Adam(
+                decoder_params, lr=decoder_lr, betas=(0.9, 0.999), weight_decay=wd,
+            ) if not self.freeze_decoder else None
+            
+            if dense_opt is not None:
+                print(f"Using SparseAdam (embedding lr={lr}) + Adam (decoder lr={decoder_lr})")
+                return [latent_opt, dense_opt]
+            else:
+                print(f"Using SparseAdam (embedding only), lr={lr}")
+                return latent_opt
 
-        if dense_opt is not None:
-            print(f"Using SparseAdam (embedding lr={lr}) + Adam (decoder lr={decoder_lr})")
-            return [sparse_opt, dense_opt]
+        elif opt_name == 'Adam':
+            # Better to explicitly create two groups
+            opt = torch.optim.Adam([
+                {'params': decoder_params, 'lr': decoder_lr},
+                {'params': embedding_params, 'lr': lr}
+            ], betas=(0.9, 0.999), weight_decay=wd)
+
+            print(f"Using Dense Adam (embedding lr={lr}, decoder lr={decoder_lr})")
+            return opt
+
+        elif opt_name == 'SGD':
+            opt = torch.optim.SGD([
+                {'params': decoder_params, 'lr': decoder_lr},
+                {'params': embedding_params, 'lr': lr}
+            ], momentum=0.0, weight_decay=wd)
+            print(f"Using SGD (embedding lr={lr}, decoder lr={decoder_lr})")
+            return opt
+        
         else:
-            print(f"Using SparseAdam (embedding only), lr={lr}")
-            return sparse_opt
+            raise ValueError(f"Unknown optimizer: {opt_name}")
 
     # ------------------------------------------------------------------
     # BRDF helpers
@@ -322,6 +346,23 @@ class Stage1Trainer_Bonn(pl.LightningModule):
                          f'pred_mat{mat_id:04d}_view{batch_idx}.png'),
             cv2.cvtColor(pred_png, cv2.COLOR_RGB2BGR))
 
+        # ---- save normal map once (normals are view-independent) ------------
+        if self.more_visualizations:
+            if batch_idx == 0:
+                with torch.no_grad():
+                    global_pids = self.material.get_global_point_id(material_ids, point_ids)
+                    latent      = self.material.point_latent_bank(global_pids)
+                    pred_normal, _ = self.material.extract_frame_from_latent(latent)  # (N, 3)
+
+                normal_img = pred_normal.reshape(H, W, 3)
+                # map [-1, 1] → [0, 255]
+                normal_png = ((normal_img.clamp(-1.0, 1.0) * 0.5 + 0.5) * 255).byte().cpu().numpy()
+                cv2.imwrite(
+                    os.path.join(output_dir, f'normal_mat{mat_id:04d}.png'),
+                    cv2.cvtColor(normal_png, cv2.COLOR_RGB2BGR))
+
+                self.visualize_brdf_lobe(output_dir=output_dir, num_latents=10, resolution=64)
+
         return loss
 
     # ------------------------------------------------------------------
@@ -336,6 +377,125 @@ class Stage1Trainer_Bonn(pl.LightningModule):
         high = 1.055 * x.pow(1.0 / 2.4) - 0.055
         x = torch.where(x <= 0.0031308, low, high).clamp(0.0, 1.0)
         return (x * 255).byte().cpu().numpy()
+
+    def visualize_brdf_lobe(self, output_dir, num_latents=10, resolution=64):
+        if not hasattr(self.material, 'decoder') or not hasattr(self.material, 'point_latent_bank'):
+            return
+
+        import matplotlib
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as plt
+
+        device = next(self.material.parameters()).device
+        latent_dim   = self.material.latent_dim
+        total_points = self.material.point_latent_bank.num_embeddings
+
+        torch.manual_seed(42)
+        point_indices = torch.randint(0, total_points, (num_latents,), device=device)
+
+        with torch.no_grad():
+            all_latents  = self.material.point_latent_bank(point_indices)  # [num_latents, total_latent_dim]
+        brdf_latents = all_latents[:, :latent_dim]  # [num_latents, latent_dim]
+
+        local_normal  = torch.tensor([[0.0, 0.0, 1.0]], device=device)
+        brdf_lobe_dir = os.path.join(output_dir, 'brdf_lobes')
+        os.makedirs(brdf_lobe_dir, exist_ok=True)
+
+        # ---- Visualization 1: Fix wi, vary wo --------------------------------
+        theta_i_values = [15.0, 30.0, 45.0, 60.0, 75.0]
+
+        for latent_idx in range(num_latents):
+            latent = brdf_latents[latent_idx:latent_idx + 1]
+            fig, ax = plt.subplots(figsize=(8, 8), subplot_kw={'projection': 'polar'})
+
+            for theta_i_deg in theta_i_values:
+                theta_i  = np.radians(theta_i_deg)
+                wi = torch.tensor([[np.sin(theta_i), 0.0, np.cos(theta_i)]],
+                                  device=device, dtype=torch.float32)
+
+                theta_o_range = np.linspace(-np.pi / 2, np.pi / 2, resolution * 2)
+                wo_batch = torch.zeros(len(theta_o_range), 3, device=device)
+                for j, theta_o in enumerate(theta_o_range):
+                    if theta_o >= 0:
+                        wo_batch[j, 0] = -np.sin(theta_o)
+                        wo_batch[j, 2] =  np.cos(theta_o)
+                    else:
+                        wo_batch[j, 0] =  np.sin(-theta_o)
+                        wo_batch[j, 2] =  np.cos(-theta_o)
+
+                wi_batch     = wi.expand(len(theta_o_range), -1)
+                normal_batch = local_normal.expand(len(theta_o_range), -1)
+                latent_batch = latent.expand(len(theta_o_range), -1)
+
+                enc_dir = self.material.decoder.encode_directions(wi_batch, wo_batch, normal_batch)
+                with torch.no_grad():
+                    brdf = self.material.decoder(enc_dir, latent_batch)
+
+                ax.plot(theta_o_range, brdf.mean(dim=-1).cpu().numpy(), label=f'θ_i={theta_i_deg}°')
+                ax.axvline(x=np.radians(theta_i_deg),
+                           color=ax.lines[-1].get_color(), linestyle='--', alpha=0.5)
+
+            ax.set_theta_zero_location('N')
+            ax.set_theta_direction(1)
+            ax.set_thetamin(-90)
+            ax.set_thetamax(90)
+            ax.legend(loc='upper right', bbox_to_anchor=(1.3, 1.0))
+            ax.set_title(f'BRDF Polar Plot (vary wo) - Point {point_indices[latent_idx].item()}\n'
+                         f'(Fixed wi, vary wo; 0°=normal, dashed=specular direction)')
+            plt.tight_layout()
+            plt.savefig(os.path.join(brdf_lobe_dir,
+                                     f'polar_brdf_vary_wo_pt_{point_indices[latent_idx].item()}.png'), dpi=150)
+            plt.close()
+
+        # ---- Visualization 2: Fix wo, vary wi  (BRDF × cos_theta_i) ----------
+        theta_o_values = [15.0, 30.0, 45.0, 60.0]
+
+        for latent_idx in range(num_latents):
+            latent = brdf_latents[latent_idx:latent_idx + 1]
+            fig, ax = plt.subplots(figsize=(8, 8), subplot_kw={'projection': 'polar'})
+
+            for theta_o_deg in theta_o_values:
+                theta_o = np.radians(theta_o_deg)
+                wo = torch.tensor([[np.sin(theta_o), 0.0, np.cos(theta_o)]],
+                                  device=device, dtype=torch.float32)
+
+                theta_i_range = np.linspace(-np.pi / 2 + 0.01, np.pi / 2 - 0.01, resolution * 2)
+                wi_batch = torch.zeros(len(theta_i_range), 3, device=device)
+                for j, theta_i in enumerate(theta_i_range):
+                    if theta_i >= 0:
+                        wi_batch[j, 0] = -np.sin(theta_i)
+                        wi_batch[j, 2] =  np.cos(theta_i)
+                    else:
+                        wi_batch[j, 0] =  np.sin(-theta_i)
+                        wi_batch[j, 2] =  np.cos(-theta_i)
+
+                wo_batch     = wo.expand(len(theta_i_range), -1)
+                normal_batch = local_normal.expand(len(theta_i_range), -1)
+                latent_batch = latent.expand(len(theta_i_range), -1)
+
+                enc_dir = self.material.decoder.encode_directions(wi_batch, wo_batch, normal_batch)
+                with torch.no_grad():
+                    brdf = self.material.decoder(enc_dir, latent_batch)
+
+                cos_theta_i = wi_batch[:, 2].clamp(min=0).cpu().numpy()
+                ax.plot(theta_i_range, brdf.mean(dim=-1).cpu().numpy() * cos_theta_i,
+                        label=f'θ_o={theta_o_deg}°')
+                ax.axvline(x=np.radians(theta_o_deg),
+                           color=ax.lines[-1].get_color(), linestyle='--', alpha=0.5)
+
+            ax.set_theta_zero_location('N')
+            ax.set_theta_direction(1)
+            ax.set_thetamin(-90)
+            ax.set_thetamax(90)
+            ax.legend(loc='upper right', bbox_to_anchor=(1.3, 1.0))
+            ax.set_title(f'BRDF × cos(θ_i) Polar Plot - Point {point_indices[latent_idx].item()}\n'
+                         f'(Fixed wo, vary wi; 0°=normal, dashed=specular direction)')
+            plt.tight_layout()
+            plt.savefig(os.path.join(brdf_lobe_dir,
+                                     f'polar_brdf_vary_wi_pt_{point_indices[latent_idx].item()}.png'), dpi=150)
+            plt.close()
+
+        print(f"[BRDF Lobe Visualization] Saved {num_latents * 2} figures to {brdf_lobe_dir}")
 
     def on_train_batch_start(self, batch, batch_idx):
         step = self.global_step

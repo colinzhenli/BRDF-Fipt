@@ -149,6 +149,21 @@ def main(cfg):
                 # Stage 1: Only load material parameters
                 model_dict = model.state_dict()
                 pretrained_dict = {k: v for k, v in checkpoint['state_dict'].items() if k in model_dict and k.startswith('material.')}
+
+                # Debug: inject latents for one hardcoded material only (offset-aware)
+                debug_load_material_id = 1
+                latent_bank_key = 'material.point_latent_bank.weight'
+                if cfg.data.debug and latent_bank_key in pretrained_dict:
+                    ckpt_latents = pretrained_dict.pop(latent_bank_key)   # [N_ckpt, D]
+                    if hasattr(model.material, 'material_offset_tensor'):
+                        offset = model.material.material_offset_tensor[debug_load_material_id].item()
+                    else:
+                        offset = 0  # single-material mode: no global offset
+                    n = ckpt_latents.shape[0]
+                    model_dict[latent_bank_key][offset:offset + n] = ckpt_latents
+                    print(f"[Debug] Injected latents for material {debug_load_material_id}: "
+                          f"ckpt rows 0:{n} → bank rows {offset}:{offset + n}")
+
                 model_dict.update(pretrained_dict)
                 model.load_state_dict(model_dict)
                 print(f"=> loaded material checkpoint successfully. {len(pretrained_dict)}/{len([k for k in model_dict if k.startswith('material.')])} material parameters loaded.")
