@@ -553,7 +553,8 @@ class BonnDataset(IterableDataset):
         if val_mode:
             selected = self.mat_ids[:min(self.val_materials, len(self.mat_ids))]
         elif self.debug:
-            selected = self.mat_ids[:self.debug_num]
+            n = min(self.chunk_size, len(self.mat_ids))
+            selected = random.sample(self.mat_ids, n)
         else:
             n = min(self.chunk_size, len(self.mat_ids))
             selected = random.sample(self.mat_ids, n)

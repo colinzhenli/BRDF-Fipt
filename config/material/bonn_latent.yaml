@@ -10,7 +10,7 @@ init_std: 0.1
 
 single_material_id: ${data.overfit_mat_id}
 optimizer:
-  name: "Adam"
+  name: ${model.optimizer.name}
 
 # Decoder config (passed to BRDFDecoder)
 # decoder:

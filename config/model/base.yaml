@@ -32,6 +32,7 @@ checkpoint_monitor:
 
 optimizer:
   name: Adam # SGD or Adam or SparseAdam
+  reset_latent_momentum_on_chunk_switch: True
   weight_decay: 0.0 # 0.001
   # lr: 0.001 
   lr: 0.001 # latent embedding learning rate

@@ -147,38 +147,40 @@
         //     ]
         // },
 
-        // {
-        //     "name": "Python: Auto-decoder Points",
-        //     "type": "python",
-        //     "request": "launch",
-        //     "program": "main.py",
-        //     "console": "integratedTerminal",
-        //     "justMyCode": true,
-        //     "env": {
-        //         "CUDA_VISIBLE_DEVICES": "2"
-        //     },
-        //     "args": [
-        //         "dataset_folder=/media/raid/cloth/Bonn_train",
-        //         "data=bonn",
-        //         "data.rays_num=65536",
-        //         "renderer=multiarea_emitter",
-        //         "material=bonn_latent",
-        //         "experiment_name=Correct-channel-order_1-materials_Bonn-latent_run_1",
-        //         "model.stage=1",
-        //         "model.test=False",
-        //         "model.trainer.limit_train_batches=512",
-        //         "model.loss.reg_loss.weight=0.0",
-        //         "material.decoder.smooth_reg=False",
-        //         "material.decoder.smooth_reg_eps=0.01",
-        //         "material.decoder.use_skip_connection=True",
-        //         "data.chunk_size=2",
-        //         "data.switch_iters=200000",
-        //         "data.debug_num=1",
-        //         // "data.rays_num=6553",
-        //         "data.filter_observations=False",
-        //         "data.debug=True",
-        //     ]
-        // }
+        {
+            "name": "Python: Auto-decoder Points",
+            "type": "python",
+            "request": "launch",
+            "program": "main.py",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "env": {
+                "CUDA_VISIBLE_DEVICES": "1"
+            },
+            "args": [
+                "dataset_folder=/media/raid/cloth/Bonn_train",
+                "data=bonn",
+                "data.rays_num=65536",
+                "renderer=multiarea_emitter",
+                "material=bonn_latent",
+                "experiment_name=Momentum-reset-debug",
+                "model.optimizer.name=SparseAdam",
+                "model.optimizer.reset_latent_momentum_on_chunk_switch=True",
+                "model.stage=1",
+                "model.test=False",
+                "model.trainer.limit_train_batches=512",
+                "model.loss.reg_loss.weight=0.0",
+                "material.decoder.smooth_reg=False",
+                "material.decoder.smooth_reg_eps=0.01",
+                "material.decoder.use_skip_connection=True",
+                "data.chunk_size=2",
+                "data.switch_iters=20",
+                "data.debug_num=5",
+                // "data.rays_num=6553",
+                "data.filter_observations=False",
+                "data.debug=True",
+            ]
+        }
 
 
         // {
@@ -217,41 +219,41 @@
         // }
 
 
-        {
-            "name": "Python: stage 2 pretrained 119",
-            "type": "python",
-            "request": "launch",
-            "program": "main.py",
-            "console": "integratedTerminal",
-            "justMyCode": true,
-            "env": {
-                "CUDA_VISIBLE_DEVICES": "3"
-            },
-            "args": [
-                "dataset_folder=/media/raid/cloth/Bonn_val",
-                "data=bonn",
-                "renderer=multiarea_emitter",
-                "material=bonn_latent",
-                "material.different_decoder=False",
-                // "material.disney=True",
-                "material.decoder.use_skip_connection=True",
-                "material.learnable_factor=True",
-                "experiment_name=Stage-2_Bonn_debug",
-                "model.stage=2",
-                "model.test=False",
-                // "model.test_novel_view=False",
-                "material.latent_dim=16",
-                "material.decoder.degree=3",
-                // "material.neural_geometry.factor=0.04",
-                "model.freeze_decoder=False",
-                // "renderer.mesh.use_hemisphere=False",
-                // "data.switch_iters=3000",
-                "data.debug=False",
-                // "data.visualize_uv=True",
-                "data.valid_on_train_set=False",
-                "model.ckpt_path=/media/raid/cloth/output/BRDF/bonn_Theia-2/Stage-1_Bonn_Observations-Subsample-0.05-Chunk-20-Decoder-lr-0.0003-Switch-2K-RGB-only_run_1/training/model_0.20_0.20/epoch_1099.ckpt"
-            ]
-        }
+        // {
+        //     "name": "Python: stage 2 pretrained 119",
+        //     "type": "python",
+        //     "request": "launch",
+        //     "program": "main.py",
+        //     "console": "integratedTerminal",
+        //     "justMyCode": true,
+        //     "env": {
+        //         "CUDA_VISIBLE_DEVICES": "3"
+        //     },
+        //     "args": [
+        //         "dataset_folder=/media/raid/cloth/Bonn_val",
+        //         "data=bonn",
+        //         "renderer=multiarea_emitter",
+        //         "material=bonn_latent",
+        //         "material.different_decoder=False",
+        //         // "material.disney=True",
+        //         "material.decoder.use_skip_connection=True",
+        //         "material.learnable_factor=True",
+        //         "experiment_name=Stage-2_Bonn_debug",
+        //         "model.stage=2",
+        //         "model.test=False",
+        //         // "model.test_novel_view=False",
+        //         "material.latent_dim=16",
+        //         "material.decoder.degree=3",
+        //         // "material.neural_geometry.factor=0.04",
+        //         "model.freeze_decoder=False",
+        //         // "renderer.mesh.use_hemisphere=False",
+        //         // "data.switch_iters=3000",
+        //         "data.debug=False",
+        //         // "data.visualize_uv=True",
+        //         "data.valid_on_train_set=False",
+        //         "model.ckpt_path=/media/raid/cloth/output/BRDF/bonn_Theia-2/Stage-1_Bonn_Observations-Subsample-0.05-Chunk-20-Decoder-lr-0.0003-Switch-2K-RGB-only_run_1/training/model_0.20_0.20/epoch_1099.ckpt"
+        //     ]
+        // }
 
         // {
         //     "name": "Python: Current File",

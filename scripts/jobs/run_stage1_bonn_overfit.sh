@@ -1,6 +1,6 @@
 #!/bin/bash
 
-export CUDA_VISIBLE_DEVICES=2
+export CUDA_VISIBLE_DEVICES=0
 
 python main.py \
     dataset_folder=/media/raid/cloth/Bonn_train \
@@ -10,11 +10,12 @@ python main.py \
     data.debug=True \
     data.debug_num=10 \
     data.rays_num=131072 \
-    data.pixel_subsample_ratio=1.0 \
+    data.subsample_ratio=1.0 \
     renderer=multiarea_emitter \
     material=bonn_latent \
-    experiment_name=Stage-1_Bonn_Overfit-10-materials-Decoder-lr-0.0001-All-pixels-no-switch-RGB-only_run_1 \
+    experiment_name=Stage-1_SparseAdam_Bonn_Overfit-10-materials-Decoder-lr-0.0001-All-pixels-no-switch-RGB-only_run_1 \
     model.optimizer.decoder_lr=0.0001 \
+    model.optimizer.name=SparseAdam \
     model.loss.recon_loss.name=l2 \
     model.loss.reg_loss.weight=0.0 \
     model.stage=1 \

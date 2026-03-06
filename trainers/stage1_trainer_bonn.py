@@ -63,6 +63,8 @@ class Stage1Trainer_Bonn(pl.LightningModule):
         self.lls_spp = getattr(cfg.model, 'lls_spp', 16)
         self.latent_reg_weight = getattr(cfg.model, 'latent_reg_weight', 1e-4)
         self.smooth_reg_weight = getattr(cfg.model, 'smooth_reg_weight', 1e-3)
+        self.reset_latent_momentum = getattr(cfg.model.optimizer, 'reset_latent_momentum_on_chunk_switch', False)
+        self._opt_name = getattr(cfg.model.optimizer, 'name', 'SparseAdam')
 
         # Approximate RGB→gray weights for panchromatic supervision
         self.register_buffer('pan_weights', torch.tensor([0.34, 0.36, 0.28]))
@@ -499,4 +501,19 @@ class Stage1Trainer_Bonn(pl.LightningModule):
 
     def on_train_batch_start(self, batch, batch_idx):
         step = self.global_step
-        self.trainer.train_dataloader.dataset.datasets.set_step(step)
+        dataset = self.trainer.train_dataloader.dataset.datasets
+
+        if self.reset_latent_momentum:
+            switch_iters = getattr(dataset, 'switch_iters', None)
+            if switch_iters and step > 0 and step % switch_iters == 0:
+                opt = self.optimizers()
+                if isinstance(opt, list):
+                    opt = opt[0]
+                embedding_params = list(self.material.point_latent_bank.parameters())
+                for p in embedding_params:
+                    if p in opt.state:
+                        opt.state[p]['exp_avg'].zero_()
+                        opt.state[p]['exp_avg_sq'].zero_()
+                print(f"[Step {step}] Reset latent momentum buffers (chunk switch).")
+
+        dataset.set_step(step)
