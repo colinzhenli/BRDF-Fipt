@@ -125,7 +125,7 @@ class Stage1Trainer(pl.LightningModule):
             optimizer = torch.optim.SGD(
                 params_to_optimize,
                 lr=self.hparams.model.optimizer.lr,
-                momentum=0.9,
+                momentum=0.0,
                 weight_decay=1e-4,
             )
             scheduler = pl_bolts.optimizers.LinearWarmupCosineAnnealingLR(

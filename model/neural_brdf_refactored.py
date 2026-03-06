@@ -438,7 +438,13 @@ class BRDFDecoder(nn.Module):
             self.skip_layer = num_hidden // 2
         
         # Output activation: LeakyReLU if configured, otherwise ReLU
-        output_activation = nn.LeakyReLU() if cfg.activation.lower() == "leakyrelu" else nn.ReLU()
+        act = cfg.activation.lower()
+        if act == "leakyrelu":
+            output_activation = nn.LeakyReLU()
+        elif act == "softplus":
+            output_activation = nn.Softplus()
+        else:
+            output_activation = nn.ReLU()
         
         # Build MLP(s)
         def build_mlp():
@@ -1927,6 +1933,9 @@ class BonnLatentBRDF(LightningModule):
         self.single_material_id = getattr(cfg, 'single_material_id', None)
         self.single_material = self.single_material_id is not None
 
+        self.optimizer_name = getattr(cfg, 'optimizer', {}).get('name', 'SparseAdam')
+        self.use_sparse_adam = (self.optimizer_name == 'SparseAdam')
+
         if self.single_material:
             total_points = self._load_single_material_num_points(
                 data_folder, self.single_material_id)
@@ -1944,11 +1953,15 @@ class BonnLatentBRDF(LightningModule):
             num_materials = self.metadata['num_materials']
             total_points = self.metadata['total_points']
             print(f"Loaded {num_materials} materials with {total_points:,} total points")
-
+            
+            is_sparse = self.use_sparse_adam
+            if not is_sparse:
+                print("Dense Adam or SGD selected. Setting point_latent_bank sparse=False.")
+            
             self.point_latent_bank = nn.Embedding(
                 num_embeddings=total_points,
                 embedding_dim=self.total_latent_dim,
-                sparse=True,
+                sparse=is_sparse,
             )
 
         nn.init.normal_(self.point_latent_bank.weight, mean=0.0, std=cfg.init_std)

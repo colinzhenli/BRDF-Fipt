@@ -14,9 +14,9 @@ python main.py \
     data.rays_num=131072 \
     renderer=multiarea_emitter \
     material=bonn_latent \
-    experiment_name=Stage-1_Fir_Softplus_Bonn_Observations_SparseAdam-Optimizer-Same-chunk-as-ours_RGB-only_run_1 \
+    experiment_name=Stage-1_Softplus_Fir_Bonn_Observations_Dense-Adam-Optimizer-Chunk-20-1K_RGB-only_run_1 \
     output_folder=/home/zla247/scratch/output/BRDF \
-    model.optimizer.name=SparseAdam \
+    model.optimizer.name=Adam \
     model.loss.recon_loss.name=l2 \
     model.loss.reg_loss.weight=0.0 \
     model.stage=1 \
@@ -29,7 +29,7 @@ python main.py \
     material.decoder.degree=3 \
     material.decoder.smooth_reg=False \
     material.different_decoder=False \
-    data.switch_iters=2000 \
+    data.switch_iters=1000 \
     data.chunk_size=20 \
     data.filter_observations=False \
     # model.ckpt_path=/media/raid/cloth/output/BRDF/points/Stage-1_ReLU_Overfit-Material-0_run_1/training/model_0.20_0.20/last.ckpt

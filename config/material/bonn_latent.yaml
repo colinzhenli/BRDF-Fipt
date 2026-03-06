@@ -9,6 +9,8 @@ learnable_factor: False
 init_std: 0.1
 
 single_material_id: ${data.overfit_mat_id}
+optimizer:
+  name: "Adam"
 
 # Decoder config (passed to BRDFDecoder)
 # decoder:
@@ -23,6 +25,6 @@ decoder:
   use_skip_connection: True
   skip_layer: 2
   hidden_layers: [256, 128, 128, 64, 32]
-  activation: "leakyrelu" # only for output layer
+  activation: "softplus" # only for output layer
   output_channels: 3
   degree: 5  # SH degree for positional encoding
