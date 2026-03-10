@@ -13,8 +13,9 @@ python main.py \
     data.subsample_ratio=1.0 \
     renderer=multiarea_emitter \
     material=bonn_latent \
-    experiment_name=Stage-1_SparseAdam_Bonn_Overfit-10-materials-Decoder-lr-0.0001-All-pixels-no-switch-RGB-only_run_1 \
-    model.optimizer.decoder_lr=0.0001 \
+    experiment_name=Stage-1_SparseAdam_Bonn_Overfit-10-materials-Decoder-lr-0.01-0.001-All-pixels-no-switch-RGB-only_run_1 \
+    model.optimizer.decoder_lr=0.001 \
+    model.optimizer.lr=0.01 \
     model.optimizer.name=SparseAdam \
     model.loss.recon_loss.name=l2 \
     model.loss.reg_loss.weight=0.0 \
