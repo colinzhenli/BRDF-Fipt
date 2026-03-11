@@ -2003,11 +2003,22 @@ class BonnLatentBRDF(LightningModule):
         with open(meta_path) as f:
             raw = json.load(f)
 
+        # In debug mode, only use the first debug_num materials
+        debug = getattr(self.cfg, 'debug', False)
+        debug_num = getattr(self.cfg, 'debug_num', 1)
+        debug_rotate = getattr(self.cfg, 'debug_rotate', False)
+        debug_swap_channels = getattr(self.cfg, 'debug_swap_channels', False)
+
+        sorted_keys = sorted(raw.keys(), key=lambda k: int(k))
+        if debug:
+            sorted_keys = sorted_keys[:debug_num]
+            print(f"[DEBUG] Using only {debug_num} material(s) for latent bank")
+
         materials = []
         material_point_offsets = {}
         global_offset = 0
 
-        for mat_id_str in sorted(raw.keys(), key=lambda k: int(k)):
+        for mat_id_str in sorted_keys:
             mat_id = int(mat_id_str)
             entry = raw[mat_id_str]
             num_points = entry['num_points']
@@ -2023,6 +2034,23 @@ class BonnLatentBRDF(LightningModule):
             material_point_offsets[mat_id] = global_offset
             global_offset += num_points
             print(f"  mat{mat_id:04d}: {entry['H']}x{entry['W']} = {num_points:,} points")
+
+        # Debug pair: add a synthetic second material with same num_points as the first
+        if (debug_rotate or debug_swap_channels) and materials:
+            first = materials[0]
+            fake_id = first['material_id'] + 1
+            num_points = first['num_points']
+            materials.append({
+                'material_id': fake_id,
+                'name': f'mat{fake_id:04d}',
+                'num_points': num_points,
+                'num_observations': 0,
+                'point_range': (global_offset, global_offset + num_points),
+                'folder': str(data_folder),
+            })
+            material_point_offsets[fake_id] = global_offset
+            global_offset += num_points
+            print(f"  mat{fake_id:04d} (debug copy): {num_points:,} points")
 
         if not materials:
             raise ValueError(f"No materials found in {meta_path}")

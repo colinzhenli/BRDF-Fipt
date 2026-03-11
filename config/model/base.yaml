@@ -35,7 +35,7 @@ optimizer:
   reset_latent_momentum_on_chunk_switch: False
   weight_decay: 0.0 # 0.001
   # lr: 0.001 
-  lr: 1e-4 # latent embedding learning rate
+  lr: 1e-3 # latent embedding learning rate
   decoder_lr: 1e-3 # decoder learning rate (lower to prevent chunk overfitting)
   inference_lr: 0.001
   inference_steps: 3400

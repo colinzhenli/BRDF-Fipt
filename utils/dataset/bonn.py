@@ -7,7 +7,7 @@ import scipy.io as spio
 from pathlib import Path
 from torch.utils.data import Dataset, IterableDataset
 from tqdm import tqdm
-import threading, queue, time
+import time
 from dataclasses import dataclass
 import random
 import pyexr
@@ -53,11 +53,13 @@ def _parse_poly_channels(channel_names):
 def _read_exr(filepath):
     """Read all channels from an EXR using pyexr.
 
-    Returns (data (H,W,C) float32, channel_names list, H, W).
+    Returns (data (H,W,C) float16, channel_names list, H, W).
+    The Bonn EXR files store data natively as half precision,
+    so we keep float16 to save memory.
     """
     exr = pyexr.open(str(filepath))
     ch_names = exr.channel_map['all']
-    data = exr.get(group='all', precision=pyexr.HALF).astype(np.float32)
+    data = exr.get(group='all', precision=pyexr.HALF)  # float16
     H, W = data.shape[:2]
     return data, ch_names, H, W
 
@@ -91,77 +93,14 @@ class BonnDataset(IterableDataset):
     # ------------------------------------------------------------------
     @dataclass
     class ChunkData:
-        """Per-material arrays loaded from EXR (no pixel×image expansion).
+        """All materials loaded into memory.
 
         Each entry in *materials* is a dict from ``_load_single_material``:
-        mat_id, n_pixels, n_images, xyz (H*W,3), point_ids (H*W,),
-        rgbs (K,V,3), light_pos (K,3), cam_pos (K,3), data_type (K,),
-        emitter_ids (K,), lls_corners (K,4,3).
+        mat_id, xyz (V,3), point_ids (V,),
+        rgbs (K,V,3) float16, light_pos (K,3), cam_pos (K,3).
         """
         materials: list            # list of per-material dicts
         total_obs: int             # sum(n_pixels * n_images) across materials
-
-    # ------------------------------------------------------------------
-    class _DoubleBuffer:
-        """Two RAM slots with a background thread that fills the inactive slot."""
-
-        def __init__(self, build_fn):
-            self.build_fn = build_fn
-            self.slots = [None, None]
-            self.ready = [threading.Event(), threading.Event()]
-            self.active = 0
-            self._stop = False
-            self._q: queue.Queue = queue.Queue(maxsize=2)
-            self._t = threading.Thread(target=self._worker, daemon=True)
-            self._t.start()
-
-        def _worker(self):
-            while not self._stop:
-                try:
-                    slot_id = self._q.get(timeout=0.1)
-                except queue.Empty:
-                    continue
-                self.slots[slot_id] = self.build_fn()
-                self.ready[slot_id].set()
-
-        def request_fill(self, slot_id):
-            self.ready[slot_id].clear()
-            try:
-                self._q.put_nowait(slot_id)
-            except queue.Full:
-                try:
-                    self._q.get_nowait()
-                except queue.Empty:
-                    pass
-                self._q.put_nowait(slot_id)
-
-        def wait_initial(self):
-            self.ready[self.active].wait()
-
-        def try_swap(self):
-            nxt = 1 - self.active
-            if self.ready[nxt].is_set():
-                old = self.active
-                self.active = nxt
-                self.ready[old].clear()
-                return old
-            return None
-
-        def force_swap(self):
-            nxt = 1 - self.active
-            self.ready[nxt].wait()
-            old = self.active
-            self.active = nxt
-            self.ready[old].clear()
-            return old
-
-        def current(self):
-            self.ready[self.active].wait()
-            return self.slots[self.active]
-
-        def stop(self):
-            self._stop = True
-            self._t.join(timeout=1.0)
 
     # ------------------------------------------------------------------
     # Construction
@@ -177,10 +116,10 @@ class BonnDataset(IterableDataset):
         self.points_per_material = getattr(cfg.data, 'points_per_material', 2000)
         self.random_observations = getattr(cfg.data, 'random_observations', False)
         self.subsample_ratio = getattr(cfg.data, 'subsample_ratio', 1.0)
-        self.switch_iters = getattr(cfg.data, 'switch_iters', 3000)
-        self.chunk_size = getattr(cfg.data, 'chunk_size', 20)
         self.val_materials = getattr(cfg.data, 'val_materials', 2)
         self.val_points = getattr(cfg.data, 'val_points', 500)
+        self.debug_rotate = getattr(cfg.data, 'debug_rotate', False)
+        self.debug_swap_channels = getattr(cfg.data, 'debug_swap_channels', False)
         self.step = 0
 
         # Approximate luminance weights for pan→scalar projection
@@ -190,7 +129,7 @@ class BonnDataset(IterableDataset):
         self.mat_ids = self._discover_materials()
         if self.debug:
             self.mat_ids = self.mat_ids[:self.debug_num]
-            print(f"[DEBUG] Using single material: mat{self.mat_ids[0]:04d}")
+            print(f"[DEBUG] Using {self.debug_num} material(s): {self.mat_ids}")
 
         print(f"\n{'='*60}")
         print(f"BonnDataset ({split})  |  materials={len(self.mat_ids)}")
@@ -201,18 +140,16 @@ class BonnDataset(IterableDataset):
         for mid in tqdm(self.mat_ids, desc="Loading calibrations"):
             self.calibrations[mid] = self._load_calibration(mid)
 
-        # Initialise for split
+        # Load ALL materials into memory (no chunk switching)
         if split == 'train':
-            print(f"Initialising double buffer (reload every {self.switch_iters} iters) ...")
-            self._dbuf = BonnDataset._DoubleBuffer(self._load_chunk)
-            self._dbuf.request_fill(0)
-            self._dbuf.request_fill(1)
-            self._dbuf.wait_initial()
-            print("Double buffer ready!")
+            print(f"Loading ALL {len(self.mat_ids)} materials into memory ...")
+            self._all_data = self._load_all_materials()
+            print(f"All data loaded: {self._all_data.total_obs:,} total observations "
+                  f"from {len(self._all_data.materials)} materials")
         else:
             print("Loading validation subset …")
-            self._val_data = self._load_chunk(val_mode=True)
-            print(f"Validation: {self._val_data.xyz.shape[0]:,} observations")
+            self._val_data = self._load_all_materials(val_mode=True)
+            print(f"Validation: {self._val_data.total_obs:,} observations")
 
         print(f"{'='*60}\n")
 
@@ -298,19 +235,13 @@ class BonnDataset(IterableDataset):
             assert (pH, pW) == (H, W)
 
             # ============================================================
-            # Assembly
+            # Assembly (poly only, no emitter_ids / lls / data_type)
             # ============================================================
-            rgbs_parts      = []
-            light_parts     = []
-            cam_parts       = []
-            dtype_parts     = []
-            eid_parts       = []
-            lls_corner_parts = []
-            eid = 0
+            rgbs_parts  = []
+            light_parts = []
+            cam_parts   = []
 
             # --- Poly (RGB) ---------------------------------------------
-            # pyexr gives (H, W, K*3) with every 3 channels = one image
-            # in alphabetical order (_B, _G, _R) = visual (R, G, B)
             poly_images = _parse_poly_channels(poly_ch_names)
             n_poly = len(poly_images)
             if n_poly > 0:
@@ -325,38 +256,25 @@ class BonnDataset(IterableDataset):
                 rgbs_parts.append(poly_rgbs)
                 light_parts.append(poly_light)
                 cam_parts.append(poly_cam)
-                dtype_parts.append(np.full(n_poly, DTYPE_POLY, dtype=np.int64))
-                eid_parts.append(np.arange(eid, eid + n_poly, dtype=np.int64))
-                lls_corner_parts.append(np.zeros((n_poly, 4, 3), dtype=np.float32))
-                eid += n_poly
             del poly_data
 
             # ---- concatenate across source types ------------------------
             if not rgbs_parts:
                 return None
 
-            all_rgbs       = np.concatenate(rgbs_parts, axis=0)
-            all_light_pos  = np.concatenate(light_parts, axis=0)
-            all_cam_pos    = np.concatenate(cam_parts, axis=0)
-            all_data_type  = np.concatenate(dtype_parts, axis=0)
-            all_emitter_id = np.concatenate(eid_parts, axis=0)
-            all_lls_corner = np.concatenate(lls_corner_parts, axis=0)
+            all_rgbs      = np.concatenate(rgbs_parts, axis=0)
+            all_light_pos = np.concatenate(light_parts, axis=0)
+            all_cam_pos   = np.concatenate(cam_parts, axis=0)
 
             np.clip(all_rgbs, 0, None, out=all_rgbs)
-            n_images = all_rgbs.shape[0]
 
             return {
-                'mat_id':      mat_id,
-                'n_pixels':    n_pixels,
-                'n_images':    n_images,
-                'xyz':         xyz_pts,           # (V', 3)  float32
-                'point_ids':   pids,              # (V',)    int64
-                'rgbs':        all_rgbs,          # (K, V', 3) float32
-                'light_pos':   all_light_pos,     # (K, 3)  float32
-                'cam_pos':     all_cam_pos,       # (K, 3)  float32
-                'data_type':   all_data_type,     # (K,)    int64
-                'emitter_ids': all_emitter_id,    # (K,)    int64
-                'lls_corners': all_lls_corner,    # (K, 4, 3) float32
+                'mat_id':    mat_id,
+                'xyz':       xyz_pts,         # (V, 3)   float32
+                'point_ids': pids,            # (V,)     int64
+                'rgbs':      all_rgbs,        # (K, V, 3) float16
+                'light_pos': all_light_pos,   # (K, 3)   float32
+                'cam_pos':   all_cam_pos,     # (K, 3)   float32
             }
 
         except Exception as exc:
@@ -365,36 +283,66 @@ class BonnDataset(IterableDataset):
             return None
 
     # ------------------------------------------------------------------
-    # Chunk builder (called from background thread or main thread)
+    # Debug helpers
     # ------------------------------------------------------------------
-    def _load_chunk(self, val_mode=False):
+    def _make_debug_pair(self, mat):
+        """Create a modified copy of *mat* as a synthetic second material.
+
+        - debug_rotate:        rotate light_pos and cam_pos 180° around Z.
+        - debug_swap_channels: swap R and G channels in rgbs.
+        """
+        import copy
+        mat2 = copy.deepcopy(mat)
+        mat2['mat_id'] = mat['mat_id'] + 1  # fake second ID
+
+        if self.debug_rotate:
+            # 180° rotation around Z: (x, y, z) -> (-x, -y, z)
+            mat2['light_pos'] = mat2['light_pos'].copy()
+            mat2['light_pos'][:, 0] *= -1
+            mat2['light_pos'][:, 1] *= -1
+            mat2['cam_pos'] = mat2['cam_pos'].copy()
+            mat2['cam_pos'][:, 0] *= -1
+            mat2['cam_pos'][:, 1] *= -1
+            print(f"[DEBUG] Created mat {mat2['mat_id']} by rotating light/cam 180° around Z")
+
+        if self.debug_swap_channels:
+            # Swap R (idx 0) and G (idx 1)
+            rgbs = mat2['rgbs'].copy()          # (K, V, 3) float16
+            rgbs[:, :, 0], rgbs[:, :, 1] = mat['rgbs'][:, :, 1].copy(), mat['rgbs'][:, :, 0].copy()
+            mat2['rgbs'] = rgbs
+            print(f"[DEBUG] Created mat {mat2['mat_id']} by swapping R/G channels")
+
+        return mat2
+
+    # ------------------------------------------------------------------
+    # Load all materials
+    # ------------------------------------------------------------------
+    def _load_all_materials(self, val_mode=False):
+        """Load all materials into memory at once (no chunking)."""
         if val_mode:
             selected = self.mat_ids[:min(self.val_materials, len(self.mat_ids))]
-        elif self.debug:
-            n = min(self.chunk_size, len(self.mat_ids))
-            selected = random.sample(self.mat_ids, n)
         else:
-            n = min(self.chunk_size, len(self.mat_ids))
-            selected = random.sample(self.mat_ids, n)
+            selected = self.mat_ids  # load ALL materials
 
         materials = []
         tag = 'val' if val_mode else 'train'
-        for mid in tqdm(selected, desc=f"Loading {tag} chunk"):
+        for mid in tqdm(selected, desc=f"Loading {tag} (all materials)"):
             result = self._load_single_material(mid)
             if result is not None:
                 materials.append(result)
 
+        # Debug pair: duplicate first material with modification
+        if (self.debug_rotate or self.debug_swap_channels) and materials:
+            mat2 = self._make_debug_pair(materials[0])
+            materials.append(mat2)
+
         if not materials:
             return BonnDataset.ChunkData(materials=[], total_obs=0)
 
-        is_flat = materials[0].get('flat', False)
-        if is_flat:
-            total_obs = sum(m['n_rays'] for m in materials)
-        else:
-            total_obs = sum(m['n_pixels'] * m['n_images'] for m in materials)
+        total_obs = sum(m['rgbs'].shape[0] * m['rgbs'].shape[1] for m in materials)
         total_rgb_mb = sum(m['rgbs'].nbytes for m in materials) / 1e6
 
-        print(f"[{tag}] Chunk built: {total_obs:,} observations "
+        print(f"[{tag}] All data loaded: {total_obs:,} observations "
               f"from {len(materials)} materials  "
               f"(rgbs {total_rgb_mb:.0f} MB)")
 
@@ -404,11 +352,8 @@ class BonnDataset(IterableDataset):
     # Training-loop interface
     # ------------------------------------------------------------------
     def set_step(self, step: int):
+        """No-op: chunk switching is disabled, all data is in memory."""
         self.step = step
-        if hasattr(self, '_dbuf') and step > 0 and step % self.switch_iters == 0:
-            old_slot = self._dbuf.force_swap()
-            print(f"[Step {step}] Forced switch to slot {self._dbuf.active}")
-            self._dbuf.request_fill(old_slot)
 
     def __len__(self):
         if hasattr(self, '_val_data'):
@@ -419,20 +364,14 @@ class BonnDataset(IterableDataset):
     def _sample_batch(self, chunk, n_rays):
         """Randomly sample n_rays from chunk.
 
-        Two modes depending on the chunk format:
-        - flat (random_observations): each material stores (M, ...) rays;
-          draw random indices from the flat ray pool.
-        - per-pixel (original): each material stores (K, V, 3) rgbs;
-          draw random (img, pixel) pairs.
+        Rays are distributed across materials proportionally to their
+        observation count (n_images * n_pixels), then random (img, pixel)
+        pairs are drawn within each material.
         """
         materials = chunk.materials
-        return self._sample_batch_perpixel(materials, n_rays)
-
-
-    def _sample_batch_perpixel(self, materials, n_rays):
-        """Sample by drawing random (img, pixel) pairs per material."""
         obs_counts = np.array(
-            [m['n_pixels'] * m['n_images'] for m in materials], dtype=np.float64)
+            [m['rgbs'].shape[0] * m['rgbs'].shape[1] for m in materials],
+            dtype=np.float64)
         weights = obs_counts / obs_counts.sum()
         rays_per_mat = np.round(weights * n_rays).astype(int)
         rays_per_mat[-1] = n_rays - rays_per_mat[:-1].sum()
@@ -441,9 +380,6 @@ class BonnDataset(IterableDataset):
         parts_rgbs  = []
         parts_pids  = []
         parts_mids  = []
-        parts_dtype = []
-        parts_eids  = []
-        parts_lls   = []
         parts_light = []
         parts_cam   = []
 
@@ -452,29 +388,16 @@ class BonnDataset(IterableDataset):
             if n <= 0:
                 continue
 
-            # # --- debug: save all images for this material ---
-            # _dbg_dir = f"/media/raid/cloth/output/BRDF/visualizations_debug/mat{mat['mat_id']:04d}"
-            # os.makedirs(_dbg_dir, exist_ok=True)
-            # _H = _W = int(np.sqrt(mat['n_pixels']))
-            # _, _cam_ids = np.unique(mat['cam_pos'], axis=0, return_inverse=True)
-            # for _i in range(mat['n_images']):
-            #     _rgb = mat['rgbs'][_i].reshape(_H, _W, 3)
-            #     _rgb_uint8 = (np.clip(_rgb, 0, 1) * 255).astype(np.uint8)
-            #     _light_id = mat['emitter_ids'][_i]
-            #     _cam_id = _cam_ids[_i]
-            #     imageio.imwrite(os.path.join(_dbg_dir, f"img_{_i:03d}_cam{_cam_id:02d}_light{_light_id:02d}.png"), _rgb_uint8)
-            # --- end debug ---
+            n_images = mat['rgbs'].shape[0]
+            n_pixels = mat['rgbs'].shape[1]
 
-            img_i = np.random.randint(0, mat['n_images'], n)
-            pix_i = np.random.randint(0, mat['n_pixels'], n)
+            img_i = np.random.randint(0, n_images, n)
+            pix_i = np.random.randint(0, n_pixels, n)
 
             parts_xyz.append(mat['xyz'][pix_i])
-            parts_rgbs.append(mat['rgbs'][img_i, pix_i])
+            parts_rgbs.append(mat['rgbs'][img_i, pix_i].astype(np.float32))
             parts_pids.append(mat['point_ids'][pix_i])
             parts_mids.append(np.full(n, mat['mat_id'], dtype=np.int64))
-            parts_dtype.append(mat['data_type'][img_i])
-            parts_eids.append(mat['emitter_ids'][img_i])
-            parts_lls.append(mat['lls_corners'][img_i])
             parts_light.append(mat['light_pos'][img_i])
             parts_cam.append(mat['cam_pos'][img_i])
 
@@ -488,26 +411,30 @@ class BonnDataset(IterableDataset):
         wo = cam - xyz
         wo /= np.maximum(np.linalg.norm(wo, axis=1, keepdims=True), 1e-8)
 
+        # Shuffle so rays from different materials are interleaved
+        pids = np.concatenate(parts_pids)
+        mids = np.concatenate(parts_mids)
+        perm = np.random.permutation(n_rays)
+        xyz, wi, wo, rgbs, pids, mids = \
+            xyz[perm], wi[perm], wo[perm], rgbs[perm], pids[perm], mids[perm]
+
         return {
             'xyz':          torch.from_numpy(xyz).float(),
             'wi':           torch.from_numpy(wi).float(),
             'wo':           torch.from_numpy(wo).float(),
             'rgbs':         torch.from_numpy(rgbs).float(),
-            'point_ids':    torch.from_numpy(np.concatenate(parts_pids)).long(),
-            'material_ids': torch.from_numpy(np.concatenate(parts_mids)).long(),
-            'emitter_ids':  torch.from_numpy(np.concatenate(parts_eids)).long(),
-            'data_type':    torch.from_numpy(np.concatenate(parts_dtype)).long(),
-            'lls_corners':  torch.from_numpy(np.concatenate(parts_lls)).float(),
+            'point_ids':    torch.from_numpy(pids).long(),
+            'material_ids': torch.from_numpy(mids).long(),
             'confidence':   torch.ones(n_rays, dtype=torch.float32),
             'gt_params':    torch.zeros(1),
         }
 
     # ------------------------------------------------------------------
     def __iter__(self):
-        # ----- training (infinite, double-buffered) -----
-        if hasattr(self, '_dbuf'):
+        # ----- training (infinite, all data in memory) -----
+        if hasattr(self, '_all_data'):
             while True:
-                chunk = self._dbuf.current()
+                chunk = self._all_data
                 if chunk is None or chunk.total_obs == 0:
                     time.sleep(0.01)
                     continue

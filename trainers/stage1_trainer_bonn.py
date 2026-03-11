@@ -220,72 +220,24 @@ class Stage1Trainer_Bonn(pl.LightningModule):
         rgbs_gt      = batch['rgbs'].squeeze(0)
         point_ids    = batch['point_ids'].squeeze(0)
         material_ids = batch['material_ids'].squeeze(0)
-        data_type    = batch['data_type'].squeeze(0)
-        lls_corners  = batch['lls_corners'].squeeze(0)
         confidence   = batch['confidence'].squeeze(0)
 
-        poly_mask = data_type == DTYPE_POLY
-        pan_mask  = data_type == DTYPE_PAN
-        lls_mask  = data_type == DTYPE_LLS
+        # All rays are polychromatic (RGB) — no pan/lls branching
+        brdf, _, smooth_loss = self._eval_brdf(
+            xyz, wi, wo, point_ids, material_ids)
+        recon_loss = self._compute_loss(brdf, rgbs_gt, confidence)
+        total_loss = recon_loss + self.smooth_reg_weight * smooth_loss
 
-        total_loss   = torch.tensor(0.0, device=xyz.device)
-        smooth_total = torch.tensor(0.0, device=xyz.device)
-        poly_pred    = None
-
-        log_vals = {}
-
-        # --- polychromatic (RGB) loss ---
-        if poly_mask.any():
-            brdf, _, sm = self._eval_brdf(
-                xyz[poly_mask], wi[poly_mask], wo[poly_mask],
-                point_ids[poly_mask], material_ids[poly_mask])
-            total_loss = total_loss + self._compute_loss(brdf, rgbs_gt[poly_mask],
-                                                         confidence[poly_mask])
-            smooth_total = smooth_total + sm
-            poly_pred = brdf
-            log_vals['train/poly_pred_mean'] = brdf.mean()
-            log_vals['train/poly_gt_mean']   = rgbs_gt[poly_mask].mean()
-
-        # --- panchromatic (grayscale) loss ---
-        if pan_mask.any():
-            brdf_pan, _, sm = self._eval_brdf(
-                xyz[pan_mask], wi[pan_mask], wo[pan_mask],
-                point_ids[pan_mask], material_ids[pan_mask])
-            pred_gray = (brdf_pan * self.pan_weights).sum(-1, keepdim=True)
-            gt_gray   = rgbs_gt[pan_mask][:, :1]
-            total_loss = total_loss + self.pan_loss_weight * self._compute_loss(
-                pred_gray, gt_gray, confidence[pan_mask])
-            smooth_total = smooth_total + sm
-            log_vals['train/pan_pred_mean'] = pred_gray.mean()
-            log_vals['train/pan_gt_mean']   = gt_gray.mean()
-
-        # --- LLS (Monte-Carlo) loss ---
-        if lls_mask.any():
-            lls_pred = self._lls_monte_carlo(
-                xyz[lls_mask], wo[lls_mask], lls_corners[lls_mask],
-                point_ids[lls_mask], material_ids[lls_mask], self.lls_spp)
-            pred_gray = (lls_pred * self.pan_weights).sum(-1, keepdim=True)
-            gt_gray   = rgbs_gt[lls_mask][:, :1]
-            total_loss = total_loss + self.lls_loss_weight * self._compute_loss(
-                pred_gray, gt_gray, confidence[lls_mask])
-            log_vals['train/lls_pred_mean'] = pred_gray.mean()
-            log_vals['train/lls_gt_mean']   = gt_gray.mean()
-
-        # Smoothness regularisation (from poly branch only to avoid double-counting)
-        total_loss = total_loss + self.smooth_reg_weight * smooth_total
-
-        # PSNR — computed on poly RGB only
-        psnr = torch.tensor(0.0, device=xyz.device)
-        if poly_pred is not None and poly_pred.numel() > 0:
-            gt_poly = rgbs_gt[poly_mask]
-            mse = NF.mse_loss(poly_pred, gt_poly)
-            max_val = gt_poly.max().clamp_min(1e-8)
-            psnr = 10.0 * torch.log10(max_val ** 2 / mse.clamp_min(1e-8))
+        # PSNR
+        mse = NF.mse_loss(brdf, rgbs_gt)
+        max_val = rgbs_gt.max().clamp_min(1e-8)
+        psnr = 10.0 * torch.log10(max_val ** 2 / mse.clamp_min(1e-8))
 
         self.log_dict({
             'train/total_loss': total_loss,
             'train/psnr':       psnr,
-            **log_vals,
+            'train/poly_pred_mean': brdf.mean(),
+            'train/poly_gt_mean':   rgbs_gt.mean(),
         }, prog_bar=True, batch_size=xyz.shape[0])
 
         opts = self.optimizers()
@@ -517,18 +469,4 @@ class Stage1Trainer_Bonn(pl.LightningModule):
     def on_train_batch_start(self, batch, batch_idx):
         step = self.global_step
         dataset = self.trainer.train_dataloader.dataset.datasets
-
-        if self.reset_latent_momentum:
-            switch_iters = getattr(dataset, 'switch_iters', None)
-            if switch_iters and step > 0 and step % switch_iters == 0:
-                opt = self.optimizers()
-                if isinstance(opt, list):
-                    opt = opt[0]
-                embedding_params = list(self.material.point_latent_bank.parameters())
-                for p in embedding_params:
-                    if p in opt.state:
-                        opt.state[p]['exp_avg'].zero_()
-                        opt.state[p]['exp_avg_sq'].zero_()
-                print(f"[Step {step}] Reset latent momentum buffers (chunk switch).")
-
         dataset.set_step(step)

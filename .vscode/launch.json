@@ -1,6 +1,3 @@
-
-
-
 {
     // Use IntelliSense to learn about possible attributes.
     // Hover to view descriptions of existing attributes.
@@ -23,7 +20,6 @@
         //         "shape_matching.z_outlier_percentile=0.0"
         //     ]
         // },
-
         // {
         //     "name": "Python: Shape Matching",
         //     "type": "python",
@@ -38,7 +34,6 @@
         //         "shape_matching.folder_path=/media/raid/cloth/capture_data/Dataset_Nov11/2_1"
         //     ]
         // },
-
         // {
         //     "name": "Python: Job Scheduler (Streaming Auto-Detect)",
         //     "type": "python",
@@ -67,7 +62,6 @@
         //     "args": [
         //         ]
         // },
-
         // {
         //     "name": "2DGS Train",
         //     "type": "python",66
@@ -86,7 +80,6 @@
         //         // "TAG_SIZE_MM=10"
         //     ]
         // },
-
         // {
         //     "name": "Python: Auto-decoder Points",
         //     "type": "python",
@@ -146,7 +139,6 @@
         //         "data.filter_observations=False"
         //     ]
         // },
-
         {
             "name": "Python: Auto-decoder Points",
             "type": "python",
@@ -155,17 +147,15 @@
             "console": "integratedTerminal",
             "justMyCode": true,
             "env": {
-                "CUDA_VISIBLE_DEVICES": "0"
+                "CUDA_VISIBLE_DEVICES": "1"
             },
             "args": [
                 "dataset_folder=/media/raid/cloth/Bonn_train",
                 "data=bonn",
                 "data.rays_num=65536",
-                "data.random_observations=True",
-                "data.subsample_ratio=1.0",
                 "renderer=multiarea_emitter",
                 "material=bonn_latent",
-                "experiment_name=Mean-value_track_lr-1e-4-1e-3_LeakyReLU_l2_run_1",
+                "experiment_name=No-chunk-switch_Overfit-1_Rotate-to-2_run_1",
                 "model.optimizer.name=SparseAdam",
                 "model.optimizer.reset_latent_momentum_on_chunk_switch=False",
                 "model.stage=1",
@@ -176,16 +166,12 @@
                 "material.decoder.smooth_reg=False",
                 "material.decoder.smooth_reg_eps=0.01",
                 "material.decoder.use_skip_connection=True",
-                "data.chunk_size=1",
-                "data.switch_iters=20000",
                 "data.debug_num=1",
                 // "data.rays_num=6553",
                 "data.filter_observations=False",
                 "data.debug=True",
             ]
         }
-
-
         // {
         //     "name": "Python: stage 2 pretrained 119",
         //     "type": "python",
@@ -220,8 +206,6 @@
         //         "model.ckpt_path=/media/raid/cloth/output/BRDF/real/Theia-1_Stage-2_Train-on-all-data_Correct-4000K-light_Optimize-different-decoder_From-Real_Latent-dim-16_Degree-5_Fixed-Val-227_run_1/training/model_0.20_0.20/last.ckpt"
         //     ]
         // }
-
-
         // {
         //     "name": "Python: stage 2 pretrained 119",
         //     "type": "python",
@@ -257,7 +241,6 @@
         //         "model.ckpt_path=/media/raid/cloth/output/BRDF/bonn_Theia-2/Stage-1_Bonn_Observations-Subsample-0.05-Chunk-20-Decoder-lr-0.0003-Switch-2K-RGB-only_run_1/training/model_0.20_0.20/epoch_1099.ckpt"
         //     ]
         // }
-
         // {
         //     "name": "Python: Current File",
         //     "type": "python",
@@ -280,7 +263,6 @@
         //         // "model.ckpt_path=/media/raid/cloth/output/BRDF/real/All-images_Correct-height_capture_Camera-factor_Chunk-200-3000_run_1/training/model_0.20_0.20/last.ckpt"
         //     ]
         // }
-
         // {
         //     "name": "Debug Color Matrix",
         //     "type": "python",
@@ -299,8 +281,6 @@
         //         "--illuminant_xy", "0.3818", "0.3797"
         //     ]
         // },
-
-        
         // {
         //     "name": "Python: Current File",
         //     "type": "python",
@@ -314,44 +294,41 @@
         //     "args": [
         //     ]
         // }
-
-    // {
-    //     "name": "Debug Background Mask Multi Thread",
-    //     "type": "python",
-    //     "request": "launch",
-    //     "program": "./recon/preprocess/background_mask_multi_thread.py",
-    //     "console": "integratedTerminal",
-    //     "justMyCode": true,
-    //     "env": {
-    //         "CUDA_VISIBLE_DEVICES": "0"
-    //     },
-    //     "args": [
-    //     ]
-    // },
-
-    // {
-    //     "name": "Debug Debayering Multi Thread",
-    //     "type": "python",
-    //     "request": "launch",
-    //     "program": "./recon/preprocess/debayering_mutli_thread.py",
-    //     "console": "integratedTerminal",
-    //     "justMyCode": true,
-    //     "env": {
-    //         "CUDA_VISIBLE_DEVICES": "0"
-    //     },
-    //     "args": [
-    //         "--input",
-    //         "/media/raid/cloth/No_cable_capture_Sep22/Axis_estimation_Sep22/masks/masked_images",
-    //         "--output",
-    //         "/media/raid/cloth/No_cable_capture_Sep22/Axis_estimation_Sep22/masks/masked_images_debayered",
-    //         "--pattern",
-    //         "RGGB",
-    //         "--jobs",
-    //         "16",
-    //         "--format",
-    //         "png"
-    //     ]
-    // },
+        // {
+        //     "name": "Debug Background Mask Multi Thread",
+        //     "type": "python",
+        //     "request": "launch",
+        //     "program": "./recon/preprocess/background_mask_multi_thread.py",
+        //     "console": "integratedTerminal",
+        //     "justMyCode": true,
+        //     "env": {
+        //         "CUDA_VISIBLE_DEVICES": "0"
+        //     },
+        //     "args": [
+        //     ]
+        // },
+        // {
+        //     "name": "Debug Debayering Multi Thread",
+        //     "type": "python",
+        //     "request": "launch",
+        //     "program": "./recon/preprocess/debayering_mutli_thread.py",
+        //     "console": "integratedTerminal",
+        //     "justMyCode": true,
+        //     "env": {
+        //         "CUDA_VISIBLE_DEVICES": "0"
+        //     },
+        //     "args": [
+        //         "--input",
+        //         "/media/raid/cloth/No_cable_capture_Sep22/Axis_estimation_Sep22/masks/masked_images",
+        //         "--output",
+        //         "/media/raid/cloth/No_cable_capture_Sep22/Axis_estimation_Sep22/masks/masked_images_debayered",
+        //         "--pattern",
+        //         "RGGB",
+        //         "--jobs",
+        //         "16",
+        //         "--format",
+        //         "png"
+        //     ]
+        // },
     ]
-
 }
