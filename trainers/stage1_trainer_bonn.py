@@ -232,6 +232,8 @@ class Stage1Trainer_Bonn(pl.LightningModule):
         smooth_total = torch.tensor(0.0, device=xyz.device)
         poly_pred    = None
 
+        log_vals = {}
+
         # --- polychromatic (RGB) loss ---
         if poly_mask.any():
             brdf, _, sm = self._eval_brdf(
@@ -241,6 +243,8 @@ class Stage1Trainer_Bonn(pl.LightningModule):
                                                          confidence[poly_mask])
             smooth_total = smooth_total + sm
             poly_pred = brdf
+            log_vals['train/poly_pred_mean'] = brdf.mean()
+            log_vals['train/poly_gt_mean']   = rgbs_gt[poly_mask].mean()
 
         # --- panchromatic (grayscale) loss ---
         if pan_mask.any():
@@ -252,6 +256,8 @@ class Stage1Trainer_Bonn(pl.LightningModule):
             total_loss = total_loss + self.pan_loss_weight * self._compute_loss(
                 pred_gray, gt_gray, confidence[pan_mask])
             smooth_total = smooth_total + sm
+            log_vals['train/pan_pred_mean'] = pred_gray.mean()
+            log_vals['train/pan_gt_mean']   = gt_gray.mean()
 
         # --- LLS (Monte-Carlo) loss ---
         if lls_mask.any():
@@ -262,6 +268,8 @@ class Stage1Trainer_Bonn(pl.LightningModule):
             gt_gray   = rgbs_gt[lls_mask][:, :1]
             total_loss = total_loss + self.lls_loss_weight * self._compute_loss(
                 pred_gray, gt_gray, confidence[lls_mask])
+            log_vals['train/lls_pred_mean'] = pred_gray.mean()
+            log_vals['train/lls_gt_mean']   = gt_gray.mean()
 
         # Smoothness regularisation (from poly branch only to avoid double-counting)
         total_loss = total_loss + self.smooth_reg_weight * smooth_total
@@ -277,6 +285,7 @@ class Stage1Trainer_Bonn(pl.LightningModule):
         self.log_dict({
             'train/total_loss': total_loss,
             'train/psnr':       psnr,
+            **log_vals,
         }, prog_bar=True, batch_size=xyz.shape[0])
 
         opts = self.optimizers()
@@ -285,6 +294,12 @@ class Stage1Trainer_Bonn(pl.LightningModule):
         for opt in opts:
             opt.zero_grad()
         self.manual_backward(total_loss)
+        grad_norm = torch.zeros(1, device=xyz.device)
+        for p in self.parameters():
+            if p.grad is not None:
+                grad_norm += p.grad.detach().norm(2).pow(2)
+        grad_norm = grad_norm.sqrt()
+        self.log('train/grad_norm_2', grad_norm, prog_bar=False, batch_size=xyz.shape[0])
         for opt in opts:
             opt.step()
 

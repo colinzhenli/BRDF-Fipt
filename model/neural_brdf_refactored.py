@@ -454,7 +454,7 @@ class BRDFDecoder(nn.Module):
                 prev_dim = input_dim
                 for hidden_dim in cfg.hidden_layers:
                     layers.append(nn.Linear(prev_dim, hidden_dim))
-                    layers.append(nn.ReLU())
+                    layers.append(nn.LeakyReLU())
                     prev_dim = hidden_dim
                 
                 layers.append(nn.Linear(prev_dim, cfg.output_channels))
@@ -477,7 +477,7 @@ class BRDFDecoder(nn.Module):
         
         # Store activation for skip connection forward pass
         if self.use_skip_connection:
-            self.activation = nn.ReLU()
+            self.activation = nn.LeakyReLU()
             self.output_activation = output_activation
         
         if different_decoder:
