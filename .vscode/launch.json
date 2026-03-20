@@ -155,23 +155,41 @@
                 "data.rays_num=65536",
                 "renderer=multiarea_emitter",
                 "material=bonn_latent",
-                "experiment_name=No-chunk-switch_Overfit-1_Rotate-to-2_run_1",
+                "experiment_name=Overfit_2_Correct-mask_1",
                 "model.optimizer.name=SparseAdam",
                 "model.optimizer.reset_latent_momentum_on_chunk_switch=False",
                 "model.stage=1",
                 "model.test=False",
                 "model.loss.recon_loss.name=l2",
                 "model.trainer.limit_train_batches=512",
-                "model.loss.reg_loss.weight=0.0",
+                "model.trainer.enable_checkpointing=False",
+                "model.loss.reg_loss.weight=0.",
                 "material.decoder.smooth_reg=False",
                 "material.decoder.smooth_reg_eps=0.01",
                 "material.decoder.use_skip_connection=True",
-                "data.debug_num=1",
-                // "data.rays_num=6553",
+                "data.debug_num=2",
+                "data.debug_rotate=False",
+                "data.debug_swap_channels=False",
                 "data.filter_observations=False",
                 "data.debug=True",
+                // "model.ckpt_path=/media/raid/cloth/output/BRDF/Bonn-Theia2/Stage-1_Softplus_SparseAdam_Theia-2_decoder-lr-1e-4_Overfit-100_No-Chunk-All-RGB-data_run_1/training/model_0.20_0.20/last.ckpt"
             ]
         }
+
+        // {
+        //     "name": "Python: Auto-decoder Points",
+        //     "type": "python",
+        //     "request": "launch",
+        //     "program": "scripts/visualize_brdf_lobes_bonn.py",
+        //     "console": "integratedTerminal",
+        //     "justMyCode": true,
+        //     "env": {
+        //         "CUDA_VISIBLE_DEVICES": "0"
+        //     },
+        //     "args": [
+        //     ]
+        // }
+
         // {
         //     "name": "Python: stage 2 pretrained 119",
         //     "type": "python",

@@ -24,11 +24,12 @@ use_pan: False
 use_lls: False
 debug: True
 debug_num: 1
-debug_rotate: True
+debug_rotate: False
 debug_swap_channels: False
 points_per_material: 2000
 random_observations: True  # True: subsample rays from K*V pool; False: subsample pixels (keep all K images)
 subsample_ratio: 0.05     # fraction of rays (random_observations=True) or pixels (False) to keep per material
+random_sample_material_number:   # if set, randomly pick this many materials per batch before sampling rays
 switch_iters: 1000 # Used to test override
 chunk_size: 20
 val_materials: 2
@@ -38,6 +39,6 @@ val_points: 500
 overfit_mat_id:           # material ID to overfit (used when stage=2)
 val_view_ratio: 0.2        # fraction of images held out for validation
 val_seed: 42               # fixed seed for reproducible train/val split
-valid_num: 20              # max val images (-1 = use all from val split)
-learnable_factor: True     # per-material scalar factor (stage 2 only)
+valid_num: 10              # max val images (-1 = use all from val split)
+learnable_factor: False     # per-material scalar factor (stage 2 only)
 

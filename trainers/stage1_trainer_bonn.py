@@ -228,9 +228,14 @@ class Stage1Trainer_Bonn(pl.LightningModule):
         recon_loss = self._compute_loss(brdf, rgbs_gt, confidence)
         total_loss = recon_loss + self.smooth_reg_weight * smooth_loss
 
-        # PSNR
-        mse = NF.mse_loss(brdf, rgbs_gt)
-        max_val = rgbs_gt.max().clamp_min(1e-8)
+        # PSNR over valid (non-occluded) pixels only
+        valid = confidence > 0
+        if valid.any():
+            mse = ((brdf[valid] - rgbs_gt[valid]) ** 2).mean()
+            max_val = rgbs_gt[valid].max().clamp_min(1e-8)
+        else:
+            mse = torch.tensor(1.0, device=brdf.device)
+            max_val = torch.tensor(1.0, device=brdf.device)
         psnr = 10.0 * torch.log10(max_val ** 2 / mse.clamp_min(1e-8))
 
         self.log_dict({
@@ -246,12 +251,46 @@ class Stage1Trainer_Bonn(pl.LightningModule):
         for opt in opts:
             opt.zero_grad()
         self.manual_backward(total_loss)
-        grad_norm = torch.zeros(1, device=xyz.device)
-        for p in self.parameters():
-            if p.grad is not None:
-                grad_norm += p.grad.detach().norm(2).pow(2)
-        grad_norm = grad_norm.sqrt()
-        self.log('train/grad_norm_2', grad_norm, prog_bar=False, batch_size=xyz.shape[0])
+
+        # ----- Gradient & weight diagnostics (manual, since PL's
+        #       track_grad_norm is broken with automatic_optimization=False) ----
+        bs = xyz.shape[0]
+        total_grad_norm_sq = torch.zeros(1, device=xyz.device)
+
+        # Per-layer decoder gradient norms & weight norms
+        for name, param in self.material.decoder.named_parameters():
+            w_norm = param.detach().norm(2)
+            self.log(f'weight_norm/decoder.{name}', w_norm, batch_size=bs)
+            if param.grad is not None:
+                g_norm = param.grad.detach().norm(2)
+                self.log(f'grad_norm/decoder.{name}', g_norm, batch_size=bs)
+                total_grad_norm_sq += g_norm.pow(2)
+
+        # Latent bank: only active (non-zero grad) latents
+        lat_w = self.material.point_latent_bank.weight
+        lat_w_norm = lat_w.detach().norm(2)
+        self.log('weight_norm/latent_bank_total', lat_w_norm, batch_size=bs)
+        self.log('weight_norm/latent_bank_mean', lat_w.detach().norm(dim=1).mean(), batch_size=bs)
+        self.log('weight_norm/latent_bank_std', lat_w.detach().norm(dim=1).std(), batch_size=bs)
+        if lat_w.grad is not None:
+            lg = lat_w.grad.detach()
+            # For sparse grads, count how many latents were actually touched
+            if lg.is_sparse:
+                lg_dense = lg.to_dense()
+            else:
+                lg_dense = lg
+            active_mask = lg_dense.norm(dim=1) > 0
+            n_active = active_mask.sum()
+            self.log('grad_norm/latent_bank_total', lg_dense.norm(2), batch_size=bs)
+            self.log('grad_norm/latent_bank_n_active', n_active.float(), batch_size=bs)
+            if n_active > 0:
+                self.log('grad_norm/latent_bank_active_mean',
+                         lg_dense[active_mask].norm(dim=1).mean(), batch_size=bs)
+            total_grad_norm_sq += lg_dense.norm(2).pow(2)
+
+        self.log('train/grad_norm_2', total_grad_norm_sq.sqrt(),
+                 prog_bar=False, batch_size=bs)
+
         for opt in opts:
             opt.step()
 
@@ -267,13 +306,24 @@ class Stage1Trainer_Bonn(pl.LightningModule):
         rgbs_gt      = batch['rgbs'].squeeze(0)
         point_ids    = batch['point_ids'].squeeze(0)
         material_ids = batch['material_ids'].squeeze(0)
+        confidence   = batch['confidence'].squeeze(0)          # (N,)
         img_hw       = batch['img_hw'].squeeze(0)              # (2,)
 
         brdf, _, _ = self._eval_brdf(xyz, wi, wo, point_ids, material_ids)
 
-        loss = self._compute_loss(brdf, rgbs_gt)
-        mse  = NF.mse_loss(brdf, rgbs_gt)
-        max_val = rgbs_gt.max().clamp_min(1e-8)
+        # Zero out brdf at occluded pixels
+        brdf = brdf * confidence.unsqueeze(-1)
+
+        loss = self._compute_loss(brdf, rgbs_gt, confidence)
+
+        # PSNR over valid (non-occluded) pixels only
+        valid = confidence > 0
+        if valid.any():
+            mse = ((brdf[valid] - rgbs_gt[valid]) ** 2).mean()
+            max_val = rgbs_gt[valid].max().clamp_min(1e-8)
+        else:
+            mse = torch.tensor(1.0, device=brdf.device)
+            max_val = torch.tensor(1.0, device=brdf.device)
         psnr = 10.0 * torch.log10(max_val ** 2 / mse.clamp_min(1e-8))
 
         self.log_dict({
@@ -304,9 +354,10 @@ class Stage1Trainer_Bonn(pl.LightningModule):
         #                  f'pred_mat{mat_id:04d}_view{batch_idx}_psnr{psnr_str}.exr'),
         #     cv2.cvtColor(pred_exr, cv2.COLOR_RGB2BGR))
 
-        # Save 8-bit PNG (tone-mapped + gamma for quick inspection)
-        gt_png   = self._tonemap_for_display(gt_img)
-        pred_png = self._tonemap_for_display(pred_img)
+        # Save 8-bit PNG (clamped for quick inspection)
+        gt_png   = (np.clip(gt_img.detach().cpu().numpy(),   0, 1) * 255).astype(np.uint8)
+        pred_png = (np.clip(pred_img.detach().cpu().numpy(), 0, 1) * 255).astype(np.uint8)
+        
         cv2.imwrite(
             os.path.join(output_dir, f'gt_mat{mat_id:04d}_view{batch_idx}.png'),
             cv2.cvtColor(gt_png, cv2.COLOR_RGB2BGR))

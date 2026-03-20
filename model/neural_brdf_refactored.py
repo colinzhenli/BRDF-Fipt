@@ -388,6 +388,16 @@ class BRDFDecoder(nn.Module):
     """
     MLP decoder that maps (encoded_directions + latent) -> BRDF value.
     Can have separate decoders per RGB channel or a single shared decoder.
+
+    Supports two additional conditioning modes (configurable via cfg):
+      - FiLM conditioning (use_film): latent modulates hidden features via
+        learned per-layer scale (gamma) and shift (beta) instead of being
+        concatenated at the input.
+      - Explicit color decomposition (use_color_decomp): latent is split into
+        a color part (projected to base_color) and a shape part (used for
+        angular response).  Output = base_color * angular_response.
+    Both can be combined.  When both are False the decoder is identical to the
+    original concatenation-based design.
     """
     def __init__(
         self,
@@ -396,48 +406,59 @@ class BRDFDecoder(nn.Module):
         use_pos_enc: bool = True,
         different_decoder: bool = False
     ):
-        """
-        Args:
-            cfg: Configuration with hidden_layers, activation, output_channels
-            latent_dim: Dimension of latent code input
-            use_pos_enc: Use spherical harmonics encoding for directions
-            different_decoder: Use separate MLPs for R, G, B channels
-        """
         super().__init__()
         self.latent_dim = latent_dim
         self.use_pos_enc = use_pos_enc
         self.different_decoder = different_decoder
-        
+
         # Skip connection config
         self.use_skip_connection = getattr(cfg, 'use_skip_connection', False)
-        # skip_layer: which layer index to inject skip connection (default: middle layer)
         self.skip_layer = getattr(cfg, 'skip_layer', None)
-        
+
+        # FiLM and color decomposition config
+        self.use_film = getattr(cfg, 'use_film', False)
+        self.use_color_decomp = getattr(cfg, 'use_color_decomp', False)
+        self.color_latent_dim = getattr(cfg, 'color_latent_dim', 3)
+
+        if self.use_color_decomp:
+            assert self.color_latent_dim < latent_dim, \
+                f"color_latent_dim ({self.color_latent_dim}) must be < latent_dim ({latent_dim})"
+            self.shape_latent_dim = latent_dim - self.color_latent_dim
+        else:
+            self.shape_latent_dim = latent_dim
+
         # Setup positional encoding
         if use_pos_enc:
             self.degree = getattr(cfg, 'degree', 3)
             use_nerfstudio_sh = getattr(cfg, 'use_nerfstudio_sh', False)
-            
+
             if use_nerfstudio_sh:
                 self.sh_encoder = encoding.SHEncoding(levels=self.degree + 1)
                 sh_dim = (self.degree + 1) ** 2
             else:
                 self.sh_encoder = lambda x: components_from_spherical_harmonics(self.degree, x)
                 sh_dim = num_sh_bases(self.degree)
-            
+
             encoded_input_dim = sh_dim * 3  # wi, wo, normal
         else:
             encoded_input_dim = cfg.input_channels  # 9 (wi + wo + normal)
-        
-        input_dim = encoded_input_dim + latent_dim
-        self.input_dim = input_dim  # Store for skip connection
-        
+
+        self.encoded_input_dim = encoded_input_dim
+
+        # MLP input dimension depends on conditioning mode
+        if self.use_film:
+            input_dim = encoded_input_dim
+        else:
+            input_dim = encoded_input_dim + self.shape_latent_dim
+
+        self.input_dim = input_dim
+
         # Determine skip layer index (default to middle)
         num_hidden = len(cfg.hidden_layers)
         if self.skip_layer is None:
             self.skip_layer = num_hidden // 2
-        
-        # Output activation: LeakyReLU if configured, otherwise ReLU
+
+        # Output activation
         act = cfg.activation.lower()
         if act == "leakyrelu":
             output_activation = nn.LeakyReLU()
@@ -445,47 +466,62 @@ class BRDFDecoder(nn.Module):
             output_activation = nn.Softplus()
         else:
             output_activation = nn.ReLU()
-        
-        # Build MLP(s)
+
+        # MLP output channels: 1 when color_decomp provides the color
+        mlp_output_channels = 1 if self.use_color_decomp else cfg.output_channels
+
+        # ----- Color decomposition: latent_color -> base_color [B, 3] -----
+        if self.use_color_decomp:
+            self.color_proj = nn.Sequential(
+                nn.Linear(self.color_latent_dim, 3),
+                nn.Softplus(),
+            )
+
+        # ----- FiLM mappers: latent_shape -> (gamma, beta) per hidden layer -----
+        if self.use_film:
+            self.film_mappers = nn.ModuleList()
+            for hidden_dim in cfg.hidden_layers:
+                mapper = nn.Linear(self.shape_latent_dim, 2 * hidden_dim)
+                nn.init.zeros_(mapper.weight)
+                nn.init.zeros_(mapper.bias)
+                mapper.bias.data[:hidden_dim] = 1.0  # gamma=1, beta=0
+                self.film_mappers.append(mapper)
+
+        # ----- Build MLP(s) -----
         def build_mlp():
-            if not self.use_skip_connection:
-                # Original sequential MLP
+            if self.use_film or self.use_skip_connection:
+                layers = nn.ModuleList()
+                prev_dim = input_dim
+                for i, hidden_dim in enumerate(cfg.hidden_layers):
+                    if self.use_skip_connection and i == self.skip_layer:
+                        prev_dim = prev_dim + input_dim
+                    layers.append(nn.Linear(prev_dim, hidden_dim))
+                    prev_dim = hidden_dim
+                layers.append(nn.Linear(prev_dim, mlp_output_channels))
+                return layers
+            else:
                 layers = []
                 prev_dim = input_dim
                 for hidden_dim in cfg.hidden_layers:
                     layers.append(nn.Linear(prev_dim, hidden_dim))
                     layers.append(nn.LeakyReLU())
                     prev_dim = hidden_dim
-                
-                layers.append(nn.Linear(prev_dim, cfg.output_channels))
+                layers.append(nn.Linear(prev_dim, mlp_output_channels))
                 layers.append(output_activation)
                 return nn.Sequential(*layers)
-            else:
-                # MLP with skip connection - use ModuleList for manual forward
-                layers = nn.ModuleList()
-                prev_dim = input_dim
-                for i, hidden_dim in enumerate(cfg.hidden_layers):
-                    # At skip layer, input dimension includes the original input
-                    if i == self.skip_layer:
-                        prev_dim = prev_dim + input_dim
-                    layers.append(nn.Linear(prev_dim, hidden_dim))
-                    prev_dim = hidden_dim
-                
-                # Output layer
-                layers.append(nn.Linear(prev_dim, cfg.output_channels))
-                return layers
-        
-        # Store activation for skip connection forward pass
-        if self.use_skip_connection:
+
+        # Store activation for manual forward passes (FiLM / skip connection)
+        if self.use_film or self.use_skip_connection:
             self.activation = nn.LeakyReLU()
             self.output_activation = output_activation
-        
+
         if different_decoder:
-            # Number of layers for shared trunk vs heads
-            self.num_head_layers = getattr(cfg, 'num_head_layers', 2)  # default: last 2 layers as heads
+            assert not self.use_film and not self.use_color_decomp, \
+                "FiLM / color_decomp not supported with different_decoder=True"
+
+            self.num_head_layers = getattr(cfg, 'num_head_layers', 2)
             num_trunk_layers = num_hidden - self.num_head_layers
-            
-            # Build shared trunk (all but last num_head_layers)
+
             trunk_layers = []
             prev_dim = input_dim
             for i, hidden_dim in enumerate(cfg.hidden_layers[:num_trunk_layers]):
@@ -494,8 +530,7 @@ class BRDFDecoder(nn.Module):
                 prev_dim = hidden_dim
             self.shared_trunk = nn.Sequential(*trunk_layers)
             self.trunk_output_dim = prev_dim
-            
-            # Build 3 separate heads (last num_head_layers + output)
+
             def build_head():
                 head_layers = []
                 prev = self.trunk_output_dim
@@ -506,7 +541,7 @@ class BRDFDecoder(nn.Module):
                 head_layers.append(nn.Linear(prev, 1))
                 head_layers.append(output_activation)
                 return nn.Sequential(*head_layers)
-            
+
             self.head_r = build_head()
             self.head_g = build_head()
             self.head_b = build_head()
@@ -557,33 +592,70 @@ class BRDFDecoder(nn.Module):
                 x = self.output_activation(x)
         
         return x
-    
+
+    def _forward_with_film(self, mlp_input: torch.Tensor, layers: nn.ModuleList,
+                           film_latent: torch.Tensor):
+        """Forward pass with FiLM conditioning (and optional skip connection)."""
+        x = mlp_input
+        num_layers = len(layers)
+        num_hidden = num_layers - 1
+
+        for i in range(num_hidden):
+            if self.use_skip_connection and i == self.skip_layer:
+                x = torch.cat([x, mlp_input], dim=-1)
+            x = layers[i](x)
+            film_out = self.film_mappers[i](film_latent)
+            gamma, beta = film_out.chunk(2, dim=-1)
+            x = gamma * x + beta
+            x = self.activation(x)
+
+        x = layers[-1](x)
+        x = self.output_activation(x)
+        return x
+
     def forward(
         self,
         enc_dir: torch.Tensor,
         latent: torch.Tensor,
-        channel: str = None  # kept for backward compatibility but ignored when different_decoder=True
+        channel: str = None
     ):
         """
         Decode BRDF from encoded directions and latent.
-        
+
         Returns:
-            brdf: [B, 3] when different_decoder=True, else [B, output_channels]
+            brdf: [B, 3] when different_decoder=True or use_color_decomp=True,
+                  else [B, output_channels]
         """
-        mlp_input = torch.cat([enc_dir, latent], dim=-1)
-        
-        # Shared trunk + 3 heads when different_decoder=True
-        if self.different_decoder:
-            trunk_out = self.shared_trunk(mlp_input)  # [B, trunk_output_dim]
-            brdf_r = self.head_r(trunk_out)  # [B, 1]
-            brdf_g = self.head_g(trunk_out)  # [B, 1]
-            brdf_b = self.head_b(trunk_out)  # [B, 1]
-            return torch.cat([brdf_r, brdf_g, brdf_b], dim=-1)  # [B, 3]
+        if self.use_color_decomp:
+            latent_color = latent[:, :self.color_latent_dim]
+            latent_shape = latent[:, self.color_latent_dim:]
+            base_color = self.color_proj(latent_color)  # [B, 3]
         else:
-            if self.use_skip_connection:
-                return self._forward_with_skip(mlp_input, self.mlp)
-            else:
-                return self.mlp(mlp_input)
+            latent_shape = latent
+
+        if self.use_film:
+            mlp_input = enc_dir
+        else:
+            mlp_input = torch.cat([enc_dir, latent_shape], dim=-1)
+
+        if self.different_decoder:
+            trunk_out = self.shared_trunk(mlp_input)
+            brdf_r = self.head_r(trunk_out)
+            brdf_g = self.head_g(trunk_out)
+            brdf_b = self.head_b(trunk_out)
+            return torch.cat([brdf_r, brdf_g, brdf_b], dim=-1)
+
+        if self.use_film:
+            angular = self._forward_with_film(mlp_input, self.mlp, latent_shape)
+        elif self.use_skip_connection:
+            angular = self._forward_with_skip(mlp_input, self.mlp)
+        else:
+            angular = self.mlp(mlp_input)
+
+        if self.use_color_decomp:
+            return base_color * angular  # [B, 3] * [B, 1] -> [B, 3]
+
+        return angular
 
 class PBRDecoder(nn.Module):
     """

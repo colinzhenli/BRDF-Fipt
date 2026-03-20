@@ -199,11 +199,12 @@ def main(cfg):
             val_dataset = MultiMaterialPointDataset(cfg, root_folder=cfg.dataset_folder, split="val")
     elif cfg.data.dataset_name == "bonn":
         if cfg.model.stage == 1:
-            train_dataset = BonnDataset(cfg, root_folder=cfg.dataset_folder, split="train")
-            if cfg.data.debug & cfg.data.valid_on_train_set:
+            if cfg.model.test:
                 val_dataset = BonnValDataset(cfg, root_folder=cfg.dataset_folder)
             else:
+                train_dataset = BonnDataset(cfg, root_folder=cfg.dataset_folder, split="train")
                 val_dataset = BonnValDataset(cfg, root_folder=cfg.dataset_folder)
+
         else:
             train_dataset = BonnSingleMaterialDataset(cfg, root_folder=cfg.dataset_folder, split="train")
             if cfg.data.debug & cfg.data.valid_on_train_set:
@@ -229,22 +230,27 @@ def main(cfg):
     logger = hydra.utils.instantiate(cfg.model.logger, save_dir=cfg.exp_output_root_path)
 
     print("==> initializing monitor ...")
-    checkpoint_callback = ModelCheckpoint(
-        dirpath=os.path.join(cfg.model.checkpoint_monitor.dirpath, f'model_{roughness:.2f}_{metallic:.2f}'),
-        filename=cfg.model.checkpoint_monitor.filename,
-        save_top_k=cfg.model.checkpoint_monitor.save_top_k, 
-        every_n_epochs=cfg.model.checkpoint_monitor.every_n_epochs,
-        monitor='val/loss',
-        save_last=True
-    )
-
     lr_monitor = LearningRateMonitor(logging_interval='step')
+
+    enable_ckpt = cfg.model.trainer.get('enable_checkpointing', True)
+    if enable_ckpt:
+        checkpoint_callback = ModelCheckpoint(
+            dirpath=os.path.join(cfg.model.checkpoint_monitor.dirpath, f'model_{roughness:.2f}_{metallic:.2f}'),
+            filename=cfg.model.checkpoint_monitor.filename,
+            save_top_k=cfg.model.checkpoint_monitor.save_top_k, 
+            every_n_epochs=cfg.model.checkpoint_monitor.every_n_epochs,
+            monitor='val/loss',
+            save_last=True
+        )
+        callbacks = [checkpoint_callback, lr_monitor]
+    else:
+        callbacks = [lr_monitor]
 
     print("==> initializing trainer ...")
 
     trainer = pl.Trainer(
-        callbacks=[checkpoint_callback, lr_monitor], logger=logger, 
-        track_grad_norm=2,  # Log L2 norm of gradients
+        callbacks=callbacks, logger=logger, 
+        # track_grad_norm=2,  # Disabled: broken with automatic_optimization=False
         # gradient_clip_val=1.0,  # Optional: clip gradients
         **cfg.model.trainer
     )

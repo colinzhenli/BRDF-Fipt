@@ -118,6 +118,7 @@ class BonnDataset(IterableDataset):
         self.subsample_ratio = getattr(cfg.data, 'subsample_ratio', 1.0)
         self.val_materials = getattr(cfg.data, 'val_materials', 2)
         self.val_points = getattr(cfg.data, 'val_points', 500)
+        self.random_sample_material_number = getattr(cfg.data, 'random_sample_material_number', None)
         self.debug_rotate = getattr(cfg.data, 'debug_rotate', False)
         self.debug_swap_channels = getattr(cfg.data, 'debug_swap_channels', False)
         self.step = 0
@@ -268,6 +269,98 @@ class BonnDataset(IterableDataset):
 
             np.clip(all_rgbs, 0, None, out=all_rgbs)
 
+            Visualize = False
+            if Visualize:
+                # --- debug: save all images ordered by camera then light ------
+                _dbg_dir = f"/media/raid/cloth/output/BRDF/visualizations_debug/mat{mat_id:04d}"
+                os.makedirs(_dbg_dir, exist_ok=True)
+
+                n_images = all_rgbs.shape[0]
+
+                def _order_positions(positions):
+                    """Assign ordered indices to unique 3D positions.
+
+                    Order: elevation low→high, then azimuth 0→180°.
+                    Elevation = arctan2(z, sqrt(x²+y²)), azimuth = arctan2(y, x).
+                    Returns per-image ordered index array (int).
+                    """
+                    # round to avoid floating-point duplicates
+                    rounded = np.round(positions, decimals=4)
+                    unique_pos, inverse = np.unique(
+                        rounded, axis=0, return_inverse=True)
+                    # compute spherical coords for each unique position
+                    x, y, z = unique_pos[:, 0], unique_pos[:, 1], unique_pos[:, 2]
+                    elevation = np.arctan2(z, np.sqrt(x**2 + y**2))
+                    azimuth   = np.arctan2(y, x)
+                    # sort unique positions: primary=elevation, secondary=azimuth
+                    order = np.lexsort((azimuth, elevation))
+                    # rank[old_unique_idx] = new_ordered_idx
+                    rank = np.empty_like(order)
+                    rank[order] = np.arange(len(order))
+                    # map back to per-image ordered indices
+                    return rank[inverse]
+
+                cam_idx   = _order_positions(all_cam_pos)
+                light_idx = _order_positions(all_light_pos)
+
+                # sort images: camera first, then light
+                sort_order = np.lexsort((light_idx, cam_idx))
+
+                # assign local light index within each camera group
+                local_light = np.empty_like(light_idx)
+                for ci in np.unique(cam_idx):
+                    mask = cam_idx == ci
+                    # get globally-sorted light indices for this camera
+                    li_vals = light_idx[mask]
+                    # assign dense local ranks 0,1,2,... preserving global order
+                    _, inv = np.unique(li_vals, return_inverse=True)
+                    local_light[mask] = inv
+
+                for seq, img_i in enumerate(sort_order):
+                    # all_rgbs shape is (K, V, 3) where V = H*W
+                    _rgb = all_rgbs[img_i].reshape(H, W, 3).astype(np.float32)
+                    _rgb_uint8 = (np.clip(_rgb, 0, 1) * 255).astype(np.uint8)
+                    _ci = cam_idx[img_i]
+                    _li = local_light[img_i]
+                    imageio.imwrite(
+                        os.path.join(_dbg_dir,
+                                    f"img_{seq:03d}_cam{_ci:02d}_light{_li:02d}.png"),
+                        _rgb_uint8)
+                print(f"  [Debug] Saved {n_images} images to {_dbg_dir}")
+
+                # --- save coloured point clouds of camera & light positions ---
+                def _save_colored_ply(filepath, positions, order_indices):
+                    """Save a PLY point cloud coloured red→green by order index."""
+                    n = len(positions)
+                    max_idx = order_indices.max() if n > 0 else 1
+                    t = order_indices.astype(np.float64) / max(max_idx, 1)  # 0→1
+                    r = ((1 - t) * 255).astype(np.uint8)   # red channel
+                    g = (t * 255).astype(np.uint8)          # green channel
+                    b = np.zeros(n, dtype=np.uint8)
+                    with open(filepath, 'w') as f:
+                        f.write("ply\n")
+                        f.write("format ascii 1.0\n")
+                        f.write(f"element vertex {n}\n")
+                        f.write("property float x\n")
+                        f.write("property float y\n")
+                        f.write("property float z\n")
+                        f.write("property uchar red\n")
+                        f.write("property uchar green\n")
+                        f.write("property uchar blue\n")
+                        f.write("end_header\n")
+                        for j in range(n):
+                            f.write(f"{positions[j,0]:.6f} {positions[j,1]:.6f} "
+                                    f"{positions[j,2]:.6f} {r[j]} {g[j]} {b[j]}\n")
+
+                _save_colored_ply(
+                    os.path.join(_dbg_dir, "pointcloud_cameras.ply"),
+                    all_cam_pos, cam_idx)
+                _save_colored_ply(
+                    os.path.join(_dbg_dir, "pointcloud_lights.ply"),
+                    all_light_pos, light_idx)
+                print(f"  [Debug] Saved camera & light point clouds to {_dbg_dir}")
+                # --- end debug ------------------------------------------------
+
             return {
                 'mat_id':    mat_id,
                 'xyz':       xyz_pts,         # (V, 3)   float32
@@ -369,6 +462,9 @@ class BonnDataset(IterableDataset):
         pairs are drawn within each material.
         """
         materials = chunk.materials
+        k = self.random_sample_material_number
+        if k is not None and 0 < k < len(materials):
+            materials = [materials[i] for i in np.random.choice(len(materials), k, replace=False)]
         obs_counts = np.array(
             [m['rgbs'].shape[0] * m['rgbs'].shape[1] for m in materials],
             dtype=np.float64)
@@ -418,6 +514,9 @@ class BonnDataset(IterableDataset):
         xyz, wi, wo, rgbs, pids, mids = \
             xyz[perm], wi[perm], wo[perm], rgbs[perm], pids[perm], mids[perm]
 
+        # confidence = 0 only when all rgb channels are 0 (occluded pixels)
+        confidence = (rgbs.sum(axis=-1) > 0).astype(np.float32)
+
         return {
             'xyz':          torch.from_numpy(xyz).float(),
             'wi':           torch.from_numpy(wi).float(),
@@ -425,7 +524,7 @@ class BonnDataset(IterableDataset):
             'rgbs':         torch.from_numpy(rgbs).float(),
             'point_ids':    torch.from_numpy(pids).long(),
             'material_ids': torch.from_numpy(mids).long(),
-            'confidence':   torch.ones(n_rays, dtype=torch.float32),
+            'confidence':   torch.from_numpy(confidence),
             'gt_params':    torch.zeros(1),
         }
 
@@ -473,11 +572,17 @@ class BonnValDataset(Dataset):
         self.root_folder = Path(root_folder)
         self.valid_num = getattr(cfg.data, 'valid_num', 5)
         self.debug = getattr(cfg.data, 'debug', False)
+        self.debug_rotate = getattr(cfg.data, 'debug_rotate', False)
+        self.debug_swap_channels = getattr(cfg.data, 'debug_swap_channels', False)
 
         # ---- discover materials & pick one ---------------------
         mat_ids = self._discover_materials()
         if self.debug:
             self.mat_id = 1
+            if self.debug_rotate or self.debug_swap_channels:
+                self.validate_id = 2
+            else:
+                self.validate_id = self.mat_id
         else:
             self.mat_id = random.choice(mat_ids)
         prefix = self.root_folder / f'mat{self.mat_id:04d}'
@@ -512,20 +617,35 @@ class BonnValDataset(Dataset):
         for eid, img in enumerate(selected):
             rot_data = calib[img['rotation']]
 
-            cam_pos = rot_data[img['camera']]
-            wo = cam_pos[None, :] - xyz_flat
-            wo /= np.maximum(np.linalg.norm(wo, axis=1, keepdims=True), 1e-8)
-
-            led_pos = rot_data[img['led']]
-            wi = led_pos[None, :] - xyz_flat
-            wi /= np.maximum(np.linalg.norm(wi, axis=1, keepdims=True), 1e-8)
+            cam_pos = rot_data[img['camera']].copy()
+            led_pos = rot_data[img['led']].copy()
 
             idx = img['ch_start']
             rgbs = poly_data[:, :, idx:idx+3].reshape(-1, 3)    # (H*W, 3)
             np.clip(rgbs, 0, None, out=rgbs)
 
+            # Apply same debug transforms as training _make_debug_pair
+            if self.debug and self.debug_rotate:
+                # 180° rotation around Z: (x, y, z) -> (-x, -y, z)
+                cam_pos[0] *= -1; cam_pos[1] *= -1
+                led_pos[0] *= -1; led_pos[1] *= -1
+
+            if self.debug and self.debug_swap_channels:
+                # Swap R (idx 0) and G (idx 1)
+                rgbs = rgbs.copy()
+                rgbs[:, 0], rgbs[:, 1] = rgbs[:, 1].copy(), rgbs[:, 0].copy()
+
+            wo = cam_pos[None, :] - xyz_flat
+            wo /= np.maximum(np.linalg.norm(wo, axis=1, keepdims=True), 1e-8)
+
+            wi = led_pos[None, :] - xyz_flat
+            wi /= np.maximum(np.linalg.norm(wi, axis=1, keepdims=True), 1e-8)
+
             label = (f"mat{self.mat_id:04d}_{img['camera']}_"
                      f"{img['led']}_{img['rotation']}")
+
+            # confidence = 0 only when all rgb channels are 0 (occluded pixels)
+            confidence = (rgbs.sum(axis=-1) > 0).astype(np.float32)
 
             self._items.append({
                 'xyz':          torch.from_numpy(xyz_flat.copy()).float(),
@@ -533,14 +653,14 @@ class BonnValDataset(Dataset):
                 'wo':           torch.from_numpy(wo).float(),
                 'rgbs':         torch.from_numpy(rgbs).float(),
                 'point_ids':    torch.from_numpy(pids.copy()).long(),
-                'material_ids': torch.full((self.n_pixels,), self.mat_id,
+                'material_ids': torch.full((self.n_pixels,), self.validate_id,
                                            dtype=torch.long),
                 'emitter_ids':  torch.full((self.n_pixels,), eid,
                                            dtype=torch.long),
                 'data_type':    torch.full((self.n_pixels,), DTYPE_POLY,
                                            dtype=torch.long),
                 'lls_corners':  torch.zeros(self.n_pixels, 4, 3),
-                'confidence':   torch.ones(self.n_pixels),
+                'confidence':   torch.from_numpy(confidence),
                 'img_hw':       torch.tensor([self.H, self.W]),
                 'gt_params':    torch.zeros(1),
                 'label':        label,
@@ -795,6 +915,9 @@ class BonnSingleMaterialDataset(IterableDataset):
         wo = cam - xyz
         wo /= np.maximum(np.linalg.norm(wo, axis=1, keepdims=True), 1e-8)
 
+        # confidence = 0 only when all rgb channels are 0 (occluded pixels)
+        confidence = (rgbs.sum(axis=-1) > 0).astype(np.float32)
+
         return {
             'xyz':          torch.from_numpy(xyz).float(),
             'wi':           torch.from_numpy(wi).float(),
@@ -805,7 +928,7 @@ class BonnSingleMaterialDataset(IterableDataset):
             'emitter_ids':  torch.from_numpy(self.emitter_ids[img_i].copy()).long(),
             'data_type':    torch.from_numpy(self.data_type[img_i].copy()).long(),
             'lls_corners':  torch.from_numpy(self.lls_corners[img_i].copy()).float(),
-            'confidence':   torch.ones(n_rays, dtype=torch.float32),
+            'confidence':   torch.from_numpy(confidence),
             'gt_params':    torch.zeros(1),
         }
 
@@ -884,6 +1007,9 @@ class BonnSingleMaterialValDataset(Dataset):
 
             label = f"mat{self.mat_id:04d}_img{k:03d}"
 
+            # confidence = 0 only when all rgb channels are 0 (occluded pixels)
+            confidence = (rgbs.sum(axis=-1) > 0).astype(np.float32)
+
             self._items.append({
                 'xyz':          torch.from_numpy(xyz_flat.copy()).float(),
                 'wi':           torch.from_numpy(wi).float(),
@@ -899,7 +1025,7 @@ class BonnSingleMaterialValDataset(Dataset):
                 'lls_corners':  torch.from_numpy(
                     np.broadcast_to(mat_data['lls_corners'][k],
                                     (self.n_pixels, 4, 3)).copy()).float(),
-                'confidence':   torch.ones(self.n_pixels),
+                'confidence':   torch.from_numpy(confidence),
                 'img_hw':       torch.tensor([self.H, self.W]),
                 'gt_params':    torch.zeros(1),
                 'label':        label,

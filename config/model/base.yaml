@@ -17,9 +17,10 @@ trainer:
   devices: 1
   num_nodes: 1
   max_epochs: 1000          # ← will be respected
-  check_val_every_n_epoch: 20
+  check_val_every_n_epoch: 50
   limit_train_batches: 512 # 200 iterations per epoch
   num_sanity_val_steps: 2    # ← number of validation batches before training starts (default is 2)
+  enable_checkpointing: True  # set to False to skip checkpoint saving
 
 # https://pytorch-lightning.readthedocs.io/en/stable/api/pytorch_lightning.callbacks.ModelCheckpoint.html
 checkpoint_monitor:
@@ -50,7 +51,7 @@ loss:
       logrel_eps: 1e-3
   reg_loss:
     name: l2_smooth
-    weight: 0.0
+    weight: 0.1
   refiner_prior_loss:
     weight: 0.01
 
