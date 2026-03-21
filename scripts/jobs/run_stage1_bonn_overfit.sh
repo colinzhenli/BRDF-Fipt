@@ -12,7 +12,7 @@ python main.py \
     data.rays_num=131072 \
     renderer=multiarea_emitter \
     material=bonn_latent \
-    experiment_name=Stage-1_Correct-mask_Color-Decomp_Film_Softplus_SparseAdam_Theia-2_decoder-lr-1e-4_Overfit-100_Latent-dim-16_No-Chunk-All-RGB-data_run_1 \
+    experiment_name=Stage-1_Correct-mask_Color-No_Decomp_Film_Softplus_SparseAdam_Theia-2_decoder-lr-1e-4_Overfit-100_Latent-dim-16_No-Chunk-All-RGB-data_run_1 \
     model.optimizer.reset_latent_momentum_on_chunk_switch=True \
     model.optimizer.name=SparseAdam \
     model.loss.recon_loss.name=l2 \
@@ -24,8 +24,8 @@ python main.py \
     model.optimizer.lr=0.001 \
     model.trainer.limit_train_batches=512 \
     material.decoder.use_skip_connection=True \
-    model.decoder.use_color_decomp=True \
-    model.decoder.use_film=True \
+    material.decoder.use_color_decomp=False \
+    material.decoder.use_film=True \
     material.latent_dim=16 \
     material.decoder.degree=3 \
     material.decoder.smooth_reg=False \

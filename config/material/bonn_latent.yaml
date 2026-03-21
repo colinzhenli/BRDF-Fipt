@@ -32,6 +32,7 @@ decoder:
   use_skip_connection: True
   skip_layer: 2
   hidden_layers: [256, 256, 256, 256]
+  # hidden_layers: [128, 128, 128]
   activation: "softplus" # only for output layer
   output_channels: 3
   degree: 3  # SH degree for positional encoding

@@ -387,7 +387,11 @@ class NeuralGeometry(nn.Module):
 class BRDFDecoder(nn.Module):
     """
     MLP decoder that maps (encoded_directions + latent) -> BRDF value.
-    Can have separate decoders per RGB channel or a single shared decoder.
+    With different_decoder=False: one MLP; output is cfg.output_channels (or [B,3]
+    when use_color_decomp).
+    With different_decoder=True: three independent MLPs (no shared trunk). Latent
+    must be [B, 3 * latent_dim] — slices [:D], [D:2D], [2D:3D] feed R, G, B
+    decoders respectively (each MLP sees encoded directions + its D-dim slice).
 
     Supports two additional conditioning modes (configurable via cfg):
       - FiLM conditioning (use_film): latent modulates hidden features via
@@ -518,33 +522,23 @@ class BRDFDecoder(nn.Module):
         if different_decoder:
             assert not self.use_film and not self.use_color_decomp, \
                 "FiLM / color_decomp not supported with different_decoder=True"
+            assert not self.use_skip_connection, \
+                "skip connection not supported with different_decoder=True"
 
-            self.num_head_layers = getattr(cfg, 'num_head_layers', 2)
-            num_trunk_layers = num_hidden - self.num_head_layers
+            def build_channel_mlp():
+                layers = []
+                prev_dim = input_dim
+                for hidden_dim in cfg.hidden_layers:
+                    layers.append(nn.Linear(prev_dim, hidden_dim))
+                    layers.append(nn.LeakyReLU())
+                    prev_dim = hidden_dim
+                layers.append(nn.Linear(prev_dim, 1))
+                layers.append(output_activation)
+                return nn.Sequential(*layers)
 
-            trunk_layers = []
-            prev_dim = input_dim
-            for i, hidden_dim in enumerate(cfg.hidden_layers[:num_trunk_layers]):
-                trunk_layers.append(nn.Linear(prev_dim, hidden_dim))
-                trunk_layers.append(nn.ReLU())
-                prev_dim = hidden_dim
-            self.shared_trunk = nn.Sequential(*trunk_layers)
-            self.trunk_output_dim = prev_dim
-
-            def build_head():
-                head_layers = []
-                prev = self.trunk_output_dim
-                for hidden_dim in cfg.hidden_layers[num_trunk_layers:]:
-                    head_layers.append(nn.Linear(prev, hidden_dim))
-                    head_layers.append(nn.ReLU())
-                    prev = hidden_dim
-                head_layers.append(nn.Linear(prev, 1))
-                head_layers.append(output_activation)
-                return nn.Sequential(*head_layers)
-
-            self.head_r = build_head()
-            self.head_g = build_head()
-            self.head_b = build_head()
+            self.mlp_r = build_channel_mlp()
+            self.mlp_g = build_channel_mlp()
+            self.mlp_b = build_channel_mlp()
         else:
             self.mlp = build_mlp()
     
@@ -625,6 +619,9 @@ class BRDFDecoder(nn.Module):
         Returns:
             brdf: [B, 3] when different_decoder=True or use_color_decomp=True,
                   else [B, output_channels]
+            If different_decoder and channel is 'r'|'g'|'b', returns [B, 1] for
+            that channel only (latent must still contain the full 3*latent_dim
+            slice passed by the caller).
         """
         if self.use_color_decomp:
             latent_color = latent[:, :self.color_latent_dim]
@@ -639,11 +636,31 @@ class BRDFDecoder(nn.Module):
             mlp_input = torch.cat([enc_dir, latent_shape], dim=-1)
 
         if self.different_decoder:
-            trunk_out = self.shared_trunk(mlp_input)
-            brdf_r = self.head_r(trunk_out)
-            brdf_g = self.head_g(trunk_out)
-            brdf_b = self.head_b(trunk_out)
-            return torch.cat([brdf_r, brdf_g, brdf_b], dim=-1)
+            d = self.latent_dim
+            if latent.shape[-1] < 3 * d:
+                raise ValueError(
+                    f"different_decoder expects latent dim >= 3*latent_dim ({3*d}), "
+                    f"got {latent.shape[-1]}"
+                )
+            zr = latent[:, :d]
+            zg = latent[:, d : 2 * d]
+            zb = latent[:, 2 * d : 3 * d]
+            ir = torch.cat([enc_dir, zr], dim=-1)
+            ig = torch.cat([enc_dir, zg], dim=-1)
+            ib = torch.cat([enc_dir, zb], dim=-1)
+            if channel is None:
+                brdf_r = self.mlp_r(ir)
+                brdf_g = self.mlp_g(ig)
+                brdf_b = self.mlp_b(ib)
+                return torch.cat([brdf_r, brdf_g, brdf_b], dim=-1)
+            ch = channel.lower()
+            if ch == 'r':
+                return self.mlp_r(ir)
+            if ch == 'g':
+                return self.mlp_g(ig)
+            if ch == 'b':
+                return self.mlp_b(ib)
+            raise ValueError(f"channel must be None, 'r', 'g', or 'b', got {channel!r}")
 
         if self.use_film:
             angular = self._forward_with_film(mlp_input, self.mlp, latent_shape)
@@ -1048,9 +1065,12 @@ class AnisotropicLatentTexturedModel(LightningModule):
         # Calculate total latent dimension
         if self.colorful_texture and self.larger_latent_dim:
             brdf_latent_dim = self.latent_dim * 3
+        elif self.different_decoder:
+            brdf_latent_dim = self.latent_dim * 3
         else:
             brdf_latent_dim = self.latent_dim
-        
+        self.brdf_latent_dim = brdf_latent_dim
+
         # Add frame dimensions if predicting TBN
         total_latent_dim = brdf_latent_dim
         if self.predict_frame:
@@ -1477,7 +1497,9 @@ class AnisotropicLatentTexturedModel(LightningModule):
         enc_dir = self.decoder.encode_directions(wi_local, wo_local, local_normal)     
         
         # 6. Extract BRDF latent and decode
-        if self.colorful_texture:
+        if self.different_decoder:
+            brdf = self.decoder(enc_dir, latent[..., :self.brdf_latent_dim])
+        elif self.colorful_texture:
             brdf = self.decoder(enc_dir, latent[..., :self.latent_dim])
         else:
             brdf = self.decoder(enc_dir, latent[..., :self.latent_dim])
@@ -1586,10 +1608,11 @@ class MultiMaterialLatentBRDF(LightningModule):
         # Latent dimensions
         self.latent_dim = cfg.latent_dim
         self.predict_frame = cfg.predict_frame
-        self.total_latent_dim = self.latent_dim + (6 if self.predict_frame else 0)
+        self.different_decoder = cfg.different_decoder
+        self.brdf_latent_dim = self.latent_dim * 3 if self.different_decoder else self.latent_dim
+        self.total_latent_dim = self.brdf_latent_dim + (6 if self.predict_frame else 0)
         # BRDF decoder settings
         self.use_pos_enc = cfg.use_pos_enc
-        self.different_decoder = cfg.different_decoder
         
         # Load point metadata from material subfolders
         print(f"Loading point metadata from {data_folder}...")
@@ -1844,7 +1867,6 @@ class MultiMaterialLatentBRDF(LightningModule):
   
         if self.predict_frame:
             predicted_normal, predicted_tangent = self.extract_frame_from_latent(latent)
-                # Check valid geometry
         NoL = (wi * predicted_normal).sum(-1, keepdim=True)
         NoV = (wo * predicted_normal).sum(-1, keepdim=True)
         wi_local = self.world_to_local(wi, predicted_normal, predicted_tangent)
@@ -1856,14 +1878,11 @@ class MultiMaterialLatentBRDF(LightningModule):
         enc_dir = self.decoder.encode_directions(wi_local, wo_local, normal_local)
         
         # Decode BRDF
-        if self.different_decoder:
-            # Shared trunk + 3 heads: returns [B, 3] directly
-            brdf = self.decoder(enc_dir, latent[:, :self.latent_dim])
-        else:
-            brdf = self.decoder(enc_dir, latent[:, :self.latent_dim])
-            if brdf.shape[-1] == 1:
-                brdf = brdf.expand(-1, 3)  # Expand to RGB
-        
+        brdf_lat = latent[:, : self.brdf_latent_dim]
+        brdf = self.decoder(enc_dir, brdf_lat)
+        if not self.different_decoder and brdf.shape[-1] == 1:
+            brdf = brdf.expand(-1, 3)  # Expand to RGB
+
         # L2 gradient smoothness regularization via geodesic finite differences
         if self.smooth_reg:
             eps = self.smooth_reg_eps
@@ -1875,12 +1894,9 @@ class MultiMaterialLatentBRDF(LightningModule):
             wi_perturbed = wi_local * math.cos(eps) + torch.cross(axis, wi_local, dim=-1) * math.sin(eps)
             # Evaluate BRDF at perturbed direction
             enc_pert = self.decoder.encode_directions(wi_perturbed, wo_local, normal_local)
-            if self.different_decoder:
-                brdf_pert = self.decoder(enc_pert, latent[:, :self.latent_dim])
-            else:
-                brdf_pert = self.decoder(enc_pert, latent[:, :self.latent_dim])
-                if brdf_pert.shape[-1] == 1:
-                    brdf_pert = brdf_pert.expand(-1, 3)
+            brdf_pert = self.decoder(enc_pert, brdf_lat)
+            if not self.different_decoder and brdf_pert.shape[-1] == 1:
+                brdf_pert = brdf_pert.expand(-1, 3)
             # L2 squared gradient: || (f(wi+eps) - f(wi)) / eps ||^2
             smooth_loss = ((brdf_pert - brdf) / eps).pow(2).mean()
         else:
@@ -1992,9 +2008,10 @@ class BonnLatentBRDF(LightningModule):
 
         self.latent_dim = cfg.latent_dim
         self.predict_frame = cfg.predict_frame
-        self.total_latent_dim = self.latent_dim + (6 if self.predict_frame else 0)
-        self.use_pos_enc = cfg.use_pos_enc
         self.different_decoder = cfg.different_decoder
+        self.brdf_latent_dim = self.latent_dim * 3 if self.different_decoder else self.latent_dim
+        self.total_latent_dim = self.brdf_latent_dim + (6 if self.predict_frame else 0)
+        self.use_pos_enc = cfg.use_pos_enc
 
         self.learnable_factor = getattr(cfg, 'learnable_factor', False)
         if self.learnable_factor:
@@ -2242,12 +2259,10 @@ class BonnLatentBRDF(LightningModule):
 
         enc_dir = self.decoder.encode_directions(wi_local, wo_local, normal_local)
 
-        if self.different_decoder:
-            brdf = self.decoder(enc_dir, latent[:, :self.latent_dim])
-        else:
-            brdf = self.decoder(enc_dir, latent[:, :self.latent_dim])
-            if brdf.shape[-1] == 1:
-                brdf = brdf.expand(-1, 3)
+        brdf_lat = latent[:, : self.brdf_latent_dim]
+        brdf = self.decoder(enc_dir, brdf_lat)
+        if not self.different_decoder and brdf.shape[-1] == 1:
+            brdf = brdf.expand(-1, 3)
 
         if self.smooth_reg:
             eps = self.smooth_reg_eps
@@ -2256,12 +2271,9 @@ class BonnLatentBRDF(LightningModule):
             axis = NF.normalize(rand_vec, dim=-1)
             wi_perturbed = wi_local * math.cos(eps) + torch.cross(axis, wi_local, dim=-1) * math.sin(eps)
             enc_pert = self.decoder.encode_directions(wi_perturbed, wo_local, normal_local)
-            if self.different_decoder:
-                brdf_pert = self.decoder(enc_pert, latent[:, :self.latent_dim])
-            else:
-                brdf_pert = self.decoder(enc_pert, latent[:, :self.latent_dim])
-                if brdf_pert.shape[-1] == 1:
-                    brdf_pert = brdf_pert.expand(-1, 3)
+            brdf_pert = self.decoder(enc_pert, brdf_lat)
+            if not self.different_decoder and brdf_pert.shape[-1] == 1:
+                brdf_pert = brdf_pert.expand(-1, 3)
             smooth_loss = ((brdf_pert - brdf) / eps).pow(2).mean()
         else:
             smooth_loss = torch.tensor(0.0, device=wi.device)
@@ -2335,10 +2347,11 @@ class MERLBRDF(LightningModule):
         # Latent dimensions
         self.latent_dim = cfg.latent_dim
         self.predict_frame = cfg.predict_frame
-        self.total_latent_dim = self.latent_dim + (6 if self.predict_frame else 0)
+        self.different_decoder = cfg.different_decoder
+        self.brdf_latent_dim = self.latent_dim * 3 if self.different_decoder else self.latent_dim
+        self.total_latent_dim = self.brdf_latent_dim + (6 if self.predict_frame else 0)
         # BRDF decoder settings
         self.use_pos_enc = cfg.use_pos_enc
-        self.different_decoder = cfg.different_decoder
 
         total_points=120
         self.point_latent_bank = nn.Embedding(
@@ -2399,16 +2412,10 @@ class MERLBRDF(LightningModule):
         enc_dir = self.decoder.encode_directions(wi, wo, normal_local)
         
         # Decode BRDF
-        if self.different_decoder:
-            # Decode each channel separately
-            brdf_r = self.decoder(enc_dir, latent[:,:self.latent_dim], channel='r')
-            brdf_g = self.decoder(enc_dir, latent[:,:self.latent_dim], channel='g')
-            brdf_b = self.decoder(enc_dir, latent[:,:self.latent_dim], channel='b')
-            brdf = torch.cat([brdf_r, brdf_g, brdf_b], dim=-1)  # [B, 3]
-        else:
-            brdf = self.decoder(enc_dir, latent[:, :self.latent_dim])  # [B, 1] or [B, 3]
-            if brdf.shape[-1] == 1:
-                brdf = brdf.expand(-1, 3)  # Expand to RGB
+        brdf_lat = latent[:, : self.brdf_latent_dim]
+        brdf = self.decoder(enc_dir, brdf_lat)
+        if not self.different_decoder and brdf.shape[-1] == 1:
+            brdf = brdf.expand(-1, 3)  # Expand to RGB
         
         
         return brdf

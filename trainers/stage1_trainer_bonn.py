@@ -354,9 +354,9 @@ class Stage1Trainer_Bonn(pl.LightningModule):
         #                  f'pred_mat{mat_id:04d}_view{batch_idx}_psnr{psnr_str}.exr'),
         #     cv2.cvtColor(pred_exr, cv2.COLOR_RGB2BGR))
 
-        # Save 8-bit PNG (clamped for quick inspection)
-        gt_png   = (np.clip(gt_img.detach().cpu().numpy(),   0, 1) * 255).astype(np.uint8)
-        pred_png = (np.clip(pred_img.detach().cpu().numpy(), 0, 1) * 255).astype(np.uint8)
+        # Save 8-bit PNG (with proper tone mapping for HDR to LDR display)
+        gt_png   = self._tonemap_for_display(gt_img.detach())
+        pred_png = self._tonemap_for_display(pred_img.detach())
         
         cv2.imwrite(
             os.path.join(output_dir, f'gt_mat{mat_id:04d}_view{batch_idx}.png'),

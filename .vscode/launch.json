@@ -147,7 +147,7 @@
             "console": "integratedTerminal",
             "justMyCode": true,
             "env": {
-                "CUDA_VISIBLE_DEVICES": "1"
+                "CUDA_VISIBLE_DEVICES": "3"
             },
             "args": [
                 "dataset_folder=/media/raid/cloth/Bonn_train",
@@ -155,7 +155,7 @@
                 "data.rays_num=65536",
                 "renderer=multiarea_emitter",
                 "material=bonn_latent",
-                "experiment_name=Overfit_2_Correct-mask_1",
+                "experiment_name=Overfit_2_Different_decoder_1",
                 "model.optimizer.name=SparseAdam",
                 "model.optimizer.reset_latent_momentum_on_chunk_switch=False",
                 "model.stage=1",
@@ -164,9 +164,11 @@
                 "model.trainer.limit_train_batches=512",
                 "model.trainer.enable_checkpointing=False",
                 "model.loss.reg_loss.weight=0.",
+                "material.different_decoder=True",
                 "material.decoder.smooth_reg=False",
                 "material.decoder.smooth_reg_eps=0.01",
-                "material.decoder.use_skip_connection=True",
+                "material.decoder.use_skip_connection=False",
+                "material.latent_dim=8",
                 "data.debug_num=2",
                 "data.debug_rotate=False",
                 "data.debug_swap_channels=False",
