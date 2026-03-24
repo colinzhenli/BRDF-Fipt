@@ -3,7 +3,7 @@
 export CUDA_VISIBLE_DEVICES=2
 
 python main.py \
-    dataset_folder=/media/raid/cloth/Bonn_val \
+    dataset_folder=/media/raid/cloth/Bonn_train \
     data=bonn \
     renderer=multiarea_emitter \
     material=bonn_latent \

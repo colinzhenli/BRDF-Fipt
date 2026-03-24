@@ -608,7 +608,10 @@ class BonnValDataset(Dataset):
         poly_images = _parse_poly_channels(poly_ch_names)
 
         n_select = min(self.valid_num, len(poly_images))
-        selected = random.sample(poly_images, n_select)
+        if n_select == len(poly_images):
+            selected = poly_images
+        else:
+            selected = random.sample(poly_images, n_select)
         print(f"Selected {n_select} poly images for validation "
               f"({self.n_pixels} pixels each)")
 
@@ -866,8 +869,8 @@ class BonnSingleMaterialDataset(IterableDataset):
         perm = rng.permutation(n_images)
         n_val = max(1, int(n_images * self.val_view_ratio))
         val_indices = np.sort(perm[:n_val])
-        train_indices = np.sort(perm[n_val:])
-
+        # train_indices = np.sort(perm[n_val:])
+        train_indices = np.arange(n_images)
         if split == 'train':
             indices = train_indices
         else:
