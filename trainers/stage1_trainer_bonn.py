@@ -52,7 +52,7 @@ class Stage1Trainer_Bonn(pl.LightningModule):
         self.cfg = cfg
         self.save_hyperparameters(cfg)
         self.automatic_optimization = False
-        self.more_visualizations = False
+        self.more_visualizations = True
 
         self.material = material
         self.freeze_decoder = cfg.model.freeze_decoder
@@ -79,22 +79,25 @@ class Stage1Trainer_Bonn(pl.LightningModule):
         opt_name = getattr(self.hparams.model.optimizer, 'name', 'SparseAdam')
 
         embedding_params = list(self.material.point_latent_bank.parameters())
+        factor_params = [self.material.factor] if getattr(self.material, 'learnable_factor', False) else []
+        
         decoder_params = [p for p in self.parameters()
-                          if p not in set(embedding_params)]
+                          if p not in set(embedding_params) and p not in set(factor_params)]
 
         if self.freeze_decoder:
             for p in decoder_params:
                 p.requires_grad = False
-            print("Decoder frozen – optimising latent bank only.")
+            print("Decoder frozen – optimising latent bank and learnable factor (if present).")
 
         if opt_name == 'SparseAdam':
             latent_opt = torch.optim.SparseAdam(embedding_params, lr=lr)
-            dense_opt = torch.optim.Adam(
-                decoder_params, lr=decoder_lr, betas=(0.9, 0.999), weight_decay=wd,
-            ) if not self.freeze_decoder else None
             
-            if dense_opt is not None:
-                print(f"Using SparseAdam (embedding lr={lr}) + Adam (decoder lr={decoder_lr})")
+            dense_params = decoder_params + factor_params if not self.freeze_decoder else factor_params
+            if len(dense_params) > 0:
+                dense_opt = torch.optim.Adam(
+                    dense_params, lr=decoder_lr, betas=(0.9, 0.999), weight_decay=wd,
+                )
+                print(f"Using SparseAdam (embedding lr={lr}) + Adam (dense lr={decoder_lr})")
                 return [latent_opt, dense_opt]
             else:
                 print(f"Using SparseAdam (embedding only), lr={lr}")
@@ -102,20 +105,26 @@ class Stage1Trainer_Bonn(pl.LightningModule):
 
         elif opt_name == 'Adam':
             # Better to explicitly create two groups
-            opt = torch.optim.Adam([
-                {'params': decoder_params, 'lr': decoder_lr},
-                {'params': embedding_params, 'lr': lr}
-            ], betas=(0.9, 0.999), weight_decay=wd)
+            opt_groups = [{'params': embedding_params, 'lr': lr}]
+            
+            dense_params = decoder_params + factor_params if not self.freeze_decoder else factor_params
+            if len(dense_params) > 0:
+                opt_groups.append({'params': dense_params, 'lr': decoder_lr})
+                
+            opt = torch.optim.Adam(opt_groups, betas=(0.9, 0.999), weight_decay=wd)
 
-            print(f"Using Dense Adam (embedding lr={lr}, decoder lr={decoder_lr})")
+            print(f"Using Dense Adam (embedding lr={lr}, dense lr={decoder_lr})")
             return opt
 
         elif opt_name == 'SGD':
-            opt = torch.optim.SGD([
-                {'params': decoder_params, 'lr': decoder_lr},
-                {'params': embedding_params, 'lr': lr}
-            ], momentum=0.0, weight_decay=wd)
-            print(f"Using SGD (embedding lr={lr}, decoder lr={decoder_lr})")
+            opt_groups = [{'params': embedding_params, 'lr': lr}]
+            
+            dense_params = decoder_params + factor_params if not self.freeze_decoder else factor_params
+            if len(dense_params) > 0:
+                opt_groups.append({'params': dense_params, 'lr': decoder_lr})
+                
+            opt = torch.optim.SGD(opt_groups, momentum=0.0, weight_decay=wd)
+            print(f"Using SGD (embedding lr={lr}, dense lr={decoder_lr})")
             return opt
         
         else:
@@ -124,15 +133,16 @@ class Stage1Trainer_Bonn(pl.LightningModule):
     # ------------------------------------------------------------------
     # BRDF helpers
     # ------------------------------------------------------------------
-    def _eval_brdf(self, xyz, wi, wo, point_ids, material_ids):
+    def _eval_brdf(self, xyz, wi, wo, point_ids, material_ids, normals=None):
         """Thin wrapper around material.eval_brdf.
 
         Returns (brdf [B,3], predicted_normal [B,3], smooth_loss scalar).
         """
-        dummy_normal = torch.zeros_like(wi)
-        dummy_normal[..., 2] = 1.0
+        if normals is None:
+            normals = torch.zeros_like(wi)
+            normals[..., 2] = 1.0
         brdf, pred_normal, _pdf, smooth_loss = self.material.eval_brdf(
-            xyz, wi, wo, dummy_normal,
+            xyz, wi, wo, normals,
             point_ids=point_ids, material_ids=material_ids)
         return brdf, pred_normal, smooth_loss
 
@@ -222,9 +232,13 @@ class Stage1Trainer_Bonn(pl.LightningModule):
         material_ids = batch['material_ids'].squeeze(0)
         confidence   = batch['confidence'].squeeze(0)
 
+        gt_normals = batch.get('gt_normals')
+        if gt_normals is not None:
+            gt_normals = gt_normals.squeeze(0)
+
         # All rays are polychromatic (RGB) — no pan/lls branching
         brdf, _, smooth_loss = self._eval_brdf(
-            xyz, wi, wo, point_ids, material_ids)
+            xyz, wi, wo, point_ids, material_ids, normals=gt_normals)
         recon_loss = self._compute_loss(brdf, rgbs_gt, confidence)
         total_loss = recon_loss + self.smooth_reg_weight * smooth_loss
 
@@ -288,6 +302,15 @@ class Stage1Trainer_Bonn(pl.LightningModule):
                          lg_dense[active_mask].norm(dim=1).mean(), batch_size=bs)
             total_grad_norm_sq += lg_dense.norm(2).pow(2)
 
+        # Learnable BRDF scale factor
+        if hasattr(self.material, 'learnable_factor') and self.material.learnable_factor:
+            factor_val = self.material.factor.detach()
+            self.log('train/learnable_factor_r', factor_val[0], batch_size=bs)
+            self.log('train/learnable_factor_g', factor_val[1], batch_size=bs)
+            self.log('train/learnable_factor_b', factor_val[2], batch_size=bs)
+            if self.material.factor.grad is not None:
+                self.log('grad_norm/learnable_factor', self.material.factor.grad.detach().norm(2), batch_size=bs)
+
         self.log('train/grad_norm_2', total_grad_norm_sq.sqrt(),
                  prog_bar=False, batch_size=bs)
 
@@ -309,7 +332,11 @@ class Stage1Trainer_Bonn(pl.LightningModule):
         confidence   = batch['confidence'].squeeze(0)          # (N,)
         img_hw       = batch['img_hw'].squeeze(0)              # (2,)
 
-        brdf, _, _ = self._eval_brdf(xyz, wi, wo, point_ids, material_ids)
+        gt_normals = batch.get('gt_normals')
+        if gt_normals is not None:
+            gt_normals = gt_normals.squeeze(0)
+
+        brdf, _, _ = self._eval_brdf(xyz, wi, wo, point_ids, material_ids, normals=gt_normals)
 
         # Zero out brdf at occluded pixels
         brdf = brdf * confidence.unsqueeze(-1)
@@ -330,6 +357,14 @@ class Stage1Trainer_Bonn(pl.LightningModule):
             'val/loss': loss,
             'val/psnr': psnr,
         }, prog_bar=True, batch_size=xyz.shape[0])
+
+        if hasattr(self.material, 'learnable_factor') and self.material.learnable_factor:
+            factor_val = self.material.factor.detach()
+            self.log_dict({
+                'val/learnable_factor_r': factor_val[0],
+                'val/learnable_factor_g': factor_val[1],
+                'val/learnable_factor_b': factor_val[2],
+            }, batch_size=xyz.shape[0])
 
         # ---- reconstruct 2-D images and save ----------------------------
         H, W = img_hw[0].item(), img_hw[1].item()
@@ -363,24 +398,33 @@ class Stage1Trainer_Bonn(pl.LightningModule):
             cv2.cvtColor(gt_png, cv2.COLOR_RGB2BGR))
         cv2.imwrite(
             os.path.join(output_dir,
-                         f'pred_mat{mat_id:04d}_view{batch_idx}.png'),
+                         f'pred_mat{mat_id:04d}_view{batch_idx}_psnr{psnr_str}.png'),
             cv2.cvtColor(pred_png, cv2.COLOR_RGB2BGR))
 
-        # ---- save normal map once (normals are view-independent) ------------
+        # ---- save normal and tangent maps once (view-independent) ----------
+        if batch_idx == 0:
+            with torch.no_grad():
+                global_pids = self.material.get_global_point_id(material_ids, point_ids)
+                latent      = self.material.point_latent_bank(global_pids)
+                if self.material.predict_frame or gt_normals is None:
+                    pred_normal, pred_tangent = self.material.extract_frame_from_latent(latent)
+                else:
+                    pred_normal, pred_tangent = self.material.extract_frame_from_latent(latent, gt_normals)
+
+            normal_img  = pred_normal.reshape(H, W, 3)
+            tangent_img = pred_tangent.reshape(H, W, 3)
+            # map [-1, 1] → [0, 255]
+            normal_png  = ((normal_img.clamp(-1.0, 1.0) * 0.5 + 0.5) * 255).byte().cpu().numpy()
+            tangent_png = ((tangent_img.clamp(-1.0, 1.0) * 0.5 + 0.5) * 255).byte().cpu().numpy()
+            cv2.imwrite(
+                os.path.join(output_dir, f'normal_mat{mat_id:04d}.png'),
+                cv2.cvtColor(normal_png, cv2.COLOR_RGB2BGR))
+            cv2.imwrite(
+                os.path.join(output_dir, f'tangent_mat{mat_id:04d}.png'),
+                cv2.cvtColor(tangent_png, cv2.COLOR_RGB2BGR))
+
         if self.more_visualizations:
             if batch_idx == 0:
-                with torch.no_grad():
-                    global_pids = self.material.get_global_point_id(material_ids, point_ids)
-                    latent      = self.material.point_latent_bank(global_pids)
-                    pred_normal, _ = self.material.extract_frame_from_latent(latent)  # (N, 3)
-
-                normal_img = pred_normal.reshape(H, W, 3)
-                # map [-1, 1] → [0, 255]
-                normal_png = ((normal_img.clamp(-1.0, 1.0) * 0.5 + 0.5) * 255).byte().cpu().numpy()
-                cv2.imwrite(
-                    os.path.join(output_dir, f'normal_mat{mat_id:04d}.png'),
-                    cv2.cvtColor(normal_png, cv2.COLOR_RGB2BGR))
-
                 self.visualize_brdf_lobe(output_dir=output_dir, num_latents=10, resolution=64)
 
         return loss

@@ -4,6 +4,7 @@ from .stage1_trainer_merl import Stage1Trainer_MERL
 from .stage2_trainer_merl import Stage2Trainer_MERL
 from .stage1_trainer_bonn import Stage1Trainer_Bonn
 from .stage2_trainer_bonn import Stage2Trainer_Bonn
+from .stage2_trainer_ubo import Stage2Trainer_UBO
 
 # Registry for easy lookup
 TRAINER_REGISTRY = {
@@ -17,7 +18,10 @@ TRAINER_REGISTRY = {
     },
     'bonn': {
         1: Stage1Trainer_Bonn,
-        2: Stage2Trainer_Bonn,
+        2: Stage1Trainer_Bonn,
+    },
+    'ubo': {
+        2: Stage2Trainer_UBO,
     },
 }
 

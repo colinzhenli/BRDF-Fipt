@@ -21,9 +21,13 @@ class Stage1Trainer(pl.LightningModule):
         super().__init__()
         self.cfg = cfg
         self.save_hyperparameters(cfg)
+        self.automatic_optimization = False
 
         self.material = material
-        self.freeze_decoder = False
+        self.freeze_decoder = cfg.model.freeze_decoder
+        self.more_visualizations = True
+        self._opt_name = getattr(cfg.model.optimizer, 'name', 'Adam')
+        self.reset_latent_momentum = getattr(cfg.model.optimizer, 'reset_latent_momentum_on_chunk_switch', False)
         self.gt_material = gt_material
         self.gt_folder = cfg.gt_folder
         self.camera_factor1 = cfg.renderer.camera.linear_factor1
@@ -108,25 +112,63 @@ class Stage1Trainer(pl.LightningModule):
         # Simple Reinhard tone mapping: x / (1 + x)
         return x / (1 + x)
     
-    def configure_optimizers(self):  
-        # Check if we should freeze decoder and only optimize latents
-        
+    def configure_optimizers(self):
+        lr = self.hparams.model.optimizer.lr
+        decoder_lr = getattr(self.hparams.model.optimizer, 'decoder_lr', lr)
+        wd = self.hparams.model.optimizer.weight_decay
+        opt_name = getattr(self.hparams.model.optimizer, 'name', 'Adam')
+
+        has_latent_bank = hasattr(self.material, 'point_latent_bank') and self.material.point_latent_bank is not None
+        embedding_params = list(self.material.point_latent_bank.parameters()) if has_latent_bank else []
+        factor_params = [self.material.factor] if getattr(self.material, 'learnable_factor', False) else []
+
+        decoder_params = [p for p in self.parameters()
+                          if p not in set(embedding_params) and p not in set(factor_params)]
+
         if self.freeze_decoder:
-            # Freeze decoder parameters
-            for param in self.material.decoder.parameters():
-                param.requires_grad = False
-            # Only optimize latent bank
-            params_to_optimize = [self.material.point_latent_bank.weight]
-            print("Decoder frozen! Only optimizing latent bank.")
-        else:
-            params_to_optimize = self.parameters()
-        
-        if self.hparams.model.optimizer.name == "SGD":
+            for p in decoder_params:
+                p.requires_grad = False
+            print("Decoder frozen – optimising latent bank and learnable factor (if present).")
+
+        if opt_name == 'SparseAdam':
+            latent_opt = torch.optim.SparseAdam(embedding_params, lr=lr)
+
+            dense_params = decoder_params + factor_params if not self.freeze_decoder else factor_params
+            if len(dense_params) > 0:
+                dense_opt = torch.optim.Adam(
+                    dense_params, lr=decoder_lr, betas=(0.9, 0.999), weight_decay=wd,
+                )
+                print(f"Using SparseAdam (embedding lr={lr}) + Adam (dense lr={decoder_lr})")
+                return [latent_opt, dense_opt]
+            else:
+                print(f"Using SparseAdam (embedding only), lr={lr}")
+                return latent_opt
+
+        elif opt_name == 'Adam':
+            opt_groups = []
+            if embedding_params:
+                opt_groups.append({'params': embedding_params, 'lr': lr})
+            dense_params = decoder_params + factor_params if not self.freeze_decoder else factor_params
+            if len(dense_params) > 0:
+                opt_groups.append({'params': dense_params, 'lr': decoder_lr})
+            if not opt_groups:
+                opt_groups = [{'params': self.parameters(), 'lr': lr}]
+
+            opt = torch.optim.Adam(opt_groups, betas=(0.9, 0.999), weight_decay=wd)
+            print(f"Using Dense Adam (embedding lr={lr}, dense lr={decoder_lr})")
+            return opt
+
+        elif opt_name == 'SGD':
+            if self.freeze_decoder:
+                params_to_optimize = embedding_params + factor_params
+            else:
+                params_to_optimize = list(self.parameters())
+
             optimizer = torch.optim.SGD(
                 params_to_optimize,
-                lr=self.hparams.model.optimizer.lr,
+                lr=lr,
                 momentum=0.0,
-                weight_decay=1e-4,
+                weight_decay=wd,
             )
             scheduler = pl_bolts.optimizers.LinearWarmupCosineAnnealingLR(
                 optimizer,
@@ -142,17 +184,8 @@ class Stage1Trainer(pl.LightningModule):
                 }
             }
 
-        elif self.hparams.model.optimizer.name == 'Adam':
-            optimizer = torch.optim.Adam(
-                params_to_optimize,
-                lr=self.hparams.model.optimizer.lr,
-                betas=(0.9, 0.999),
-                weight_decay=self.hparams.model.optimizer.weight_decay,
-            )
-            return optimizer
-
         else:
-            logging.error('Optimizer type not supported')
+            raise ValueError(f"Unknown optimizer: {opt_name}")
 
     def load_pbr_texture(self, pbr_texture_path):
         pbr_folder = '/localhome/zla247/theia2_data/theia2_data/BRDF-Fipt/fabric_pattern_07_4k/textures'
@@ -380,6 +413,16 @@ class Stage1Trainer(pl.LightningModule):
             'train/psnr':         psnr,
         }, prog_bar=True, batch_size=rays.shape[0])
 
+        # Manual optimisation (required for SparseAdam with multiple optimiser groups)
+        opts = self.optimizers()
+        if not isinstance(opts, list):
+            opts = [opts]
+        for opt in opts:
+            opt.zero_grad()
+        self.manual_backward(total_loss)
+        for opt in opts:
+            opt.step()
+
         return total_loss
 
     # def on_after_backward(self):
@@ -429,13 +472,9 @@ class Stage1Trainer(pl.LightningModule):
             'val/psnr':         psnr,
         }, prog_bar=True, batch_size=rays.shape[0])
 
-        # Visualize BRDF lobes (only on first batch to avoid redundant visualizations)
-        if batch_idx == 0:
-            self.visualize_brdf_lobe(
-                output_dir=os.path.join(self.cfg.exp_output_root_path, 'images'),
-                num_latents=10,
-                resolution=64
-            )
+        if self.more_visualizations:
+            if batch_idx == 0:
+                self.visualize_brdf_lobe(output_dir=os.path.join(self.cfg.exp_output_root_path, 'images'), num_latents=10, resolution=64)
 
         return loss
     

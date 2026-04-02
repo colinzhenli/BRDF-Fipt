@@ -8,6 +8,9 @@ use_pos_enc: True
 different_decoder: False
 init_std: 0.1
 
+optimizer:
+  name: ${model.optimizer.name}
+
 # Decoder config (passed to BRDFDecoder)
 # decoder:
 #   hidden_layers: [128, 128, 64, 32, 16]
@@ -15,12 +18,31 @@ init_std: 0.1
 #   output_channels: 3
 #   degree: 3  # SH degree for positional encoding
 
+# decoder:
+#   smooth_reg: False
+#   smooth_reg_eps: 0.01
+#   use_skip_connection: True
+#   skip_layer: 2
+#   hidden_layers: [256, 128, 128, 64, 32]
+#   activation: "leakyrelu" # only for output layer
+#   output_channels: 3
+#   degree: 5  # SH degree for positional encoding
+
 decoder:
+  use_film: False
+  use_color_decomp: False
+  color_latent_dim: 6
   smooth_reg: False
-  smooth_reg_eps: 0.01
+  smooth_reg_eps: 0.02
   use_skip_connection: True
   skip_layer: 2
-  hidden_layers: [256, 128, 128, 64, 32]
-  activation: "leakyrelu" # only for output layer
+
+  # hidden_layers: [256, 128, 128, 64, 32]
+  # activation: "leakyrelu" # only for output layer
+  # intermediate_activation: "relu"  # hidden-layer activation; "relu" matches merl-branch pretrained weights
+
+  activation: "softplus" # only for output layer
+  hidden_layers: [256, 256, 256, 256]
+  intermediate_activation: "leakyrelu"  # hidden-layer activation; "relu" matches merl-branch pretrained weights
   output_channels: 3
-  degree: 5  # SH degree for positional encoding
+  degree: 3  # SH degree for positional encoding

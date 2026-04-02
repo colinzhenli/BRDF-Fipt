@@ -471,6 +471,16 @@ class BRDFDecoder(nn.Module):
         else:
             output_activation = nn.ReLU()
 
+        # Intermediate (hidden-layer) activation — defaults to "relu" for
+        # backward compatibility with the original merl-branch weights.
+        inter_act = getattr(cfg, 'intermediate_activation', 'relu').lower()
+        if inter_act == "leakyrelu":
+            intermediate_activation = nn.LeakyReLU()
+        elif inter_act == "softplus":
+            intermediate_activation = nn.Softplus()
+        else:
+            intermediate_activation = nn.ReLU()
+
         # MLP output channels: 1 when color_decomp provides the color
         mlp_output_channels = 1 if self.use_color_decomp else cfg.output_channels
 
@@ -508,7 +518,7 @@ class BRDFDecoder(nn.Module):
                 prev_dim = input_dim
                 for hidden_dim in cfg.hidden_layers:
                     layers.append(nn.Linear(prev_dim, hidden_dim))
-                    layers.append(nn.LeakyReLU())
+                    layers.append(intermediate_activation)
                     prev_dim = hidden_dim
                 layers.append(nn.Linear(prev_dim, mlp_output_channels))
                 layers.append(output_activation)
@@ -516,7 +526,7 @@ class BRDFDecoder(nn.Module):
 
         # Store activation for manual forward passes (FiLM / skip connection)
         if self.use_film or self.use_skip_connection:
-            self.activation = nn.LeakyReLU()
+            self.activation = intermediate_activation
             self.output_activation = output_activation
 
         if different_decoder:
@@ -530,7 +540,7 @@ class BRDFDecoder(nn.Module):
                 prev_dim = input_dim
                 for hidden_dim in cfg.hidden_layers:
                     layers.append(nn.Linear(prev_dim, hidden_dim))
-                    layers.append(nn.LeakyReLU())
+                    layers.append(intermediate_activation)
                     prev_dim = hidden_dim
                 layers.append(nn.Linear(prev_dim, 1))
                 layers.append(output_activation)
@@ -1605,6 +1615,11 @@ class MultiMaterialLatentBRDF(LightningModule):
         
         # Read training list from txt file
         self.training_list_path = getattr(cfg, 'training_list_path', None)
+
+        # Optimizer / sparse-embedding config (mirrors BonnLatentBRDF)
+        self.optimizer_name = getattr(cfg, 'optimizer', {}).get('name', 'SparseAdam')
+        self.use_sparse_adam = (self.optimizer_name == 'SparseAdam')
+
         # Latent dimensions
         self.latent_dim = cfg.latent_dim
         self.predict_frame = cfg.predict_frame
@@ -1623,17 +1638,21 @@ class MultiMaterialLatentBRDF(LightningModule):
         
         print(f"Loaded {num_materials} materials with {total_points:,} total points")
 
+        is_sparse = self.use_sparse_adam
+        if not is_sparse:
+            print("Dense Adam or SGD selected. Setting point_latent_bank sparse=False.")
+
         self.point_latent_bank = nn.Embedding(
             num_embeddings=total_points,
-            embedding_dim=self.total_latent_dim
+            embedding_dim=self.total_latent_dim,
+            sparse=is_sparse,
         )
         nn.init.normal_(self.point_latent_bank.weight, mean=0.0, std=cfg.init_std)
         
         if self.predict_frame:
-            # Last 6 dimensions: normal (0,0,1) and tangent (0,1,0)
             with torch.no_grad():
-                self.point_latent_bank.weight[:, -6:-3] = torch.tensor([0.0, 0.0, 1.0])  # normal
-                self.point_latent_bank.weight[:, -3:] = torch.tensor([0.0, 1.0, 0.0])    # tangent
+                self.point_latent_bank.weight[:, -6:-3] = torch.tensor([0.0, 0.0, 1.0])
+                self.point_latent_bank.weight[:, -3:] = torch.tensor([0.0, 1.0, 0.0])
         
         # Shared BRDF decoder
         self.decoder = BRDFDecoder(
@@ -2010,12 +2029,12 @@ class BonnLatentBRDF(LightningModule):
         self.predict_frame = cfg.predict_frame
         self.different_decoder = cfg.different_decoder
         self.brdf_latent_dim = self.latent_dim * 3 if self.different_decoder else self.latent_dim
-        self.total_latent_dim = self.brdf_latent_dim + (6 if self.predict_frame else 0)
+        self.total_latent_dim = self.brdf_latent_dim + 6  # always reserve 6 dims: [-6:-3] normal, [-3:] tangent
         self.use_pos_enc = cfg.use_pos_enc
 
         self.learnable_factor = getattr(cfg, 'learnable_factor', False)
         if self.learnable_factor:
-            self.factor = nn.Parameter(torch.tensor(1.0))
+            self.factor = nn.Parameter(torch.ones(3))
 
         # Single-material mode: load only one material from the metadata
         # file and use a dense (non-sparse) embedding for dense Adam.
@@ -2026,7 +2045,7 @@ class BonnLatentBRDF(LightningModule):
         self.use_sparse_adam = (self.optimizer_name == 'SparseAdam')
 
         if self.single_material:
-            total_points = self._load_single_material_num_points(
+            total_points, self._mat_H, self._mat_W = self._load_single_material_metadata(
                 data_folder, self.single_material_id)
             print(f"BonnLatentBRDF single-material mode: mat{self.single_material_id:04d}, "
                   f"{total_points:,} points")
@@ -2055,10 +2074,13 @@ class BonnLatentBRDF(LightningModule):
 
         nn.init.normal_(self.point_latent_bank.weight, mean=0.0, std=cfg.init_std)
 
-        if self.predict_frame:
-            with torch.no_grad():
-                self.point_latent_bank.weight[:, -6:-3] = torch.tensor([0.0, 0.0, 1.0])
-                self.point_latent_bank.weight[:, -3:]   = torch.tensor([0.0, 1.0, 0.0])
+        with torch.no_grad():
+            self.point_latent_bank.weight[:, -6:-3] = torch.tensor([0.0, 0.0, 1.0])
+            self.point_latent_bank.weight[:, -3:]   = torch.tensor([0.0, 1.0, 0.0])
+
+        self.init_normal_from_gt = getattr(cfg, 'init_normal_from_gt', False)
+        if self.init_normal_from_gt:
+            self._initialize_normals_from_gt(data_folder)
 
         self.decoder = BRDFDecoder(
             cfg=cfg.decoder,
@@ -2115,6 +2137,8 @@ class BonnLatentBRDF(LightningModule):
             materials.append({
                 'material_id': mat_id,
                 'name': f'mat{mat_id:04d}',
+                'H': entry['H'],
+                'W': entry['W'],
                 'num_points': num_points,
                 'num_observations': 0,
                 'point_range': (global_offset, global_offset + num_points),
@@ -2160,8 +2184,11 @@ class BonnLatentBRDF(LightningModule):
         return metadata
 
     @staticmethod
-    def _load_single_material_num_points(data_folder, mat_id):
-        """Read ``num_points`` for *one* material from ``bonn_point_metadata.json``."""
+    def _load_single_material_metadata(data_folder, mat_id):
+        """Read metadata for *one* material from ``bonn_point_metadata.json``.
+
+        Returns (num_points, H, W).
+        """
         import json
         from pathlib import Path
 
@@ -2177,7 +2204,48 @@ class BonnLatentBRDF(LightningModule):
             raise KeyError(
                 f"Material {mat_id} not found in {meta_path}. "
                 f"Available: {sorted(raw.keys(), key=lambda k: int(k))}")
-        return raw[key]['num_points']
+        entry = raw[key]
+        return entry['num_points'], entry['H'], entry['W']
+
+    # ------------------------------------------------------------------
+    # GT normal initialization
+    # ------------------------------------------------------------------
+    def _initialize_normals_from_gt(self, data_folder):
+        """Initialize latent bank normal slots from AxF-decoded GT normal maps."""
+        from pathlib import Path
+        from utils.dataset.bonn import _read_gt_normal_map
+
+        svfresnel_dir = Path(data_folder) / 'Bonn_svfresnel'
+        count = 0
+
+        with torch.no_grad():
+            if self.single_material:
+                gt_n = _read_gt_normal_map(
+                    svfresnel_dir, self.single_material_id,
+                    self._mat_H, self._mat_W)
+                if gt_n is not None:
+                    self.point_latent_bank.weight[:, -6:-3] = torch.from_numpy(gt_n)
+                    count += 1
+                else:
+                    print(f"  [Warning] GT normal not found for mat{self.single_material_id:04d}, "
+                          f"keeping default (0,0,1)")
+            else:
+                for mat_info in self.metadata['materials']:
+                    mat_id = mat_info['material_id']
+                    H, W = mat_info['H'], mat_info['W']
+                    offset = mat_info['point_range'][0]
+                    n_pts = mat_info['num_points']
+
+                    gt_n = _read_gt_normal_map(svfresnel_dir, mat_id, H, W)
+                    if gt_n is not None:
+                        self.point_latent_bank.weight[offset:offset + n_pts, -6:-3] = \
+                            torch.from_numpy(gt_n)
+                        count += 1
+                    else:
+                        print(f"  [Warning] GT normal not found for mat{mat_id:04d}, "
+                              f"keeping default (0,0,1)")
+
+        print(f"Initialized normals from GT for {count} material(s)")
 
     # ------------------------------------------------------------------
     # Point-ID mapping
@@ -2191,12 +2259,15 @@ class BonnLatentBRDF(LightningModule):
     # ------------------------------------------------------------------
     # Frame helpers
     # ------------------------------------------------------------------
-    def extract_frame_from_latent(self, latent: torch.Tensor):
-        predicted_normal  = latent[..., -6:-3]
-        predicted_tangent = latent[..., -3:]
+    def extract_frame_from_latent(self, latent: torch.Tensor, input_normal=None):
+        # When input_normal is provided (predict_frame=False), use it as the normal
+        # and only use the latent for the tangent direction.
+        if input_normal is not None:
+            predicted_normal = NF.normalize(input_normal, dim=-1)
+        else:
+            predicted_normal = NF.normalize(latent[..., -6:-3], dim=-1)
 
-        predicted_normal  = NF.normalize(predicted_normal, dim=-1)
-        predicted_tangent = NF.normalize(predicted_tangent, dim=-1)
+        predicted_tangent = NF.normalize(latent[..., -3:], dim=-1)
 
         predicted_tangent = predicted_tangent - \
             torch.sum(predicted_tangent * predicted_normal, dim=-1, keepdim=True) * predicted_normal
@@ -2247,8 +2318,8 @@ class BonnLatentBRDF(LightningModule):
         global_point_ids = self.get_global_point_id(material_ids, point_ids)
         latent = self.point_latent_bank(global_point_ids)
 
-        if self.predict_frame:
-            predicted_normal, predicted_tangent = self.extract_frame_from_latent(latent)
+        input_normal = None if self.predict_frame else normal
+        predicted_normal, predicted_tangent = self.extract_frame_from_latent(latent, input_normal)
 
         NoL = (wi * predicted_normal).sum(-1, keepdim=True)
         NoV = (wo * predicted_normal).sum(-1, keepdim=True)
@@ -3768,3 +3839,167 @@ class MipmapPBRTexturedModel(LightningModule):
     def load_latent(self, path: str):
         """Load mipmap latent texture from file"""
         self.mipmap_latent_texture.load_state_dict(torch.load(path))
+
+
+# ============================================================================
+# 10. UBO LATENT BRDF - Auto-decoder for UBO2014 BTF dataset
+# ============================================================================
+class UBOLatentBRDF(LightningModule):
+    """BRDF model for the Bonn UBO2014 BTF dataset.
+
+    Single-material auto-decoder with per-texel latent codes.  The BTF
+    data is a flat sample with normal = (0, 0, 1), so all directions are
+    already in local space and no world-to-local transform is needed.
+
+    Key differences from BonnLatentBRDF:
+      - No material_ids (single material only, no global offset mapping)
+      - No xyz positions or world-to-local transforms
+      - Latent bank size is determined from BTF spatial resolution
+      - No GT normal initialization (flat sample, normal is always up)
+    """
+
+    def __init__(self, cfg):
+        super().__init__()
+
+        self.cfg = cfg
+        self.latent_dim = cfg.latent_dim
+        self.predict_frame = getattr(cfg, 'predict_frame', False)
+        self.different_decoder = getattr(cfg, 'different_decoder', False)
+        self.brdf_latent_dim = self.latent_dim * 3 if self.different_decoder else self.latent_dim
+        self.use_pos_enc = getattr(cfg, 'use_pos_enc', True)
+
+        self.learnable_factor = getattr(cfg, 'learnable_factor', False)
+        if self.learnable_factor:
+            self.factor = nn.Parameter(torch.ones(3))
+
+        # Determine latent bank size from BTF file
+        btf_path = getattr(cfg, 'btf_path', None)
+        if btf_path is not None:
+            from btf_extractor import Ubo2014
+            btf = Ubo2014(btf_path)
+            H, W, _ = btf.img_shape
+            total_points = H * W
+            del btf
+            print(f"UBOLatentBRDF: BTF {H}×{W} = {total_points:,} texels")
+        else:
+            # Fallback: use config values
+            H = getattr(cfg, 'img_height', 400)
+            W = getattr(cfg, 'img_width', 400)
+            total_points = H * W
+            print(f"UBOLatentBRDF: using config {H}×{W} = {total_points:,} texels")
+
+        self._H = H
+        self._W = W
+
+        # Frame dims: always reserve 6 dims for normal+tangent when predict_frame
+        if self.predict_frame:
+            self.total_latent_dim = self.brdf_latent_dim + 6
+        else:
+            self.total_latent_dim = self.brdf_latent_dim
+
+        self.point_latent_bank = nn.Embedding(
+            num_embeddings=total_points,
+            embedding_dim=self.total_latent_dim,
+            sparse=False,  # always dense for stage-2 / Adam
+        )
+
+        nn.init.normal_(self.point_latent_bank.weight, mean=0.0, std=cfg.init_std)
+
+        # Initialize frame slots if predict_frame
+        if self.predict_frame:
+            with torch.no_grad():
+                self.point_latent_bank.weight[:, -6:-3] = torch.tensor([0.0, 0.0, 1.0])
+                self.point_latent_bank.weight[:, -3:]   = torch.tensor([0.0, 1.0, 0.0])
+
+        # Decoder
+        self.decoder = BRDFDecoder(
+            cfg=cfg.decoder,
+            latent_dim=self.latent_dim,
+            use_pos_enc=self.use_pos_enc,
+            different_decoder=self.different_decoder,
+        )
+
+        self.smooth_reg = getattr(cfg.decoder, 'smooth_reg', False)
+        self.smooth_reg_eps = getattr(cfg.decoder, 'smooth_reg_eps', 0.01)
+        print("UBOLatentBRDF initialisation complete!")
+
+    # ------------------------------------------------------------------
+    # Frame helpers (only used when predict_frame=True)
+    # ------------------------------------------------------------------
+    def extract_frame_from_latent(self, latent: torch.Tensor):
+        predicted_normal = NF.normalize(latent[..., -6:-3], dim=-1)
+        predicted_tangent = NF.normalize(latent[..., -3:], dim=-1)
+
+        # Gram-Schmidt orthogonalise tangent w.r.t. normal
+        predicted_tangent = predicted_tangent - \
+            torch.sum(predicted_tangent * predicted_normal, dim=-1, keepdim=True) * predicted_normal
+        predicted_tangent = NF.normalize(predicted_tangent, dim=-1)
+
+        return predicted_normal, predicted_tangent
+
+    def world_to_local(self, v, normal, tangent):
+        bitangent = torch.cross(normal, tangent, dim=-1)
+        return torch.stack([
+            (v * tangent).sum(dim=-1),
+            (v * bitangent).sum(dim=-1),
+            (v * normal).sum(dim=-1),
+        ], dim=-1)
+
+    # ------------------------------------------------------------------
+    # BRDF evaluation
+    # ------------------------------------------------------------------
+    def eval_brdf(self, wi, wo, point_ids=None):
+        """Evaluate BRDF for given directions and point IDs.
+
+        Args:
+            wi: [B, 3] light directions (local frame for flat BTF sample)
+            wo: [B, 3] view directions (local frame for flat BTF sample)
+            point_ids: [B] texel indices
+
+        Returns:
+            brdf: [B, 3] BRDF values
+            smooth_loss: scalar smoothness regularisation loss
+        """
+        if point_ids is None:
+            raise ValueError("point_ids must be provided")
+
+        latent = self.point_latent_bank(point_ids)  # [B, total_latent_dim]
+
+        if self.predict_frame:
+            predicted_normal, predicted_tangent = self.extract_frame_from_latent(latent)
+            wi_local = self.world_to_local(wi, predicted_normal, predicted_tangent)
+            wo_local = self.world_to_local(wo, predicted_normal, predicted_tangent)
+        else:
+            # BTF directions are already in local frame (flat sample)
+            wi_local = wi
+            wo_local = wo
+
+        normal_local = torch.zeros_like(wi_local)
+        normal_local[..., 2] = 1.0
+
+        enc_dir = self.decoder.encode_directions(wi_local, wo_local, normal_local)
+
+        brdf_lat = latent[:, :self.brdf_latent_dim]
+        brdf = self.decoder(enc_dir, brdf_lat)
+        if not self.different_decoder and brdf.shape[-1] == 1:
+            brdf = brdf.expand(-1, 3)
+
+        # Smoothness regularisation
+        if self.smooth_reg:
+            eps = self.smooth_reg_eps
+            rand_vec = torch.randn_like(wi_local)
+            rand_vec = rand_vec - (rand_vec * wi_local).sum(-1, keepdim=True) * wi_local
+            axis = NF.normalize(rand_vec, dim=-1)
+            wi_perturbed = wi_local * math.cos(eps) + torch.cross(axis, wi_local, dim=-1) * math.sin(eps)
+            enc_pert = self.decoder.encode_directions(wi_perturbed, wo_local, normal_local)
+            brdf_pert = self.decoder(enc_pert, brdf_lat)
+            if not self.different_decoder and brdf_pert.shape[-1] == 1:
+                brdf_pert = brdf_pert.expand(-1, 3)
+            smooth_loss = ((brdf_pert - brdf) / eps).pow(2).mean()
+        else:
+            smooth_loss = torch.tensor(0.0, device=wi.device)
+
+        if self.learnable_factor:
+            brdf = brdf * self.factor
+
+        return brdf, smooth_loss

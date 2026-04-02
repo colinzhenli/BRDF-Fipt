@@ -17,7 +17,7 @@ trainer:
   devices: 1
   num_nodes: 1
   max_epochs: 1000          # ← will be respected
-  check_val_every_n_epoch: 30
+  check_val_every_n_epoch: 1
   limit_train_batches: 512 # 200 iterations per epoch
   num_sanity_val_steps: 2    # ← number of validation batches before training starts (default is 2)
   enable_checkpointing: True  # set to False to skip checkpoint saving
@@ -37,7 +37,7 @@ optimizer:
   weight_decay: 0.0 # 0.001
   # lr: 0.001 
   lr: 1e-3 # latent embedding learning rate
-  decoder_lr: 1e-3 # decoder learning rate (lower to prevent chunk overfitting)
+  decoder_lr: 1e-4 # decoder learning rate (lower to prevent chunk overfitting)
   inference_lr: 0.001
   inference_steps: 3400
   warmup_steps_ratio: 0.5

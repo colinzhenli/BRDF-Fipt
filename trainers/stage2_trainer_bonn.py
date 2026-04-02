@@ -75,7 +75,7 @@ class Stage2Trainer_Bonn(pl.LightningModule):
     # ------------------------------------------------------------------
     def configure_optimizers(self):
         if self.freeze_decoder:
-            print("Decoder frozen! Only optimizing latent bank.")
+            print("Decoder frozen! Optimizing latent bank and learnable factor (if present).")
             decoder_params = set(self.material.decoder.parameters()) if hasattr(self.material, 'decoder') else set()
             params_to_optimize = [p for p in self.parameters() if p not in decoder_params]
         else:

@@ -33,3 +33,4 @@ python main.py \
     data.chunk_size=20 \
     data.filter_observations=False \
     # model.ckpt_path=/media/raid/cloth/output/BRDF/points/Stage-1_ReLU_Overfit-Material-0_run_1/training/model_0.20_0.20/last.ckpt
+

@@ -11,7 +11,7 @@ from renderer import ForwardRenderer
 from trainers import get_trainer_class
 from model.brdf import SvPBRBRDF
 from torch.utils.data import DataLoader
-from utils.dataset import RealImageDataset, RealValDataset, MultiMaterialPointDataset, MERLBRDFIterableDataset,MERLBRDFIterableDataset_hd,MERLBRDFFixedDataset_hd,MERLBRDFFixedDataset, RealNovelViewDataset, BonnDataset, BonnValDataset, BonnSingleMaterialDataset, BonnSingleMaterialValDataset
+from utils.dataset import RealImageDataset, RealValDataset, MultiMaterialPointDataset, MERLBRDFIterableDataset,MERLBRDFIterableDataset_hd,MERLBRDFFixedDataset_hd,MERLBRDFFixedDataset, RealNovelViewDataset, BonnDataset, BonnValDataset, BonnSingleMaterialDataset, BonnSingleMaterialValDataset, UBOBTFTrainDataset, UBOBTFValDataset
 import hydra
 from omegaconf import DictConfig
 from pytorch_lightning.strategies import DDPStrategy
@@ -32,12 +32,16 @@ def init_callbacks(cfg):
 def main(cfg):
     # fix the seed
     pl.seed_everything(cfg.global_train_seed, workers=True)
+    print(f"[DIAG] About to create output dir: {cfg.exp_output_root_path}")
     os.makedirs(cfg.exp_output_root_path, exist_ok=True)
+    print("[DIAG] Output dir created.")
     checkpoint_output_path = os.path.join(cfg.exp_output_root_path, "training")
     os.makedirs(checkpoint_output_path, exist_ok=True)
 
     # Load ground truth material parameters from pbr config
+    print("[DIAG] Before hydra.compose for gt_material_cfg...")
     gt_material_cfg = hydra.compose(config_name="config", overrides=["material=svpbr"]).material
+    print("[DIAG] After hydra.compose for gt_material_cfg.")
     
     # Use ground truth parameters from pbr.yaml
     albedo = gt_material_cfg.albedo
@@ -48,9 +52,12 @@ def main(cfg):
     os.makedirs(output_folder, exist_ok=True)
 
     # Initialize material dynamically from module.type config
+    print("[DIAG] Before material class import...")
     material_module = importlib.import_module(cfg.material.module)
     material_class = getattr(material_module, cfg.material.type)
+    print(f"[DIAG] Before material_class({cfg.material.type}) constructor...")
     material = material_class(cfg.material)
+    print("[DIAG] After material constructor.")
     gt_material = SvPBRBRDF(
         cfg=gt_material_cfg,
         albedo=torch.tensor(albedo)
@@ -211,7 +218,12 @@ def main(cfg):
                 val_dataset = BonnSingleMaterialValDataset(cfg, root_folder=cfg.dataset_folder)
             else:
                 val_dataset = BonnSingleMaterialValDataset(cfg, root_folder=cfg.dataset_folder)
-        
+
+    elif cfg.data.dataset_name == "ubo":
+        btf_path = os.path.join(cfg.dataset_folder, cfg.data.btf_filename)
+        train_dataset = UBOBTFTrainDataset(cfg, btf_path=btf_path, split='train')
+        val_dataset = UBOBTFValDataset(cfg, btf_path=btf_path)
+
     else:
         raise ValueError(f"Invalid dataset name: {cfg.data.dataset_name}")
     if not cfg.model.test:

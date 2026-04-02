@@ -71,6 +71,40 @@ def _read_xyz_map(filepath):
     return xyz, H, W
 
 
+def _read_gt_normal_map(svfresnel_dir, mat_id, H, W):
+    """Read the AxF-decoded tangent-space normal map and convert to world space.
+
+    The AxF SDK decodes normal maps with ORIGIN_TOPLEFT, so V increases
+    downward = decreasing Y in tangent space.  The Bonn xyz maps have rows
+    increasing in +Y world.  A vertical flip aligns the two grids.
+    Because the samples lie on a nearly-flat surface, the TBN is
+    approximately axis-aligned, so the flipped tangent-space normal
+    already serves as a world-space normal.
+
+    Returns (normals_flat (H*W, 3) float32) or None if the file is missing.
+    """
+    import cv2
+    svfresnel_dir = Path(svfresnel_dir)
+    exr_path = svfresnel_dir / f'mat{mat_id:04d}_svfresnel' / f'mat{mat_id:04d}_svfresnel_Normal.exr'
+    if not exr_path.exists():
+        return None
+
+    os.environ.setdefault('OPENCV_IO_ENABLE_OPENEXR', '1')
+    bgr = cv2.imread(str(exr_path), cv2.IMREAD_UNCHANGED)
+    if bgr is None:
+        return None
+    rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)  # (H_tex, W_tex, 3) float32
+    H_tex, W_tex = rgb.shape[:2]
+
+    if (H_tex, W_tex) != (H, W):
+        rgb = cv2.resize(rgb, (W, H), interpolation=cv2.INTER_LINEAR)
+
+    normals = np.flipud(rgb).copy()  # vertical flip: TOPLEFT V-axis → +Y world
+    norms = np.linalg.norm(normals, axis=2, keepdims=True)
+    normals = normals / np.maximum(norms, 1e-8)
+    return normals.reshape(-1, 3).astype(np.float32)
+
+
 # ---------------------------------------------------------------------------
 # BonnDataset
 # ---------------------------------------------------------------------------
@@ -96,7 +130,7 @@ class BonnDataset(IterableDataset):
         """All materials loaded into memory.
 
         Each entry in *materials* is a dict from ``_load_single_material``:
-        mat_id, xyz (V,3), point_ids (V,),
+        mat_id, xyz (V,3), point_ids (V,), gt_normals (V,3) or None,
         rgbs (K,V,3) float16, light_pos (K,3), cam_pos (K,3).
         """
         materials: list            # list of per-material dicts
@@ -121,6 +155,7 @@ class BonnDataset(IterableDataset):
         self.random_sample_material_number = getattr(cfg.data, 'random_sample_material_number', None)
         self.debug_rotate = getattr(cfg.data, 'debug_rotate', False)
         self.debug_swap_channels = getattr(cfg.data, 'debug_swap_channels', False)
+        self.svfresnel_dir = self.root_folder / 'Bonn_svfresnel'
         self.step = 0
 
         # Approximate luminance weights for pan→scalar projection
@@ -228,6 +263,9 @@ class BonnDataset(IterableDataset):
             n_pixels = H * W
             xyz_pts = xyz_map.reshape(n_pixels, 3).astype(np.float32)
             pids = np.arange(n_pixels, dtype=np.int64)
+
+            # ---- ground-truth normal map (from decoded AxF) -------------
+            gt_normals = _read_gt_normal_map(self.svfresnel_dir, mat_id, H, W)
 
             # ============================================================
             # Read all channels from each EXR using pyexr
@@ -368,6 +406,7 @@ class BonnDataset(IterableDataset):
                 'rgbs':      all_rgbs,        # (K, V, 3) float16
                 'light_pos': all_light_pos,   # (K, 3)   float32
                 'cam_pos':   all_cam_pos,     # (K, 3)   float32
+                'gt_normals': gt_normals,     # (V, 3)   float32 or None
             }
 
         except Exception as exc:
@@ -472,12 +511,13 @@ class BonnDataset(IterableDataset):
         rays_per_mat = np.round(weights * n_rays).astype(int)
         rays_per_mat[-1] = n_rays - rays_per_mat[:-1].sum()
 
-        parts_xyz   = []
-        parts_rgbs  = []
-        parts_pids  = []
-        parts_mids  = []
-        parts_light = []
-        parts_cam   = []
+        parts_xyz     = []
+        parts_rgbs    = []
+        parts_pids    = []
+        parts_mids    = []
+        parts_light   = []
+        parts_cam     = []
+        parts_normals = []
 
         for mi, mat in enumerate(materials):
             n = int(rays_per_mat[mi])
@@ -496,11 +536,15 @@ class BonnDataset(IterableDataset):
             parts_mids.append(np.full(n, mat['mat_id'], dtype=np.int64))
             parts_light.append(mat['light_pos'][img_i])
             parts_cam.append(mat['cam_pos'][img_i])
+            if mat['gt_normals'] is not None:
+                parts_normals.append(mat['gt_normals'][pix_i])
 
-        xyz   = np.concatenate(parts_xyz)
-        rgbs  = np.concatenate(parts_rgbs)
-        light = np.concatenate(parts_light)
-        cam   = np.concatenate(parts_cam)
+        xyz     = np.concatenate(parts_xyz)
+        rgbs    = np.concatenate(parts_rgbs)
+        light   = np.concatenate(parts_light)
+        cam     = np.concatenate(parts_cam)
+        has_normals = len(parts_normals) > 0
+        normals = np.concatenate(parts_normals) if has_normals else None
 
         wi = light - xyz
         wi /= np.maximum(np.linalg.norm(wi, axis=1, keepdims=True), 1e-8)
@@ -511,13 +555,13 @@ class BonnDataset(IterableDataset):
         pids = np.concatenate(parts_pids)
         mids = np.concatenate(parts_mids)
         perm = np.random.permutation(n_rays)
-        xyz, wi, wo, rgbs, pids, mids = \
-            xyz[perm], wi[perm], wo[perm], rgbs[perm], pids[perm], mids[perm]
+        xyz, wi, wo, rgbs, pids, mids, normals = \
+            xyz[perm], wi[perm], wo[perm], rgbs[perm], pids[perm], mids[perm], normals[perm]
 
         # confidence = 0 only when all rgb channels are 0 (occluded pixels)
         confidence = (rgbs.sum(axis=-1) > 0).astype(np.float32)
 
-        return {
+        result = {
             'xyz':          torch.from_numpy(xyz).float(),
             'wi':           torch.from_numpy(wi).float(),
             'wo':           torch.from_numpy(wo).float(),
@@ -527,6 +571,9 @@ class BonnDataset(IterableDataset):
             'confidence':   torch.from_numpy(confidence),
             'gt_params':    torch.zeros(1),
         }
+        if has_normals:
+            result['gt_normals'] = torch.from_numpy(normals).float()
+        return result
 
     # ------------------------------------------------------------------
     def __iter__(self):
@@ -574,6 +621,7 @@ class BonnValDataset(Dataset):
         self.debug = getattr(cfg.data, 'debug', False)
         self.debug_rotate = getattr(cfg.data, 'debug_rotate', False)
         self.debug_swap_channels = getattr(cfg.data, 'debug_swap_channels', False)
+        self.svfresnel_dir = Path(root_folder) / 'Bonn_svfresnel'
 
         # ---- discover materials & pick one ---------------------
         mat_ids = self._discover_materials()
@@ -584,7 +632,8 @@ class BonnValDataset(Dataset):
             else:
                 self.validate_id = self.mat_id
         else:
-            self.mat_id = random.choice(mat_ids)
+            self.mat_id = 1
+            self.validate_id = 1
         prefix = self.root_folder / f'mat{self.mat_id:04d}'
 
         print(f"\n{'='*60}")
@@ -596,6 +645,10 @@ class BonnValDataset(Dataset):
         self.xyz_map, self.H, self.W = \
             _read_xyz_map(f'{prefix}_xyz_rot000.exr')
         self.n_pixels = self.H * self.W
+
+        # ---- ground-truth normal map ------------------------------------
+        self.gt_normals = _read_gt_normal_map(
+            self.svfresnel_dir, self.mat_id, self.H, self.W)
 
         calib = self._load_calibration(self.mat_id)
 
@@ -650,7 +703,7 @@ class BonnValDataset(Dataset):
             # confidence = 0 only when all rgb channels are 0 (occluded pixels)
             confidence = (rgbs.sum(axis=-1) > 0).astype(np.float32)
 
-            self._items.append({
+            item = {
                 'xyz':          torch.from_numpy(xyz_flat.copy()).float(),
                 'wi':           torch.from_numpy(wi).float(),
                 'wo':           torch.from_numpy(wo).float(),
@@ -667,7 +720,10 @@ class BonnValDataset(Dataset):
                 'img_hw':       torch.tensor([self.H, self.W]),
                 'gt_params':    torch.zeros(1),
                 'label':        label,
-            })
+            }
+            if self.gt_normals is not None:
+                item['gt_normals'] = torch.from_numpy(self.gt_normals.copy()).float()
+            self._items.append(item)
         del poly_data
 
         print(f"BonnValDataset ready  ({len(self._items)} images)\n"
@@ -732,6 +788,7 @@ def _load_single_material_full(root_folder, mat_id):
     try:
         root_folder = Path(root_folder)
         prefix = root_folder / f'mat{mat_id:04d}'
+        svfresnel_dir = root_folder / 'Bonn_svfresnel'
 
         # ---- calibration ------------------------------------------------
         path = f'{prefix}_calibration.mat'
@@ -758,6 +815,9 @@ def _load_single_material_full(root_folder, mat_id):
         n_pixels = H * W
         xyz_pts = xyz_map.reshape(n_pixels, 3).astype(np.float32)
         pids = np.arange(n_pixels, dtype=np.int64)
+
+        # ---- ground-truth normal map (from decoded AxF) -----------------
+        gt_normals = _read_gt_normal_map(svfresnel_dir, mat_id, H, W)
 
         # ---- read EXR data ----------------------------------------------
         poly_data, poly_ch_names, pH, pW = _read_exr(f'{prefix}_poly.exr')
@@ -822,6 +882,7 @@ def _load_single_material_full(root_folder, mat_id):
             'data_type':   all_data_type,     # (K,)
             'emitter_ids': all_emitter_id,    # (K,)
             'lls_corners': all_lls_corner,    # (K, 4, 3)
+            'gt_normals':  gt_normals,        # (V, 3)  float32 or None
         }
 
     except Exception as exc:
@@ -870,7 +931,7 @@ class BonnSingleMaterialDataset(IterableDataset):
         n_val = max(1, int(n_images * self.val_view_ratio))
         val_indices = np.sort(perm[:n_val])
         # train_indices = np.sort(perm[n_val:])
-        train_indices = np.arange(n_images)
+        train_indices = np.arange(n_images) # all images for training
         if split == 'train':
             indices = train_indices
         else:
@@ -883,6 +944,7 @@ class BonnSingleMaterialDataset(IterableDataset):
         self.W = mat_data['W']
         self.xyz        = mat_data['xyz']                     # (V, 3)
         self.point_ids  = mat_data['point_ids']               # (V,)
+        self.gt_normals = mat_data['gt_normals']              # (V, 3) or None
         self.rgbs       = mat_data['rgbs'][indices]           # (K', V, 3)
         self.light_pos  = mat_data['light_pos'][indices]      # (K', 3)
         self.cam_pos    = mat_data['cam_pos'][indices]        # (K', 3)
@@ -908,10 +970,10 @@ class BonnSingleMaterialDataset(IterableDataset):
         img_i = np.random.randint(0, self.n_images, n_rays)
         pix_i = np.random.randint(0, self.n_pixels, n_rays)
 
-        xyz  = self.xyz[pix_i]
-        rgbs = self.rgbs[img_i, pix_i]
-        light = self.light_pos[img_i]
-        cam   = self.cam_pos[img_i]
+        xyz      = self.xyz[pix_i]
+        rgbs     = self.rgbs[img_i, pix_i]
+        light    = self.light_pos[img_i]
+        cam      = self.cam_pos[img_i]
 
         wi = light - xyz
         wi /= np.maximum(np.linalg.norm(wi, axis=1, keepdims=True), 1e-8)
@@ -921,7 +983,7 @@ class BonnSingleMaterialDataset(IterableDataset):
         # confidence = 0 only when all rgb channels are 0 (occluded pixels)
         confidence = (rgbs.sum(axis=-1) > 0).astype(np.float32)
 
-        return {
+        result = {
             'xyz':          torch.from_numpy(xyz).float(),
             'wi':           torch.from_numpy(wi).float(),
             'wo':           torch.from_numpy(wo).float(),
@@ -934,6 +996,9 @@ class BonnSingleMaterialDataset(IterableDataset):
             'confidence':   torch.from_numpy(confidence),
             'gt_params':    torch.zeros(1),
         }
+        if self.gt_normals is not None:
+            result['gt_normals'] = torch.from_numpy(self.gt_normals[pix_i]).float()
+        return result
 
     # ------------------------------------------------------------------
     def __iter__(self):
@@ -976,6 +1041,7 @@ class BonnSingleMaterialValDataset(Dataset):
         self.H = mat_data['H']
         self.W = mat_data['W']
         self.n_pixels = mat_data['n_pixels']
+        self.gt_normals = mat_data['gt_normals']  # (V, 3) or None
 
         # Reproduce the same split as training
         n_images = mat_data['n_images']
@@ -1013,7 +1079,7 @@ class BonnSingleMaterialValDataset(Dataset):
             # confidence = 0 only when all rgb channels are 0 (occluded pixels)
             confidence = (rgbs.sum(axis=-1) > 0).astype(np.float32)
 
-            self._items.append({
+            item = {
                 'xyz':          torch.from_numpy(xyz_flat.copy()).float(),
                 'wi':           torch.from_numpy(wi).float(),
                 'wo':           torch.from_numpy(wo).float(),
@@ -1032,7 +1098,10 @@ class BonnSingleMaterialValDataset(Dataset):
                 'img_hw':       torch.tensor([self.H, self.W]),
                 'gt_params':    torch.zeros(1),
                 'label':        label,
-            })
+            }
+            if self.gt_normals is not None:
+                item['gt_normals'] = torch.from_numpy(self.gt_normals.copy()).float()
+            self._items.append(item)
 
         print(f"BonnSingleMaterialValDataset ready  ({len(self._items)} images)\n"
               f"{'='*60}\n")
