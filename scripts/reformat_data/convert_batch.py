@@ -87,8 +87,6 @@ def run_benchmark(dataset_root, mat_ids):
     configs = [
         (1, 1, "Sequential, no thread I/O"),
         (1, 4, "Sequential, 4 I/O threads"),
-        (1, 8, "Sequential, 8 I/O threads"),
-        (2, 4, "2 workers, 4 I/O threads"),
         (4, 4, "4 workers, 4 I/O threads"),
     ]
 
@@ -103,8 +101,10 @@ def run_benchmark(dataset_root, mat_ids):
         # Clean up any previous output
         for mid in mat_ids:
             p = Path(dataset_root) / str(mid) / 'observations_structured.npz'
-            if p.exists():
-                os.remove(p)
+            try:
+                p.unlink(missing_ok=True)
+            except OSError:
+                pass
 
         t0 = time.time()
         results = run_batch(dataset_root, mat_ids, workers=workers, parallel_io=pio)

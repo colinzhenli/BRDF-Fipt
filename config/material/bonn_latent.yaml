@@ -33,12 +33,12 @@ decoder:
   use_skip_connection: True
   skip_layer: 2
 
-  hidden_layers: [256, 128, 128, 64, 32]
-  activation: "leakyrelu" # only for output layer
-  intermediate_activation: "relu"  # hidden-layer activation; "relu" matches merl-branch pretrained weights
+  # hidden_layers: [256, 128, 128, 64, 32]
+  # activation: "leakyrelu" # only for output layer
+  # intermediate_activation: "relu"  # hidden-layer activation; "relu" matches merl-branch pretrained weights
 
-  # activation: "softplus" # only for output layer
-  # hidden_layers: [256, 256, 256, 256]
-  # intermediate_activation: "leakyrelu"  # hidden-layer activation; "relu" matches merl-branch pretrained weights
+  activation: "softplus" # only for output layer
+  hidden_layers: [256, 256, 256, 256]
+  intermediate_activation: "leakyrelu"  # hidden-layer activation; "relu" matches merl-branch pretrained weights
   output_channels: 3
   degree: 3  # SH degree for positional encoding
