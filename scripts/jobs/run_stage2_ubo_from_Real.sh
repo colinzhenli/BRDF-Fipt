@@ -5,7 +5,7 @@ export CUDA_VISIBLE_DEVICES=3
 python main.py \
     dataset_folder=/mnt/data/colin/colin/Bonn_BTF \
     data=ubo \
-    data.btf_filename=carpet07_W400xH400_L151xV151.btf \
+    data.btf_filename=fabric11_W400xH400_L151xV151.btf \
     data.rays_num=131072 \
     data.valid_num=20 \
     renderer=multiarea_emitter \
@@ -19,7 +19,7 @@ python main.py \
     material.decoder.use_color_decomp=False \
     material.decoder.degree=3 \
     material.decoder.smooth_reg=False \
-    experiment_name=Stage-2_UBO_carpet07_from-Real_Logrel-Learnable-factor_run_1 \
+    experiment_name=Stage-2_UBO_fabric11_from-Real_Logrel-Learnable-factor_run_1 \
     model.optimizer.name=Adam \
     model.optimizer.lr=0.001 \
     model.optimizer.decoder_lr=1e-4 \

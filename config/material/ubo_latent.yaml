@@ -21,11 +21,11 @@ decoder:
   skip_layer: 2
   output_channels: 3
   degree: 3
-  hidden_layers: [256, 256, 256, 256]
-  activation: "softplus"
-  intermediate_activation: "leakyrelu" 
+  # hidden_layers: [256, 256, 256, 256]
+  # activation: "softplus"
+  # intermediate_activation: "leakyrelu" 
 
 
-  # hidden_layers: [256, 128, 128, 64, 32]
-  # activation: "leakyrelu" # only for output layer
-  # intermediate_activation: "relu" 
+  hidden_layers: [256, 128, 128, 64, 32]
+  activation: "leakyrelu" # only for output layer
+  intermediate_activation: "relu" 
