@@ -9,11 +9,10 @@ import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
 from renderer import ForwardRenderer
 from trainers import get_trainer_class
-from model.brdf import SvPBRBRDF
 from torch.utils.data import DataLoader
 from utils.dataset import RealImageDataset, RealValDataset, MultiMaterialPointDataset, MERLBRDFIterableDataset,MERLBRDFIterableDataset_hd,MERLBRDFFixedDataset_hd,MERLBRDFFixedDataset, RealNovelViewDataset, BonnDataset, BonnValDataset, BonnSingleMaterialDataset, BonnSingleMaterialValDataset, UBOBTFTrainDataset, UBOBTFValDataset
 import hydra
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 from pytorch_lightning.strategies import DDPStrategy
 import importlib
 import warnings
@@ -40,13 +39,13 @@ def main(cfg):
 
     # Load ground truth material parameters from pbr config
     print("[DIAG] Before hydra.compose for gt_material_cfg...")
-    gt_material_cfg = hydra.compose(config_name="config", overrides=["material=svpbr"]).material
+    gt_material_name = getattr(cfg, "gt_material", "svpbr")
+    gt_material_cfg = hydra.compose(config_name="config", overrides=[f"material={gt_material_name}"]).material
+    gt_material_cfg = OmegaConf.merge(gt_material_cfg, OmegaConf.create(getattr(cfg, "gt_material_params", {})))
     print("[DIAG] After hydra.compose for gt_material_cfg.")
     
-    # Use ground truth parameters from pbr.yaml
-    albedo = gt_material_cfg.albedo
-    roughness = gt_material_cfg.roughness
-    metallic = gt_material_cfg.metallic
+    roughness = float(getattr(gt_material_cfg, "roughness", 0.0))
+    metallic = float(getattr(gt_material_cfg, "metallic", 0.0))
     
     output_folder = os.path.join(cfg.exp_output_root_path, f'fabric_pattern_07_4k')
     os.makedirs(output_folder, exist_ok=True)
@@ -58,14 +57,22 @@ def main(cfg):
     print(f"[DIAG] Before material_class({cfg.material.type}) constructor...")
     material = material_class(cfg.material)
     print("[DIAG] After material constructor.")
-    gt_material = SvPBRBRDF(
-        cfg=gt_material_cfg,
-        albedo=torch.tensor(albedo)
-    )  # Ground truth uses pbr config
     print("before trainer init")
     # Get the appropriate trainer class based on stage and data type
     stage = cfg.model.get('stage', 1)  # Default to stage 1
     data_type = cfg.data.get('dataset_name', 'default')
+    needs_gt_material = data_type not in {"bonn", "ubo"}
+
+    gt_material = None
+    if needs_gt_material:
+        gt_material_module = importlib.import_module(gt_material_cfg.module)
+        gt_material_class = getattr(gt_material_module, gt_material_cfg.type)
+        if gt_material_cfg.type == "SvPBRBRDF":
+            albedo = torch.tensor(gt_material_cfg.albedo)
+            gt_material = gt_material_class(cfg=gt_material_cfg, albedo=albedo)
+        else:
+            gt_material = gt_material_class(gt_material_cfg)
+
     TrainerClass = get_trainer_class(stage, data_type)
     
     print(f"Using trainer for stage {stage}: {TrainerClass.__name__}")
