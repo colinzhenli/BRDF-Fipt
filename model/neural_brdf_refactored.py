@@ -2479,13 +2479,68 @@ class AXFBRDF(nn.Module):
         if not self.axf_path:
             raise ValueError("AXFBRDF: config must set axf_path to an .axf file")
         self.material_id = getattr(cfg, "material_id", "") or ""
+        self.data_folder = getattr(cfg, "data_folder", None)
+        self.single_material_id = getattr(cfg, "single_material_id", None)
         self.patch_width = float(getattr(cfg, "patch_width", 0.4))
         self.patch_length = float(getattr(cfg, "patch_length", 0.4))
         self.learnable_factor = bool(getattr(cfg, "learnable_factor", False))
         if self.learnable_factor:
             self.factor = nn.Parameter(torch.ones(3, dtype=torch.float32))
+        self._bonn_hw_by_material = self._load_bonn_metadata(self.data_folder)
         core = _load_axf_brdf_core()
         self._core = core.AXFBRDFCore(self.axf_path, self.material_id)
+
+    def _load_bonn_metadata(self, data_folder):
+        if data_folder is None:
+            return None
+
+        import json
+        from pathlib import Path
+
+        meta_path = Path(data_folder) / "bonn_point_metadata.json"
+        if not meta_path.exists():
+            return None
+
+        with open(meta_path) as f:
+            raw = json.load(f)
+
+        return {
+            int(mat_id): (int(entry["H"]), int(entry["W"]))
+            for mat_id, entry in raw.items()
+        }
+
+    def _compute_bonn_uv_from_point_ids(self, point_ids, material_ids=None):
+        print("point_ids",point_ids)
+        if point_ids is None or self._bonn_hw_by_material is None:
+            return None
+
+        if material_ids is None:
+            if self.single_material_id is None:
+                return None
+            material_ids = torch.full_like(point_ids, int(self.single_material_id))
+
+        if point_ids.ndim != 1 or material_ids.ndim != 1:
+            raise ValueError("point_ids and material_ids must be 1D tensors")
+
+        uv = torch.empty(point_ids.shape[0], 2, device=point_ids.device, dtype=torch.float32)
+
+        unique_material_ids = torch.unique(material_ids)
+        for mat_id_tensor in unique_material_ids:
+            mat_id = int(mat_id_tensor.item())
+            if mat_id not in self._bonn_hw_by_material:
+                return None
+
+            H, W = self._bonn_hw_by_material[mat_id]
+            mask = material_ids == mat_id_tensor
+            pid = point_ids[mask].to(torch.long)
+
+            row = torch.div(pid, W, rounding_mode='floor')
+            col = torch.remainder(pid, W)
+
+            uv[mask, 0] = (col.to(torch.float32) + 0.5) / float(W)
+            uv[mask, 1] = 1.0 - (row.to(torch.float32) + 0.5) / float(H)
+
+        return uv
 
     def _compute_planar_uv(self, pos):
         if pos is None:
@@ -2493,7 +2548,10 @@ class AXFBRDF(nn.Module):
         half_w = self.patch_width * 0.5
         half_l = self.patch_length * 0.5
         u = (pos[:, 0] + half_w) / self.patch_width
-        v = (pos[:, 2] + half_l) / self.patch_length
+        # Bonn/AxF materials lie on the XY plane with +Z as the patch normal.
+        # AxF uses the opposite vertical texture orientation from the Bonn xyz map,
+        # so V must be flipped relative to world-space +Y.
+        v = 1.0 - (pos[:, 1] + half_l) / self.patch_length
         return torch.stack([u, v], dim=-1).clamp(0.0, 1.0)
 
     def _get_frame(self, wi, normal=None, TBN=None):
@@ -2550,7 +2608,8 @@ class AXFBRDF(nn.Module):
         wo_local = self._world_to_local(NF.normalize(wo, dim=-1), tangent, bitangent, frame_normal)
 
         if uv is None:
-            uv = self._compute_planar_uv(pos)
+            raise ValueError("AXFBRDF.eval_brdf requires precomputed uv.")
+
 
         NoL = wi_local[:, 2:3]
         NoV = wo_local[:, 2:3]
@@ -2563,7 +2622,6 @@ class AXFBRDF(nn.Module):
                 return rgb, frame_normal, pdf, smooth_loss
             return rgb, pdf
 
-        print("uv",uv)
         wi_np = wi_local.detach().cpu().numpy().astype(np.float32)
         wo_np = wo_local.detach().cpu().numpy().astype(np.float32)
         uv_np = uv.detach().cpu().numpy().astype(np.float32)

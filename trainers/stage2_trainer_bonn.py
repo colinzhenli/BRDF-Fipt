@@ -117,16 +117,35 @@ class Stage2Trainer_Bonn(pl.LightningModule):
     # ------------------------------------------------------------------
     # BRDF helpers
     # ------------------------------------------------------------------
-    def _eval_brdf(self, xyz, wi, wo, point_ids, material_ids):
+    def _compute_uv_from_point_ids(self, point_ids, img_hw=None):
+        """Compute UV from flattened point IDs.
+
+        If img_hw is provided, use it directly (validation full-image path).
+        Otherwise, fall back to material-provided mapping (training random-ray path).
+        """
+        if img_hw is not None:
+            H = int(img_hw[0].item() if torch.is_tensor(img_hw[0]) else img_hw[0])
+            W = int(img_hw[1].item() if torch.is_tensor(img_hw[1]) else img_hw[1])
+            #print("H",H)
+            #print("W",W)
+            pid = point_ids.to(torch.long)
+            u = ((pid % W).to(torch.float32) + 0.5) / float(W)
+            v = ((pid // W).to(torch.float32) + 0.5) / float(H)
+            return torch.stack([u, v], dim=-1).to(device=point_ids.device)
+
+        if not hasattr(self.material, "_compute_bonn_uv_from_point_ids"):
+            raise ValueError("Material does not provide Bonn UV mapping helper.")
+        return self.material._compute_bonn_uv_from_point_ids(point_ids)
+
+    def _eval_brdf(self, xyz, wi, wo, point_ids, material_ids, uv=None):
         """Thin wrapper around material.eval_brdf.
 
         Returns (brdf [B,3], predicted_normal [B,3], smooth_loss scalar).
         """
         dummy_normal = torch.zeros_like(wi)
         dummy_normal[..., 2] = 1.0
-        print("xyz",xyz)
         brdf, pred_normal, _pdf, smooth_loss = self.material.eval_brdf(
-            xyz, wi, wo, dummy_normal,
+            pos=xyz, wi=wi, wo=wo, normal=dummy_normal, uv=uv,
             point_ids=point_ids, material_ids=material_ids)
         return brdf, pred_normal, smooth_loss
 
@@ -174,7 +193,10 @@ class Stage2Trainer_Bonn(pl.LightningModule):
         pid_flat = point_ids.unsqueeze(1).expand(-1, spp).reshape(N * spp)
         mid_flat = material_ids.unsqueeze(1).expand(-1, spp).reshape(N * spp)
 
-        brdf_flat, _, _ = self._eval_brdf(xyz_flat, wi_flat, wo_flat, pid_flat, mid_flat)
+        uv_flat = self._compute_uv_from_point_ids(pid_flat)
+        brdf_flat, _, _ = self._eval_brdf(
+            xyz_flat, wi_flat, wo_flat, pid_flat, mid_flat, uv=uv_flat
+        )
         brdf_k = brdf_flat.reshape(N, spp, 3)                       # (N, spp, 3)
 
         numerator   = (brdf_k * w_k).sum(dim=1)                     # (N, 3)
@@ -228,9 +250,10 @@ class Stage2Trainer_Bonn(pl.LightningModule):
 
         # --- polychromatic (RGB) loss ---
         if poly_mask.any():
+            uv_poly = self._compute_uv_from_point_ids(point_ids[poly_mask])
             brdf, _, sm = self._eval_brdf(
                 xyz[poly_mask], wi[poly_mask], wo[poly_mask],
-                point_ids[poly_mask], material_ids[poly_mask])
+                point_ids[poly_mask], material_ids[poly_mask], uv=uv_poly)
             total_loss = total_loss + self._compute_loss(brdf, rgbs_gt[poly_mask],
                                                          confidence[poly_mask])
             smooth_total = smooth_total + sm
@@ -238,9 +261,10 @@ class Stage2Trainer_Bonn(pl.LightningModule):
 
         # --- panchromatic (grayscale) loss ---
         if pan_mask.any():
+            uv_pan = self._compute_uv_from_point_ids(point_ids[pan_mask])
             brdf_pan, _, sm = self._eval_brdf(
                 xyz[pan_mask], wi[pan_mask], wo[pan_mask],
-                point_ids[pan_mask], material_ids[pan_mask])
+                point_ids[pan_mask], material_ids[pan_mask], uv=uv_pan)
             pred_gray = (brdf_pan * self.pan_weights).sum(-1, keepdim=True)
             gt_gray   = rgbs_gt[pan_mask][:, :1]
             total_loss = total_loss + self.pan_loss_weight * self._compute_loss(
@@ -287,7 +311,8 @@ class Stage2Trainer_Bonn(pl.LightningModule):
         material_ids = batch['material_ids'].squeeze(0)
         img_hw       = batch['img_hw'].squeeze(0)              # (2,)
 
-        brdf, _, _ = self._eval_brdf(xyz, wi, wo, point_ids, material_ids)
+        uv = self._compute_uv_from_point_ids(point_ids, img_hw=img_hw)
+        brdf, _, _ = self._eval_brdf(xyz, wi, wo, point_ids, material_ids, uv=uv)
 
         loss = self._compute_loss(brdf, rgbs_gt)
         mse  = NF.mse_loss(brdf, rgbs_gt)

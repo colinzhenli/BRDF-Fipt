@@ -6,6 +6,8 @@ axf_path: "/home/haoran/axf/mat0001.axf"
 
 # Optional material ID inside the AxF container.
 material_id: ""
+data_folder: ${dataset_folder}
+single_material_id: ${data.overfit_mat_id}
 
 # Optional global RGB scale fitted against measured data.
 learnable_factor: False
