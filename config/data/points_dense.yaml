@@ -1,0 +1,18 @@
+defaults:
+  - base
+
+dataset_name: "points_dense"
+pbr_path:
+shape:
+  type: "real"
+  center: [0.0, 0.0, 0.0]
+  radius: 0.2
+
+pixel: True
+ray_diff: True
+custom_c2w: True
+filter_observations: False # whether to filter observations by XY region
+
+metadata_path: ${dataset_folder}/scan_log.json
+camera_metadata_path: ${dataset_folder}/rotated_camera.json
+handeye_refiner: False # whether to learn the refiner

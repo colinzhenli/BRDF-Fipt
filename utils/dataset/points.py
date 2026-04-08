@@ -158,6 +158,364 @@ def get_ray_directions_for_pixels(pixel_coords, focal, cx, cy, distortion):
     
     return directions
 
+class MultiMaterialDenseDataset(IterableDataset):
+    """
+    Memory-efficient dataset that loads ALL observations into RAM from structured NPZ files.
+    No chunk switching — all data is available every iteration.
+
+    Each material folder must contain:
+      - observations_structured.npz with:
+          xyz        (V, 3)    float32   — 3D point positions
+          point_ids  (V,)      int32     — local point IDs
+          rgbs       (K, V, 3) uint16    — raw sensor RGB (CCM applied at sample time)
+          cam_pos    (K, 3)    float32   — camera positions
+          light_pos  (K, 3)    float32   — light positions
+      - scan_log.json          — for emitter_id lookup
+      - rotated_camera.json    — for full c2w matrices (rotation + position)
+
+    Memory layout (per material ~1.2 GB, dominated by rgbs):
+      - Per-material: rgbs (K,V,3) kept as numpy uint16 (NOT flattened)
+      - Per-material: xyz (V,3) float32, point_ids (V,) int32
+      - Flat sampling index: (N_total, 3) int32 storing (mat_local_idx, k, v)
+      - Lookup tables: cam_pos, emitter_ids per material
+      - At sample time: index into dense arrays, compute rays + CCM vectorized
+
+    Memory per material: ~1.2 GB (uint16 rgbs) + ~6 MB (xyz, point_ids, metadata)
+    Sampling index: ~12 bytes per valid observation (3 × int32)
+    """
+
+    def __init__(self, cfg, root_folder, split='train', share_from=None):
+        """
+        Args:
+            cfg: configuration object
+            root_folder: path to folder containing material subfolders
+            split: 'train' or 'val'
+            share_from: optional MultiMaterialDenseDataset to reuse already-loaded
+                numpy arrays from (typically the train instance). When provided,
+                this instance does not re-read any npz files; it only recomputes
+                mat_valid_k, mat_num_valid_obs, and mat_weights for its split.
+        """
+        self.cfg = cfg
+        self.root_folder = root_folder
+        self.split = split
+        self.rays_num = cfg.data.rays_num
+
+        # Color correction matrix (applied at sample time)
+        self.ccm = torch.from_numpy(np.array(cfg.data.ccm)).double()  # (3, 3) float64
+
+        # XY filter
+        self.filter_observations = getattr(cfg.data, 'filter_observations', True)
+        rect_cfg = cfg.renderer.mesh.rectangle
+        self.filter_center = rect_cfg.center
+        self.filter_half_width = rect_cfg.width / 4
+        self.filter_half_length = rect_cfg.length / 4
+
+        # Train/val split
+        self.val_ratio = getattr(cfg.data, 'val_ratio', 0.1)
+
+        # Read training list
+        self.training_list_path = cfg.data.training_list_path
+        self.training_list = []
+        with open(self.training_list_path, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    self.training_list.append(int(line))
+
+        self.material_folders = [Path(root_folder) / str(mid) for mid in self.training_list]
+
+        print(f"\n{'='*60}")
+        print(f"Loading MultiMaterial Dense Dataset ({split})")
+        print(f"{'='*60}")
+        print(f"Materials: {len(self.training_list)}")
+
+        if share_from is not None:
+            self._share_from(share_from)
+        else:
+            self._load_all_data()
+
+        total_obs = sum(self.mat_num_valid_obs)
+        # Memory estimate: dense arrays + lookup tables (no sample index!)
+        dense_mem = sum(r.nbytes for r in self.mat_rgbs) + sum(x.nbytes for x in self.mat_xyz)
+        lookup_mem = self.cam_positions.nelement() * self.cam_positions.element_size()
+        total_mem = dense_mem + lookup_mem
+        print(f"\nDataset ready! Total valid observations: {total_obs:,}")
+        if share_from is not None:
+            print(f"Sharing dense arrays with parent dataset (no extra RAM)")
+        else:
+            print(f"Dense data: {dense_mem / 1e9:.2f} GB, "
+                  f"Lookup tables: {lookup_mem / 1e6:.1f} MB, "
+                  f"Total: {total_mem / 1e9:.2f} GB")
+        print(f"Using rejection sampling (no sample index)")
+        print(f"{'='*60}\n")
+
+    def _share_from(self, parent):
+        """Reuse already-loaded numpy arrays from a parent dataset.
+
+        Dense arrays (rgbs, xyz, point_ids, ...) are shared by reference — no copy.
+        Only mat_valid_k, mat_num_valid_obs, and mat_weights are recomputed for
+        this instance's split.
+        """
+        # Share dense arrays and lookup tables by reference (no copy)
+        self.mat_rgbs = parent.mat_rgbs
+        self.mat_xyz = parent.mat_xyz
+        self.mat_point_ids = parent.mat_point_ids
+        self.mat_emitter_lookup = parent.mat_emitter_lookup
+        self.mat_material_ids = parent.mat_material_ids
+        self.mat_valid_v = parent.mat_valid_v
+        self.cam_positions = parent.cam_positions
+
+        is_val = (self.split == 'val')
+
+        # Recompute valid_k and observation counts for this split
+        self.mat_valid_k = []
+        self.mat_num_valid_obs = []
+        for m in range(len(self.mat_rgbs)):
+            rgbs_dense = self.mat_rgbs[m]
+            K = rgbs_dense.shape[0]
+            valid_v = self.mat_valid_v[m]
+
+            split_idx = int(K * (1 - self.val_ratio))
+            if is_val:
+                valid_k = np.arange(split_idx, K)
+            else:
+                valid_k = np.arange(K)
+
+            rgbs_sub = rgbs_dense[np.ix_(valid_k, valid_v)]
+            valid_mask = rgbs_sub.sum(axis=2) > 0
+            N_obs = int(valid_mask.sum())
+
+            self.mat_valid_k.append(valid_k)
+            self.mat_num_valid_obs.append(N_obs)
+
+        # Material sampling weights — materials with zero valid obs get zero weight
+        obs_arr = np.array(self.mat_num_valid_obs, dtype=np.float64)
+        total_valid = obs_arr.sum()
+        if total_valid > 0:
+            self.mat_weights = obs_arr / total_valid
+        else:
+            # Pathological: no valid observations at all in this split.
+            self.mat_weights = np.ones(len(obs_arr)) / max(len(obs_arr), 1)
+
+    def _load_all_data(self):
+        """Load structured NPZ data. Keeps rgbs in dense numpy uint16 format."""
+        is_val = (self.split == 'val')
+
+        # Per-material dense storage (kept as numpy for memory efficiency)
+        self.mat_rgbs = []       # list of (K, V, 3) numpy uint16
+        self.mat_xyz = []        # list of (V, 3) numpy float32
+        self.mat_point_ids = []  # list of (V,) numpy int32
+        self.mat_emitter_lookup = []  # list of (K,) numpy int32
+        self.mat_material_ids = []    # list of int (material_id)
+        self.mat_valid_v = []    # list of numpy array (filtered point indices)
+        self.mat_valid_k = []    # list of numpy array (valid camera indices for split)
+        self.mat_num_valid_obs = []  # list of int (count of valid observations per material)
+
+        cam_pos_list = []  # list of (K, 3) numpy float32
+        max_K = 0
+
+        for material_folder in tqdm(self.material_folders, desc=f"Loading {self.split} data"):
+            material_id = int(material_folder.name)
+            structured_path = material_folder / 'observations_structured.npz'
+
+            if not structured_path.exists():
+                print(f"  Warning: {structured_path} not found, skipping material {material_id}")
+                continue
+
+            data = np.load(structured_path)
+            xyz = data['xyz']              # (V, 3) float32
+            point_ids_np = data['point_ids']  # (V,) int32
+            rgbs_dense = data['rgbs']      # (K, V, 3) uint16
+
+            K, V, _ = rgbs_dense.shape
+
+            # Load metadata (same as existing MultiMaterialPointDataset)
+            scan_log_path = str(material_folder / "scan_log.json")
+            camera_json_path = str(material_folder / "rotated_camera.json")
+
+            metadata_list, _, _ = load_camera_turntable_light_metadata(scan_log_path)
+            camera_metadata = load_camera_metadata(camera_json_path)
+
+            # Emitter lookup: overall_id (0-based) -> emitter_id
+            sorted_metadata = sorted(metadata_list, key=lambda x: int(x['overall_id']))
+            emitter_lookup = np.array(
+                [int(entry['emitter_id']) for entry in sorted_metadata], dtype=np.int32)
+
+            # Camera positions from c2w (same as existing loader)
+            cam_pos_array = np.zeros((K, 3), dtype=np.float32)
+            for cam_id_str, cam_info in camera_metadata.items():
+                cam_id = int(cam_id_str)
+                if cam_id < K:
+                    position = np.array(cam_info['position'], dtype=np.float32)
+                    rotation_matrix = np.array(cam_info['rotation_matrix'])
+                    c2w = build_4x4(rotation_matrix, position)
+                    cam_pos_array[cam_id] = c2w[:3, 3]
+
+            # XY filter on points
+            if self.filter_observations:
+                point_mask = ((np.abs(xyz[:, 0] - self.filter_center[0]) <= self.filter_half_width) &
+                              (np.abs(xyz[:, 1] - self.filter_center[1]) <= self.filter_half_length))
+                valid_v = np.where(point_mask)[0]
+            else:
+                valid_v = np.arange(V)
+
+            if len(valid_v) == 0:
+                continue
+
+            # Train/val split at image level
+            split_idx = int(K * (1 - self.val_ratio))
+            if is_val:
+                valid_k = np.arange(split_idx, K)
+            else:
+                valid_k = np.arange(K)
+
+            # Count valid observations for density estimate
+            rgbs_sub = rgbs_dense[np.ix_(valid_k, valid_v)]
+            valid_mask = rgbs_sub.sum(axis=2) > 0
+            N_obs = int(valid_mask.sum())
+
+            if N_obs == 0:
+                continue
+
+            density = valid_mask.mean()
+
+            # Store per-material data
+            self.mat_rgbs.append(rgbs_dense)      # keep full (K, V, 3) for indexing
+            self.mat_xyz.append(xyz)               # (V, 3) float32
+            self.mat_point_ids.append(point_ids_np)  # (V,) int32
+            self.mat_emitter_lookup.append(emitter_lookup)
+            self.mat_material_ids.append(material_id)
+            self.mat_valid_v.append(valid_v)
+            self.mat_valid_k.append(valid_k)
+            self.mat_num_valid_obs.append(N_obs)
+
+            cam_pos_list.append(cam_pos_array)
+            max_K = max(max_K, K)
+
+            print(f"  Material {material_id}: {N_obs:,} valid obs "
+                  f"(K={len(valid_k)}, V_filtered={len(valid_v)}, "
+                  f"density={density*100:.1f}%, "
+                  f"rgbs={rgbs_dense.nbytes/1e9:.2f} GB)")
+
+        # Precompute material sampling weights (proportional to valid obs count)
+        total_valid = sum(self.mat_num_valid_obs)
+        self.mat_weights = np.array(self.mat_num_valid_obs, dtype=np.float64) / total_valid
+
+        # Camera position lookup table: (num_materials, max_K, 3)
+        num_materials = len(cam_pos_list)
+        self.cam_positions = torch.zeros(num_materials, max_K, 3, dtype=torch.float32)
+        for i, cp in enumerate(cam_pos_list):
+            self.cam_positions[i, :cp.shape[0]] = torch.from_numpy(cp)
+
+    def _sample_batch_rejection(self, N):
+        """
+        Sample N valid observations using rejection sampling.
+        Randomly picks (mat, k, v) tuples, rejects invalid ones (rgbs sum == 0),
+        repeats until N valid samples are collected. Fully vectorized per round.
+
+        Returns:
+            dict with rays, rgbs, xyz, emitter_ids, camera_ids, material_ids, point_ids
+        """
+        num_mats = len(self.mat_rgbs)
+
+        # Collect valid samples across rounds
+        collected_xyz = []
+        collected_rgbs = []
+        collected_point_ids = []
+        collected_emitter_ids = []
+        collected_camera_ids = []
+        collected_material_ids = []
+        collected_cam_pos = []
+        num_collected = 0
+
+        while num_collected < N:
+            remaining = N - num_collected
+            # Oversample by 1.3x to account for invalid entries
+            n_try = int(remaining * 1.3) + 64
+
+            # Sample materials weighted by valid obs count
+            mat_samples = np.random.choice(num_mats, size=n_try, p=self.mat_weights)
+
+            # For each material, sample random (k, v) from valid_k x valid_v
+            for m in range(num_mats):
+                m_mask = mat_samples == m
+                n_m = int(m_mask.sum())
+                if n_m == 0:
+                    continue
+
+                valid_k = self.mat_valid_k[m]
+                valid_v = self.mat_valid_v[m]
+                k_rand = valid_k[np.random.randint(0, len(valid_k), size=n_m)]
+                v_rand = valid_v[np.random.randint(0, len(valid_v), size=n_m)]
+
+                # Rejection: check rgbs sum > 0
+                rgbs_sampled = self.mat_rgbs[m][k_rand, v_rand]  # (n_m, 3) uint16
+                valid = rgbs_sampled.sum(axis=1) > 0
+                if not valid.any():
+                    continue
+
+                k_valid = k_rand[valid]
+                v_valid = v_rand[valid]
+
+                collected_xyz.append(self.mat_xyz[m][v_valid])
+                collected_rgbs.append(rgbs_sampled[valid].astype(np.float64))
+                collected_point_ids.append(self.mat_point_ids[m][v_valid].astype(np.int64))
+                collected_emitter_ids.append(self.mat_emitter_lookup[m][k_valid].astype(np.int64))
+                collected_camera_ids.append(k_valid.astype(np.int64))
+                collected_material_ids.append(np.full(int(valid.sum()), self.mat_material_ids[m], dtype=np.int64))
+                collected_cam_pos.append(self.cam_positions[m, k_valid].numpy())
+                num_collected += int(valid.sum())
+
+        # Concatenate and trim to exactly N
+        xyz_out = torch.from_numpy(np.concatenate(collected_xyz, axis=0)[:N])
+        rgbs_raw = torch.from_numpy(np.concatenate(collected_rgbs, axis=0)[:N])
+        point_ids_out = torch.from_numpy(np.concatenate(collected_point_ids, axis=0)[:N])
+        emitter_ids_out = torch.from_numpy(np.concatenate(collected_emitter_ids, axis=0)[:N])
+        camera_ids_out = torch.from_numpy(np.concatenate(collected_camera_ids, axis=0)[:N])
+        material_ids_out = torch.from_numpy(np.concatenate(collected_material_ids, axis=0)[:N])
+        cam_pos = torch.from_numpy(np.concatenate(collected_cam_pos, axis=0)[:N])
+
+        # Vectorized ray computation
+        rays_d = xyz_out - cam_pos
+        rays_d = rays_d / torch.norm(rays_d, dim=-1, keepdim=True)
+        rays = torch.cat([cam_pos, rays_d], dim=-1)  # (N, 6)
+
+        # Apply CCM (float64 @ ccm, clip, float32)
+        rgbs = (rgbs_raw @ self.ccm).clamp(min=0.0).float()  # (N, 3)
+
+        return {
+            'rays': rays,
+            'rgbs': rgbs,
+            'xyz': xyz_out,
+            'emitter_ids': emitter_ids_out,
+            'camera_ids': camera_ids_out,
+            'material_ids': material_ids_out,
+            'point_ids': point_ids_out,
+            'gt_params': torch.zeros(1),
+        }
+
+    def set_step(self, step: int):
+        """No-op for compatibility with training loop."""
+        pass
+
+    def __len__(self):
+        total_obs = sum(self.mat_num_valid_obs)
+        if self.split == 'val':
+            return math.ceil(total_obs / self.rays_num)
+        return 1000000
+
+    def __iter__(self):
+        if self.split == 'train':
+            while True:
+                yield self._sample_batch_rejection(self.rays_num)
+        else:
+            # Validation: iterate all valid observations deterministically
+            total_obs = sum(self.mat_num_valid_obs)
+            num_batches = math.ceil(total_obs / self.rays_num)
+            for _ in range(num_batches):
+                yield self._sample_batch_rejection(self.rays_num)
+
+
 class MultiMaterialPointDataset(IterableDataset if True else Dataset):
     """
     Dataset for multiple materials loaded from point observations.
@@ -168,10 +526,10 @@ class MultiMaterialPointDataset(IterableDataset if True else Dataset):
     - point_metadata.json (contains num_points for this material)
     - observations/ (chunked observation files: observations_chunk_00.npz, observations_chunk_01.npz, ...)
       OR sparse/observations.npz (legacy single file format)
-    
+
     Each observation chunk contains: [x, y, z, image_id, pixel_x, pixel_y, r, g, b, point_id]
     where point_id is the LOCAL point index (0 to num_points-1) within this material.
-    
+
     This class uses double buffering to randomly load chunks per material in the background,
     keeping memory usage constant while providing fresh data every N iterations.
     Supports both training and validation splits from the same data.

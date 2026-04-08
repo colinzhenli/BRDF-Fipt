@@ -760,6 +760,117 @@ def _process_camera_batch(args):
     return batch_observations
 
 
+def build_and_save_structured_observations(
+    observations,
+    unique_pids,
+    unique_xyz,
+    scan_log_path,
+    output_path,
+    verbose=True,
+):
+    """
+    Build the dense (K, V, 3) RGB matrix from an in-memory observations array
+    and save it as observations_structured.npz.
+
+    This mirrors scripts/reformat_data/convert_single.py exactly so the inline
+    output is bit-for-bit identical to running convert_single.py on the chunks.
+
+    Args:
+        observations: (M, 10) float64 array
+            columns [x, y, z, image_id, pixel_x, pixel_y, r, g, b, point_id]
+            image_id is 1-based COLMAP ID; point_id is 0-based local index.
+        unique_pids: (V,) int array of unique point ids that were observed
+            (the same array stored in point_positions.npz['point_ids']).
+        unique_xyz: (V, 3) float32 array of point positions, same order as unique_pids
+            (the same array stored in point_positions.npz['positions']).
+        scan_log_path: path to scan_log.json (provides K, cam_pos, light_pos).
+        output_path: where to write observations_structured.npz.
+        verbose: if True, print stats.
+    """
+    import time
+
+    t0 = time.time()
+    V = len(unique_pids)
+
+    # Vectorised point_id -> dense-row lookup (matches convert_single.py:55-58)
+    point_ids_arr = np.asarray(unique_pids)
+    max_pid = int(point_ids_arr.max())
+    pid_lookup = np.full(max_pid + 1, -1, dtype=np.int32)
+    pid_lookup[point_ids_arr.astype(np.int64)] = np.arange(V, dtype=np.int32)
+
+    # Load scan_log for cam / light positions and K (matches convert_single.py:60-66)
+    with open(scan_log_path) as f:
+        scan_log = json.load(f)
+    K = len(scan_log)
+    cam_pos = np.array([e['position'] for e in scan_log], dtype=np.float32)
+    light_pos = np.array([e['position_light'] for e in scan_log], dtype=np.float32)
+
+    if verbose:
+        mem_gb = K * V * 3 * 2 / 1e9
+        print(f"\n{'='*60}")
+        print(f"Building structured observations: V={V:,} points, K={K} images")
+        print(f"  Dense rgbs will be ({K}, {V}, 3) uint16 = {mem_gb:.2f} GB")
+        print(f"{'='*60}")
+
+    # Allocate dense RGB array
+    rgbs = np.zeros((K, V, 3), dtype=np.uint16)
+
+    # Fill from in-memory observations (matches convert_single.py chunk loop:88-113)
+    img_ids = observations[:, 3].astype(np.int64) - 1          # 1-based -> 0-based
+    pt_ids_raw = observations[:, 9].astype(np.int64)
+    rgb_vals = np.clip(observations[:, 6:9], 0, 65535).astype(np.uint16)
+
+    safe_pt = np.clip(pt_ids_raw, 0, max_pid)
+    pt_indices = pid_lookup[safe_pt]
+    pt_indices[pt_ids_raw < 0] = -1
+    pt_indices[pt_ids_raw > max_pid] = -1
+
+    valid = (img_ids >= 0) & (img_ids < K) & (pt_indices >= 0)
+    vi = img_ids[valid]
+    vp = pt_indices[valid]
+    vr = rgb_vals[valid]
+
+    # Count duplicates (same image+point written twice -> should be 0)
+    already_set = rgbs[vi, vp].sum(axis=1) > 0
+    total_dupes = int(already_set.sum())
+
+    rgbs[vi, vp] = vr
+    total_filled = int(valid.sum())
+
+    # Stats
+    non_zero = (rgbs.sum(axis=2) > 0).sum()
+    density = non_zero / (K * V) * 100
+    if verbose:
+        print(f"  Total obs:        {len(observations):,}")
+        print(f"  Filled cells:     {total_filled:,}")
+        print(f"  Duplicate writes: {total_dupes:,}")
+        print(f"  Non-zero cells:   {non_zero:,} / {K * V:,}  ({density:.1f}%)")
+
+    # Save (mirrors convert_single.py:136-143)
+    np.savez(
+        output_path,
+        xyz=unique_xyz.astype(np.float32),
+        point_ids=point_ids_arr.astype(np.int32),
+        rgbs=rgbs,
+        cam_pos=cam_pos,
+        light_pos=light_pos,
+    )
+    file_size_gb = os.path.getsize(output_path) / 1e9
+    if verbose:
+        print(f"  Saved to: {output_path} ({file_size_gb:.2f} GB)")
+        print(f"  Total time: {time.time() - t0:.1f}s")
+        print(f"{'='*60}\n")
+
+    return {
+        'V': V, 'K': K,
+        'total_obs': int(len(observations)),
+        'filled': total_filled,
+        'dupes': total_dupes,
+        'density_pct': float(density),
+        'file_size_gb': float(file_size_gb),
+    }
+
+
 def save_points_pixel_data_reprojection(pcd_filtered, points_world_filtered, cameras, images, hdr_path, observations_folder, num_workers=32, num_chunks=50):
     """
     Reproject filtered 3D points to all camera views with SIMPLE_RADIAL distortion.
@@ -872,6 +983,30 @@ def save_points_pixel_data_reprojection(pcd_filtered, points_world_filtered, cam
     print(f"\nSaved point metadata to: {metadata_path}")
     print(f"  num_points: {num_points}")
     print(f"  num_observations: {total_obs}")
+
+    # Build observations_structured.npz inline from the in-memory observations array.
+    # This is the dense (K, V, 3) format used downstream by training; previously it was
+    # produced by scripts/reformat_data/convert_single.py as a separate step.
+    # Skipping requires the chunks anyway, so we keep both paths in sync.
+    structured_path = os.path.join(material_folder, 'observations_structured.npz')
+    scan_log_path = os.path.join(material_folder, 'scan_log.json')
+    if os.path.exists(scan_log_path):
+        try:
+            build_and_save_structured_observations(
+                observations=observations,
+                unique_pids=unique_pids,
+                unique_xyz=unique_xyz,
+                scan_log_path=scan_log_path,
+                output_path=structured_path,
+                verbose=True,
+            )
+        except Exception as e:
+            # Don't fail the whole shape_matching run if the structured save errors;
+            # the chunks are already on disk and convert_single.py can recover later.
+            print(f"WARNING: failed to write {structured_path}: {e}")
+    else:
+        print(f"WARNING: scan_log.json not found at {scan_log_path}; "
+              f"skipping observations_structured.npz")
 
 
 def _save_chunk(args):

@@ -24,7 +24,7 @@ def run_command(cmd, check=True, capture_output=False):
     else:
         # For long-running processes, don't capture output
         result = subprocess.run(cmd, check=True)
-        return result
+        return result   
 
 
 def main():

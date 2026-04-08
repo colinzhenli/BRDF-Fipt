@@ -80,34 +80,41 @@
         //         // "TAG_SIZE_MM=10"
         //     ]
         // },
-        // {
-        //     "name": "Python: Auto-decoder Points",
-        //     "type": "python",
-        //     "request": "launch",
-        //     "program": "main.py",
-        //     "console": "integratedTerminal",
-        //     "justMyCode": true,
-        //     "env": {
-        //         "CUDA_VISIBLE_DEVICES": "3"
-        //     },
-        //     "args": [
-        //         "dataset_folder=/media/raid/cloth/capture_data/Dataset_Nov11",
-        //         "data=points",
-        //         "renderer=multiarea_emitter",
-        //         "material=multi_material_latent",
-        //         "experiment_name=Leaky-ReLU_Material-102_No-chunk-switching_Debug",
-        //         "model.stage=1",
-        //         "model.test=False",
-        //         "model.trainer.limit_train_batches=512",
-        //         "material.decoder.use_skip_connection=False",
-        //         "data.switch_iters=2000",
-        //         "data.filter_observations=False",
-        //         "data.debug=True",
-        //         "data.val_ratio=0.2",
-        //         "data.num_materials=1",
-        //         "data.start_material_id=100"
-        //     ]
-        // },
+        {
+            "name": "Debug: Stage1 Dense (10 materials)",
+            "type": "python",
+            "request": "launch",
+            "program": "main.py",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "env": {
+                "CUDA_VISIBLE_DEVICES": "0"
+            },
+            "args": [
+                "dataset_folder=/media/raid/cloth/capture_data/Dataset_Nov11",
+                "data=points_dense",
+                "renderer=multiarea_emitter",
+                "material=multi_material_latent",
+                "experiment_name=Stage1_Dense_Debug_10materials",
+                "model.optimizer.name=Adam8bit",
+                "model.optimizer.reset_latent_momentum_on_chunk_switch=False",
+                "model.optimizer.decoder_lr=1e-4",
+                "model.loss.recon_loss.name=logrel",
+                "model.loss.reg_loss.weight=0.0",
+                "model.stage=1",
+                "model.test=False",
+                "model.trainer.max_epochs=10",
+                "model.trainer.check_val_every_n_epoch=5",
+                "model.trainer.limit_train_batches=32",
+                "material.decoder.use_skip_connection=True",
+                "material.latent_dim=24",
+                "material.decoder.degree=3",
+                "material.decoder.smooth_reg=False",
+                "material.different_decoder=False",
+                "data.filter_observations=False",
+                "data.training_list_path=/home/zla247/projects/BRDF-Fipt/scripts/reformat_data/debug_training_list_10.txt"
+            ]
+        },
         // {
         //     "name": "Debug: test.sh (MERL BRDF Stage1)",
         //     "type": "python",
@@ -180,48 +187,48 @@
         //     ]
         // }
 
-        {
-            "name": "Python: Stage2 UBO",
-            "type": "python",
-            "request": "launch",
-            "program": "main.py",
-            "console": "integratedTerminal",
-            "justMyCode": true,
-            "env": {
-                "CUDA_VISIBLE_DEVICES": "3"
-            },
-            "args": [
-                "dataset_folder=/mnt/data/colin/colin/Bonn_BTF",
-                "data=ubo",
-                "data.btf_filename=carpet07_W400xH400_L151xV151.btf",
-                "data.rays_num=131072",
-                "data.valid_num=15",
-                "renderer=multiarea_emitter",
-                "material=ubo_latent",
-                "material.latent_dim=16",
-                "material.learnable_factor=False",
-                "material.predict_frame=False",
-                "material.different_decoder=False",
-                "material.decoder.use_skip_connection=True",
-                "material.decoder.use_film=False",
-                "material.decoder.use_color_decomp=False",
-                "material.decoder.degree=3",
-                "material.decoder.smooth_reg=False",
-                "experiment_name=Stage-2_Correct-color_UBO_carpet07_from-scratch_debug_1",
-                "model.optimizer.name=Adam",
-                "model.optimizer.lr=0.001",
-                "model.optimizer.decoder_lr=1e-4",
-                "model.loss.recon_loss.name=l1",
-                "model.loss.reg_loss.weight=0.0",
-                "model.stage=2",
-                "model.test=False",
-                "model.freeze_decoder=False",
-                "model.continue_training=False",
-                "model.trainer.max_epochs=2000",
-                "model.trainer.check_val_every_n_epoch=10",
-                "model.trainer.limit_train_batches=512"
-            ]
-        }
+        // {
+        //     "name": "Python: Stage2 UBO",
+        //     "type": "python",
+        //     "request": "launch",
+        //     "program": "main.py",
+        //     "console": "integratedTerminal",
+        //     "justMyCode": true,
+        //     "env": {
+        //         "CUDA_VISIBLE_DEVICES": "3"
+        //     },
+        //     "args": [
+        //         "dataset_folder=/mnt/data/colin/colin/Bonn_BTF",
+        //         "data=ubo",
+        //         "data.btf_filename=carpet07_W400xH400_L151xV151.btf",
+        //         "data.rays_num=131072",
+        //         "data.valid_num=15",
+        //         "renderer=multiarea_emitter",
+        //         "material=ubo_latent",
+        //         "material.latent_dim=16",
+        //         "material.learnable_factor=False",
+        //         "material.predict_frame=False",
+        //         "material.different_decoder=False",
+        //         "material.decoder.use_skip_connection=True",
+        //         "material.decoder.use_film=False",
+        //         "material.decoder.use_color_decomp=False",
+        //         "material.decoder.degree=3",
+        //         "material.decoder.smooth_reg=False",
+        //         "experiment_name=Stage-2_Correct-color_UBO_carpet07_from-scratch_debug_1",
+        //         "model.optimizer.name=Adam",
+        //         "model.optimizer.lr=0.001",
+        //         "model.optimizer.decoder_lr=1e-4",
+        //         "model.loss.recon_loss.name=l1",
+        //         "model.loss.reg_loss.weight=0.0",
+        //         "model.stage=2",
+        //         "model.test=False",
+        //         "model.freeze_decoder=False",
+        //         "model.continue_training=False",
+        //         "model.trainer.max_epochs=2000",
+        //         "model.trainer.check_val_every_n_epoch=10",
+        //         "model.trainer.limit_train_batches=512"
+        //     ]
+        // }
 
         // {
         //     "name": "Python: Auto-decoder Points",

@@ -91,7 +91,7 @@ class Stage1Trainer_Bonn(pl.LightningModule):
 
         if opt_name == 'SparseAdam':
             latent_opt = torch.optim.SparseAdam(embedding_params, lr=lr)
-            
+
             dense_params = decoder_params + factor_params if not self.freeze_decoder else factor_params
             if len(dense_params) > 0:
                 dense_opt = torch.optim.Adam(
@@ -103,30 +103,57 @@ class Stage1Trainer_Bonn(pl.LightningModule):
                 print(f"Using SparseAdam (embedding only), lr={lr}")
                 return latent_opt
 
+        elif opt_name == 'SparseAdam8bit':
+            import bitsandbytes as bnb
+            latent_opt = bnb.optim.Adam8bit(embedding_params, lr=lr, betas=(0.9, 0.999))
+
+            dense_params = decoder_params + factor_params if not self.freeze_decoder else factor_params
+            if len(dense_params) > 0:
+                dense_opt = torch.optim.Adam(
+                    dense_params, lr=decoder_lr, betas=(0.9, 0.999), weight_decay=wd,
+                )
+                print(f"Using SparseAdam8bit (embedding lr={lr}) + Adam (dense lr={decoder_lr})")
+                return [latent_opt, dense_opt]
+            else:
+                print(f"Using SparseAdam8bit (embedding only), lr={lr}")
+                return latent_opt
+
         elif opt_name == 'Adam':
             # Better to explicitly create two groups
             opt_groups = [{'params': embedding_params, 'lr': lr}]
-            
+
             dense_params = decoder_params + factor_params if not self.freeze_decoder else factor_params
             if len(dense_params) > 0:
                 opt_groups.append({'params': dense_params, 'lr': decoder_lr})
-                
+
             opt = torch.optim.Adam(opt_groups, betas=(0.9, 0.999), weight_decay=wd)
 
             print(f"Using Dense Adam (embedding lr={lr}, dense lr={decoder_lr})")
             return opt
 
-        elif opt_name == 'SGD':
+        elif opt_name == 'Adam8bit':
+            import bitsandbytes as bnb
             opt_groups = [{'params': embedding_params, 'lr': lr}]
-            
+
             dense_params = decoder_params + factor_params if not self.freeze_decoder else factor_params
             if len(dense_params) > 0:
                 opt_groups.append({'params': dense_params, 'lr': decoder_lr})
-                
+
+            opt = bnb.optim.Adam8bit(opt_groups, betas=(0.9, 0.999), weight_decay=wd)
+            print(f"Using Adam8bit (embedding lr={lr}, dense lr={decoder_lr})")
+            return opt
+
+        elif opt_name == 'SGD':
+            opt_groups = [{'params': embedding_params, 'lr': lr}]
+
+            dense_params = decoder_params + factor_params if not self.freeze_decoder else factor_params
+            if len(dense_params) > 0:
+                opt_groups.append({'params': dense_params, 'lr': decoder_lr})
+
             opt = torch.optim.SGD(opt_groups, momentum=0.0, weight_decay=wd)
             print(f"Using SGD (embedding lr={lr}, dense lr={decoder_lr})")
             return opt
-        
+
         else:
             raise ValueError(f"Unknown optimizer: {opt_name}")
 

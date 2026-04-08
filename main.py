@@ -11,7 +11,7 @@ from renderer import ForwardRenderer
 from trainers import get_trainer_class
 from model.brdf import SvPBRBRDF
 from torch.utils.data import DataLoader
-from utils.dataset import RealImageDataset, RealValDataset, MultiMaterialPointDataset, MERLBRDFIterableDataset,MERLBRDFIterableDataset_hd,MERLBRDFFixedDataset_hd,MERLBRDFFixedDataset, RealNovelViewDataset, BonnDataset, BonnValDataset, BonnSingleMaterialDataset, BonnSingleMaterialValDataset, UBOBTFTrainDataset, UBOBTFValDataset
+from utils.dataset import RealImageDataset, RealValDataset, MultiMaterialPointDataset, MultiMaterialDenseDataset, MERLBRDFIterableDataset,MERLBRDFIterableDataset_hd,MERLBRDFFixedDataset_hd,MERLBRDFFixedDataset, RealNovelViewDataset, BonnDataset, BonnValDataset, BonnSingleMaterialDataset, BonnSingleMaterialValDataset, UBOBTFTrainDataset, UBOBTFValDataset
 import hydra
 from omegaconf import DictConfig
 from pytorch_lightning.strategies import DDPStrategy
@@ -204,6 +204,12 @@ def main(cfg):
             val_dataset = MultiMaterialPointDataset(cfg, root_folder=cfg.dataset_folder, split="train")
         else:
             val_dataset = MultiMaterialPointDataset(cfg, root_folder=cfg.dataset_folder, split="val")
+    elif cfg.data.dataset_name == "points_dense":
+        train_dataset = MultiMaterialDenseDataset(cfg, root_folder=cfg.dataset_folder, split="train")
+        if cfg.data.debug & cfg.data.valid_on_train_set:
+            val_dataset = MultiMaterialDenseDataset(cfg, root_folder=cfg.dataset_folder, split="train", share_from=train_dataset)
+        else:
+            val_dataset = MultiMaterialDenseDataset(cfg, root_folder=cfg.dataset_folder, split="val", share_from=train_dataset)
     elif cfg.data.dataset_name == "bonn":
         if cfg.model.stage == 1:
             if cfg.model.test:

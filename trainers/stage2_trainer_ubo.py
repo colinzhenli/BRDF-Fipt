@@ -81,6 +81,17 @@ class Stage2Trainer_UBO(pl.LightningModule):
             )
             return optimizer
 
+        elif self.hparams.model.optimizer.name == 'Adam8bit':
+            import bitsandbytes as bnb
+            optimizer = bnb.optim.Adam8bit(
+                params_to_optimize,
+                lr=self.hparams.model.optimizer.lr,
+                betas=(0.9, 0.999),
+                weight_decay=self.hparams.model.optimizer.weight_decay,
+            )
+            print(f"Using Adam8bit, lr={self.hparams.model.optimizer.lr}")
+            return optimizer
+
         else:
             raise ValueError(f"Optimizer type '{self.hparams.model.optimizer.name}' not supported")
 

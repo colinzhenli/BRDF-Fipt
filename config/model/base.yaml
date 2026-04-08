@@ -21,6 +21,7 @@ trainer:
   limit_train_batches: 512 # 200 iterations per epoch
   num_sanity_val_steps: 2    # ← number of validation batches before training starts (default is 2)
   enable_checkpointing: True  # set to False to skip checkpoint saving
+  log_every_n_steps: 10      # how often to flush scalar logs (PL default is 50)
 
 # https://pytorch-lightning.readthedocs.io/en/stable/api/pytorch_lightning.callbacks.ModelCheckpoint.html
 checkpoint_monitor:
@@ -32,7 +33,7 @@ checkpoint_monitor:
 
 
 optimizer:
-  name: Adam # SGD or Adam or SparseAdam
+  name: Adam # SGD | Adam | SparseAdam | Adam8bit | SparseAdam8bit
   reset_latent_momentum_on_chunk_switch: False
   weight_decay: 0.0 # 0.001
   # lr: 0.001 

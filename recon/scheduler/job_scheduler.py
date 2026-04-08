@@ -25,6 +25,15 @@ from typing import Dict, List, Optional, Tuple
 import psutil
 import pynvml
 
+# Make registration_check importable regardless of CWD
+_SCHEDULER_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(_SCHEDULER_DIR.parent / "calibration"))
+from registration_check import (  # noqa: E402
+    registration_ratio,
+    is_well_registered,
+    REGISTRATION_THRESHOLD,
+)
+
 # ==================== Configuration ====================
 
 class Config:
@@ -44,6 +53,7 @@ class Config:
     
     # Paths
     COLMAP_SCRIPT = "recon/colmap/colmap.sh"
+    COLMAP_EXHAUSTIVE_SCRIPT = "recon/colmap/colmap_exhaustive.sh"
     SHAPE_MATCHING_SCRIPT = "recon/calibration/shape_matching.py"
     
     def __init__(self, dataset_root: Optional[str] = None):
@@ -483,6 +493,105 @@ def fix_material_status_by_timestamps(info: Dict, material: str, verbose: bool =
     
     return False
 
+def verify_completed_materials(state: Dict, verbose: bool = True) -> Tuple[int, int]:
+    """
+    Sanity-check every COMPLETED material on scheduler restart and reset the
+    bad ones so they get reprocessed automatically.
+
+    Two failure modes are recognised:
+
+      1. COLMAP registration ratio < REGISTRATION_THRESHOLD
+         → reset to NOT_STARTED with colmap_variant="exhaustive".
+         The next dispatch loop will rerun COLMAP using exhaustive_matcher.
+
+      2. Registration is fine but observations_structured.npz is missing/empty
+         → reset to COLMAP_DONE.
+         The next dispatch loop will rerun shape_matching, which now writes
+         observations_structured.npz inline (cheap, ~5 min, no GPU).
+
+    Materials that pass both checks are left untouched. This replaces the
+    standalone rerun_failed_colmap.py script.
+
+    Returns: (n_reset_for_colmap, n_reset_for_shape_matching)
+    """
+    n_colmap_reset = 0
+    n_shape_reset = 0
+
+    for material, info in state["materials"].items():
+        if info["status"] != JobStatus.COMPLETED:
+            continue
+
+        folder_path = info["folder_path"]
+
+        # Check 1: registration health
+        n_reg, n_scans, ratio = registration_ratio(folder_path)
+        if ratio < 0:
+            if verbose:
+                print(f"  Sanity check material {material}: cannot read sparse/scan_log "
+                      f"(n_reg={n_reg}, K={n_scans}) → reset for exhaustive COLMAP")
+            info["status"] = JobStatus.NOT_STARTED
+            info["colmap_variant"] = "exhaustive"
+            info["colmap_start_time"] = None
+            info["colmap_end_time"] = None
+            info["shape_matching_start_time"] = None
+            info["shape_matching_end_time"] = None
+            info["pid"] = None
+            info["gpu"] = None
+            info["workers"] = None
+            info["error"] = None
+            info["ready"] = is_material_ready(folder_path)
+            n_colmap_reset += 1
+            continue
+
+        if ratio < REGISTRATION_THRESHOLD:
+            if verbose:
+                print(f"  Sanity check material {material}: registration {n_reg}/{n_scans} "
+                      f"({ratio*100:.1f}%) below {REGISTRATION_THRESHOLD*100:.0f}% "
+                      f"→ reset for exhaustive COLMAP")
+            # Archive the bad sparse so the exhaustive run starts clean
+            sparse_dir = os.path.join(folder_path, "sparse")
+            backup_dir = os.path.join(folder_path, "sparse_seq_failed")
+            if os.path.isdir(sparse_dir):
+                try:
+                    if os.path.isdir(backup_dir):
+                        import shutil
+                        shutil.rmtree(backup_dir)
+                    os.rename(sparse_dir, backup_dir)
+                except Exception as e:
+                    print(f"    WARNING: could not archive {sparse_dir}: {e}")
+            info["status"] = JobStatus.NOT_STARTED
+            info["colmap_variant"] = "exhaustive"
+            info["colmap_start_time"] = None
+            info["colmap_end_time"] = None
+            info["shape_matching_start_time"] = None
+            info["shape_matching_end_time"] = None
+            info["pid"] = None
+            info["gpu"] = None
+            info["workers"] = None
+            info["error"] = None
+            info["ready"] = is_material_ready(folder_path)
+            n_colmap_reset += 1
+            continue
+
+        # Check 2: structured observations exists and is non-empty
+        structured = os.path.join(folder_path, "observations_structured.npz")
+        if not os.path.exists(structured) or os.path.getsize(structured) == 0:
+            if verbose:
+                print(f"  Sanity check material {material}: registration OK "
+                      f"({n_reg}/{n_scans}, {ratio*100:.1f}%) but observations_structured.npz "
+                      f"missing → reset to COLMAP_DONE for shape_matching rerun")
+            info["status"] = JobStatus.COLMAP_DONE
+            info["shape_matching_start_time"] = None
+            info["shape_matching_end_time"] = None
+            info["pid"] = None
+            info["workers"] = None
+            info["error"] = None
+            n_shape_reset += 1
+            continue
+
+    return n_colmap_reset, n_shape_reset
+
+
 def reset_failed_jobs(state: Dict, verbose: bool = True, force_restart_colmap: bool = True) -> int:
     """
     Reset failed jobs (and COLMAP_DONE jobs if force_restart_colmap=True) to retry.
@@ -639,7 +748,12 @@ def initialize_materials(dataset_root: str, state: Dict, verbose: bool = True, r
                 "shape_matching_start_time": None,
                 "shape_matching_end_time": None,
                 "error": None,
-                "ready": is_material_ready(folder_path)
+                "ready": is_material_ready(folder_path),
+                # COLMAP variant: "sequential" (default, fast) or "exhaustive" (slow fallback).
+                # Sequential is tried first; if registration < REGISTRATION_THRESHOLD,
+                # the scheduler resets to NOT_STARTED with variant="exhaustive".
+                "colmap_variant": "sequential",
+                "colmap_attempts": 0,
             }
             new_count += 1
             if verbose:
@@ -649,7 +763,12 @@ def initialize_materials(dataset_root: str, state: Dict, verbose: bool = True, r
             # EXISTING MATERIAL: Fix status based on timestamps (only if fix_existing=True)
             info = state["materials"][material]
             folder_path = info["folder_path"]
-            
+
+            # Backfill colmap_variant/colmap_attempts for state files written before
+            # the exhaustive-retry feature existed.
+            info.setdefault("colmap_variant", "sequential")
+            info.setdefault("colmap_attempts", 0)
+
             # Update ready status
             old_ready = info.get("ready", False)
             new_ready = is_material_ready(folder_path)
@@ -664,19 +783,32 @@ def initialize_materials(dataset_root: str, state: Dict, verbose: bool = True, r
             if not old_ready and new_ready and verbose and info["status"] == JobStatus.NOT_STARTED:
                 print(f"  Material {material} is now ready (scan_log.json detected)")
     
-    # Reset failed jobs if requested (after fixing timestamps)
+    # Sanity-check COMPLETED materials: low registration → exhaustive retry,
+    # missing observations_structured.npz → re-run shape matching only.
+    # Only runs when fix_existing=True (i.e. on scheduler startup), not on
+    # every iteration of the streaming loop.
+    n_colmap_reset = 0
+    n_shape_reset = 0
+    if fix_existing:
+        n_colmap_reset, n_shape_reset = verify_completed_materials(state, verbose=verbose)
+
+    # Reset failed jobs if requested (after fixing timestamps and verifying)
     if reset_failed:
         reset_count = reset_failed_jobs(state, verbose, force_restart_colmap=force_restart_colmap)
         if reset_count > 0 and verbose:
             print(f"Reset {reset_count} failed job(s) to retry\n")
-    
+
     if verbose:
         if new_count > 0:
             print(f"Found {new_count} new material(s)")
         if fixed_count > 0:
             print(f"Fixed {fixed_count} inconsistent state(s) based on timestamps")
+        if n_colmap_reset > 0:
+            print(f"Sanity check: reset {n_colmap_reset} material(s) for exhaustive COLMAP retry")
+        if n_shape_reset > 0:
+            print(f"Sanity check: reset {n_shape_reset} material(s) for shape_matching rerun")
         print(f"Total materials tracked: {len(material_folders)}")
-    
+
     return material_folders, new_count
 
 # ==================== Job Launchers ====================
@@ -684,19 +816,29 @@ def initialize_materials(dataset_root: str, state: Dict, verbose: bool = True, r
 def launch_colmap(material: str, folder_path: str, gpu_id: int, state: Dict, config: Config) -> Optional[int]:
     """
     Launch COLMAP reconstruction for a material.
+    Picks the matcher script based on state["materials"][material]["colmap_variant"]:
+      - "sequential" (default): recon/colmap/colmap.sh
+      - "exhaustive": recon/colmap/colmap_exhaustive.sh
     Returns: Process PID or None on failure
     """
     try:
+        info = state["materials"][material]
+        variant = info.get("colmap_variant", "sequential")
+        if variant == "exhaustive":
+            script = config.COLMAP_EXHAUSTIVE_SCRIPT
+        else:
+            script = config.COLMAP_SCRIPT
+
         # Set environment with CPU limits
         # Note: NOT setting CUDA_VISIBLE_DEVICES here - the COLMAP script handles it internally
         env = os.environ.copy()
         env["OMP_NUM_THREADS"] = str(config.CPU_CORES_PER_COLMAP)
         env["MKL_NUM_THREADS"] = str(config.CPU_CORES_PER_COLMAP)
-        
+
         # Launch COLMAP script with physical GPU ID
         # The script will set CUDA_VISIBLE_DEVICES for each colmap command
-        cmd = ["bash", config.COLMAP_SCRIPT, folder_path, str(gpu_id)]
-        
+        cmd = ["bash", script, folder_path, str(gpu_id)]
+
         # Redirect output to log file
         log_file = os.path.join(folder_path, "colmap.log")
         with open(log_file, 'w') as f:
@@ -707,17 +849,18 @@ def launch_colmap(material: str, folder_path: str, gpu_id: int, state: Dict, con
                 stderr=subprocess.STDOUT,
                 start_new_session=True  # Detach from parent
             )
-        
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] Launched COLMAP for material {material} on GPU {gpu_id} (PID: {process.pid})")
-        
+
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] Launched COLMAP ({variant}) for material {material} on GPU {gpu_id} (PID: {process.pid})")
+
         # Update state
-        state["materials"][material]["status"] = JobStatus.COLMAP_RUNNING
-        state["materials"][material]["pid"] = process.pid
-        state["materials"][material]["gpu"] = gpu_id
-        state["materials"][material]["colmap_start_time"] = datetime.now().isoformat()
-        
+        info["status"] = JobStatus.COLMAP_RUNNING
+        info["pid"] = process.pid
+        info["gpu"] = gpu_id
+        info["colmap_start_time"] = datetime.now().isoformat()
+        info["colmap_attempts"] = info.get("colmap_attempts", 0) + 1
+
         return process.pid
-        
+
     except Exception as e:
         print(f"Error launching COLMAP for material {material}: {e}")
         state["materials"][material]["status"] = JobStatus.FAILED
@@ -808,6 +951,54 @@ def check_shape_matching_completion(folder_path: str) -> bool:
     
     return False
 
+def evaluate_colmap_registration(material: str, info: Dict) -> Tuple[bool, str]:
+    """
+    Decide what to do with a COLMAP run that just finished.
+
+    Returns (should_proceed, message):
+      - (True,  msg)  : registration is healthy, transition to COLMAP_DONE
+      - (False, msg)  : registration is too low; caller should reset to NOT_STARTED
+                        with colmap_variant="exhaustive" (sequential→exhaustive retry),
+                        OR mark FAILED if exhaustive already happened.
+
+    Side-effect: archives the bad sparse/ dir to sparse_seq_failed/ on the first
+    failure so the next exhaustive run starts clean. The colmap_exhaustive.sh
+    script also does this defensively, but doing it here means the state is
+    self-consistent even if a job is killed before re-launch.
+    """
+    folder_path = info["folder_path"]
+    n_reg, n_scans, ratio = registration_ratio(folder_path)
+
+    if ratio < 0:
+        # We can't even compute the ratio (missing images.bin or scan_log.json).
+        # Treat as a hard failure of the COLMAP run.
+        return False, f"could not read sparse/scan_log (n_reg={n_reg}, K={n_scans})"
+
+    if ratio >= REGISTRATION_THRESHOLD:
+        return True, f"registered {n_reg}/{n_scans} ({ratio*100:.1f}%) — healthy"
+
+    # Unhealthy registration.
+    variant = info.get("colmap_variant", "sequential")
+    msg = f"registered {n_reg}/{n_scans} ({ratio*100:.1f}%) below threshold {REGISTRATION_THRESHOLD*100:.0f}%"
+
+    if variant == "sequential":
+        # Archive the failed sparse dir so the exhaustive retry won't see stale data.
+        sparse_dir = os.path.join(folder_path, "sparse")
+        backup_dir = os.path.join(folder_path, "sparse_seq_failed")
+        if os.path.isdir(sparse_dir):
+            try:
+                if os.path.isdir(backup_dir):
+                    import shutil
+                    shutil.rmtree(backup_dir)
+                os.rename(sparse_dir, backup_dir)
+            except Exception as e:
+                print(f"  WARNING: could not archive {sparse_dir} -> {backup_dir}: {e}")
+        return False, msg + " — will retry with exhaustive matcher"
+
+    # Already tried exhaustive and still bad — give up.
+    return False, msg + f" — exhaustive retry also failed (variant={variant})"
+
+
 def update_job_status(state: Dict, config: Config):
     """
     Check status of running jobs and update state.
@@ -825,23 +1016,16 @@ def update_job_status(state: Dict, config: Config):
             
             # If completed OR process is dead, check final status
             if colmap_completed or not process_alive:
+                # Did the *script* finish (either via log marker or output file)?
+                script_finished = False
                 if colmap_completed:
                     print(f"[{datetime.now().strftime('%H:%M:%S')}] COLMAP completed for material {material}")
-                    terminate_process(pid, material, "COLMAP")
-                    info["status"] = JobStatus.COLMAP_DONE
-                    info["colmap_end_time"] = datetime.now().isoformat()
-                    info["pid"] = None
-                    info["gpu"] = None
+                    script_finished = True
                 else:
-                    # Process died but no completion flag - check if output exists
                     sparse_path = os.path.join(folder_path, "sparse", "points3D.ply")
                     if os.path.exists(sparse_path):
                         print(f"[{datetime.now().strftime('%H:%M:%S')}] COLMAP completed for material {material} (detected via output file)")
-                        terminate_process(pid, material, "COLMAP")
-                        info["status"] = JobStatus.COLMAP_DONE
-                        info["colmap_end_time"] = datetime.now().isoformat()
-                        info["pid"] = None
-                        info["gpu"] = None
+                        script_finished = True
                     else:
                         print(f"[{datetime.now().strftime('%H:%M:%S')}] COLMAP failed for material {material} (process died, no completion flag)")
                         terminate_process(pid, material, "COLMAP")
@@ -849,6 +1033,34 @@ def update_job_status(state: Dict, config: Config):
                         info["error"] = "COLMAP process died without completion"
                         info["pid"] = None
                         info["gpu"] = None
+
+                if script_finished:
+                    terminate_process(pid, material, "COLMAP")
+                    info["pid"] = None
+                    info["gpu"] = None
+                    info["colmap_end_time"] = datetime.now().isoformat()
+
+                    # Registration health gate: low registration triggers an
+                    # exhaustive retry (sequential variant) or hard failure
+                    # (already-exhaustive variant).
+                    healthy, reason = evaluate_colmap_registration(material, info)
+                    if healthy:
+                        print(f"  → {reason}")
+                        info["status"] = JobStatus.COLMAP_DONE
+                    else:
+                        variant = info.get("colmap_variant", "sequential")
+                        if variant == "sequential":
+                            print(f"  → {reason}")
+                            print(f"  → resetting material {material} for exhaustive COLMAP retry")
+                            info["colmap_variant"] = "exhaustive"
+                            info["status"] = JobStatus.NOT_STARTED
+                            info["colmap_start_time"] = None
+                            info["colmap_end_time"] = None
+                            info["error"] = None
+                        else:
+                            print(f"  → {reason}")
+                            info["status"] = JobStatus.FAILED
+                            info["error"] = f"Low COLMAP registration after exhaustive retry: {reason}"
         
         elif info["status"] == JobStatus.SHAPE_MATCHING_RUNNING:
             folder_path = info["folder_path"]

@@ -28,7 +28,7 @@ def natural_sort_key(filename):
         return (batch_idx, b)
     return (float('inf'), float('inf'))
 
-
+    
 def get_image_files(folder, pattern='result_view'):
     """
     Get all image files matching the pattern from the folder.

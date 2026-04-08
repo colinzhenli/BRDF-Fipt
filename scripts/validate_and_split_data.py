@@ -10,14 +10,21 @@ Usage:
 import argparse
 import os
 import random
+import sys
 from pathlib import Path
+
+# Make registration_check importable regardless of CWD
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_REPO_ROOT / "recon" / "calibration"))
+from registration_check import registration_ratio, REGISTRATION_THRESHOLD  # noqa: E402
 
 
 # Required files and folders based on valid material structure
 REQUIRED_FOLDERS = ['hdr', 'ldr', 'observations', 'sparse']
 REQUIRED_FILES = [
     'bbox.json',
-    'colmap.log', 
+    'colmap.log',
+    'observations_structured.npz',
     'point_metadata.json',
     'rotated_camera.json',
     'scan_log.json',
@@ -44,15 +51,36 @@ def is_file_not_empty(file_path: Path) -> bool:
     return file_path.stat().st_size > 0
 
 
+def check_registration_health(material_folder: Path) -> tuple[bool, str]:
+    """
+    Check that COLMAP registered enough cameras for this material.
+
+    Returns:
+        tuple: (ok, message). ok is False when the registration ratio is
+        below REGISTRATION_THRESHOLD or when the underlying inputs are
+        missing/unreadable.
+    """
+    n_reg, n_scans, ratio = registration_ratio(str(material_folder))
+    if ratio < 0:
+        return False, (
+            f"Unreadable registration (n_reg={n_reg}, n_scans={n_scans})"
+        )
+    pct = ratio * 100.0
+    msg = f"registration {n_reg}/{n_scans} ({pct:.1f}%)"
+    if ratio < REGISTRATION_THRESHOLD:
+        return False, f"Low {msg} < {REGISTRATION_THRESHOLD * 100:.0f}%"
+    return True, msg
+
+
 def validate_material_folder(material_folder: Path) -> tuple[bool, list[str]]:
     """
     Validate a material folder for completeness.
-    
+
     Returns:
         tuple: (is_valid, list of missing/invalid items)
     """
     issues = []
-    
+
     # Check required folders
     for folder_name in REQUIRED_FOLDERS:
         folder_path = material_folder / folder_name
@@ -63,7 +91,7 @@ def validate_material_folder(material_folder: Path) -> tuple[bool, list[str]]:
                 issues.append(f"Not a folder: {folder_name}")
             else:
                 issues.append(f"Empty folder: {folder_name}")
-    
+
     # Check required files (must exist and not be empty)
     for file_name in REQUIRED_FILES:
         file_path = material_folder / file_name
@@ -74,7 +102,7 @@ def validate_material_folder(material_folder: Path) -> tuple[bool, list[str]]:
                 issues.append(f"Not a file: {file_name}")
             else:
                 issues.append(f"Empty file: {file_name}")
-    
+
     # Check files that can be empty (must exist but can be empty)
     for file_name in REQUIRED_FILES_CAN_BE_EMPTY:
         file_path = material_folder / file_name
@@ -82,7 +110,16 @@ def validate_material_folder(material_folder: Path) -> tuple[bool, list[str]]:
             issues.append(f"Missing file: {file_name}")
         elif not file_path.is_file():
             issues.append(f"Not a file: {file_name}")
-    
+
+    # Registration ratio gate (only meaningful if sparse + scan_log are present;
+    # if they are missing the file checks above will already have flagged it).
+    sparse_dir = material_folder / "sparse"
+    scan_log = material_folder / "scan_log.json"
+    if sparse_dir.exists() and scan_log.exists():
+        ok, reg_msg = check_registration_health(material_folder)
+        if not ok:
+            issues.append(reg_msg)
+
     is_valid = len(issues) == 0
     return is_valid, issues
 

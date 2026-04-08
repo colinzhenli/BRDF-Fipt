@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 -c \"import numpy as np; pp=np.load\\('/media/raid/cloth/capture_data/Dataset_Nov11/134/point_positions.npz'\\); print\\('point_ids shape:', pp['point_ids'].shape, 'positions shape:', pp['positions'].shape\\)\")",
+      "Bash(python3 -c \"import json; sl=json.load\\(open\\('/media/raid/cloth/capture_data/Dataset_Nov11/134/scan_log.json'\\)\\); print\\('K =', len\\(sl\\)\\)\")",
+      "Read(//media/raid/cloth/capture_data/Dataset_Nov11/134/observations/**)",
+      "Bash(python3 -c ':*)",
+      "Bash(python3 -c \"import numpy as np; pp=np.load\\('/media/raid/cloth/capture_data/Dataset_Nov11/149/point_positions.npz'\\); print\\('point_ids shape:', pp['point_ids'].shape, 'positions shape:', pp['positions'].shape\\)\")",
+      "Bash(python3 -c \"import json; sl=json.load\\(open\\('/media/raid/cloth/capture_data/Dataset_Nov11/149/scan_log.json'\\)\\); print\\('K =', len\\(sl\\)\\)\")",
+      "Bash(python3 -c \"import numpy as np; pp=np.load\\('/media/raid/cloth/capture_data/Dataset_Nov11/92/point_positions.npz'\\); print\\('point_ids shape:', pp['point_ids'].shape, 'positions shape:', pp['positions'].shape\\)\")",
+      "Bash(python3 -c \"import json; sl=json.load\\(open\\('/media/raid/cloth/capture_data/Dataset_Nov11/92/scan_log.json'\\)\\); print\\('K =', len\\(sl\\)\\)\")",
+      "Bash(python3 -c \"import numpy as np; pp=np.load\\('/media/raid/cloth/capture_data/Dataset_Nov11/157/point_positions.npz'\\); print\\('point_ids shape:', pp['point_ids'].shape, 'positions shape:', pp['positions'].shape\\)\")",
+      "Bash(python3 -c \"import json; sl=json.load\\(open\\('/media/raid/cloth/capture_data/Dataset_Nov11/157/scan_log.json'\\)\\); print\\('K =', len\\(sl\\)\\)\")",
+      "Bash(python3 -c 'import json; ids=json.load\\(open\\('\\\\''/media/raid/cloth/capture_data/Dataset_Nov11/__TRACKED_VAR__/unmatched_scan_ids.json'\\\\''\\)\\); print\\(f'\\\\''  {len\\(ids\\)} unmatched scan IDs'\\\\''\\)')",
+      "Bash(python3 -c \"import json; ids=json.load\\(open\\('/media/raid/cloth/capture_data/Dataset_Nov11/134/unmatched_scan_ids.json'\\)\\); print\\(f'  {len\\(ids\\)} unmatched scan IDs'\\)\")"
+    ]
+  }
+}

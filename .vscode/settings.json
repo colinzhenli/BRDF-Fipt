@@ -2,10 +2,19 @@
     "workbench.colorCustomizations": {
         "activityBar.background": "#0D2F4C",
         "titleBar.activeBackground": "#12426B",
-        "titleBar.activeForeground": "#F9FCFE"
+        "titleBar.activeForeground": "#F9FCFE",
+        "titleBar.inactiveBackground": "#0D2F4C",
+        "titleBar.inactiveForeground": "#081B2B",
+        "statusBar.background": "#103A5D",
+        "statusBar.foreground": "#F6FAFD",
+        "statusBar.debuggingBackground": "#103A5D",
+        "statusBar.debuggingForeground": "#F6FAFD",
+        "statusBar.noFolderBackground": "#103A5D",
+        "statusBar.noFolderForeground": "#F6FAFD"
     },
     "workbench.colorTheme": "Solarized Light",
     "workbench.preferredHighContrastColorTheme": "Visual Studio 2017 Dark - C++",
     "workbench.preferredHighContrastLightColorTheme": "Visual Studio Light - C++",
-    "workbench.preferredDarkColorTheme": "VS Code Dark"
+    "workbench.preferredDarkColorTheme": "Dark 2026",
+    "editor.tabCompletion": "on"
 }

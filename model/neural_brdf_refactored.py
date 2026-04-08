@@ -1618,7 +1618,7 @@ class MultiMaterialLatentBRDF(LightningModule):
 
         # Optimizer / sparse-embedding config (mirrors BonnLatentBRDF)
         self.optimizer_name = getattr(cfg, 'optimizer', {}).get('name', 'SparseAdam')
-        self.use_sparse_adam = (self.optimizer_name == 'SparseAdam')
+        self.use_sparse_adam = (self.optimizer_name in ('SparseAdam', 'SparseAdam8bit'))
 
         # Latent dimensions
         self.latent_dim = cfg.latent_dim
@@ -1895,7 +1895,7 @@ class MultiMaterialLatentBRDF(LightningModule):
         
         # Encode directions
         enc_dir = self.decoder.encode_directions(wi_local, wo_local, normal_local)
-        
+
         # Decode BRDF
         brdf_lat = latent[:, : self.brdf_latent_dim]
         brdf = self.decoder(enc_dir, brdf_lat)
@@ -2042,7 +2042,7 @@ class BonnLatentBRDF(LightningModule):
         self.single_material = self.single_material_id is not None
 
         self.optimizer_name = getattr(cfg, 'optimizer', {}).get('name', 'SparseAdam')
-        self.use_sparse_adam = (self.optimizer_name == 'SparseAdam')
+        self.use_sparse_adam = (self.optimizer_name in ('SparseAdam', 'SparseAdam8bit'))
 
         if self.single_material:
             total_points, self._mat_H, self._mat_W = self._load_single_material_metadata(
