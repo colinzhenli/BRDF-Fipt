@@ -5,6 +5,8 @@ defaults:
   - material: svlatent_model
 
 experiment_name: test
+gt_material: svpbr
+gt_material_params: {}
 # exp_folder: /media/raid/cloth/No_cable_capture_Sep22/BRDF_recon_Sep30/Controlled_light/hdr
 dataset_folder: /home/featurize/data
 output_folder: /media/raid/cloth/output/BRDF

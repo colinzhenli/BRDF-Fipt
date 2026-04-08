@@ -18,7 +18,7 @@ TRAINER_REGISTRY = {
     },
     'bonn': {
         1: Stage1Trainer_Bonn,
-        2: Stage1Trainer_Bonn,
+        2: Stage2Trainer_Bonn,
     },
     'ubo': {
         2: Stage2Trainer_UBO,

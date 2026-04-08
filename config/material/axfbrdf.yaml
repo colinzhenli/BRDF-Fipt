@@ -1,0 +1,35 @@
+type: "AXFBRDF"
+module: "model.neural_brdf_refactored"
+
+# Path to Autodesk AxF material file.
+axf_path: "/home/haoran/axf/mat0001.axf"
+
+# Optional material ID inside the AxF container.
+material_id: ""
+
+# Optional global RGB scale fitted against measured data.
+learnable_factor: False
+
+# Placeholders so existing trainer / experiment code can parse overrides.
+roughness: 0.0
+metallic: 0.0
+latent_dim: 24
+different_decoder: False
+
+decoder:
+  use_film: False
+  use_color_decomp: False
+  color_latent_dim: 6
+  smooth_reg: False
+  smooth_reg_eps: 0.02
+  use_skip_connection: False
+  skip_layer: 2
+  hidden_layers: [256, 128, 128, 64, 32]
+  activation: "leakyrelu"
+  intermediate_activation: "relu"
+  output_channels: 3
+  degree: 3
+
+# Used when UVs must be derived from planar patch positions.
+patch_width: 0.4
+patch_length: 0.4

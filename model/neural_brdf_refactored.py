@@ -13,8 +13,10 @@ import torch.nn.functional as NF
 import pytorch_lightning as pl
 from pytorch_lightning import LightningModule
 import math
+import numpy as np
+import sys
 # from nerfstudio.field_components import encoding
-from utils.ops import components_from_spherical_harmonics, num_sh_bases, D_GGX, fresnelSchlick, G_Smith, G_Smith_aniso, D_GGX_aniso
+from utils.ops import components_from_spherical_harmonics, num_sh_bases, D_GGX, fresnelSchlick, G_Smith, G_Smith_aniso, D_GGX_aniso, get_normal_space, angle2xyz
 
 
 # ============================================================================
@@ -2390,6 +2392,232 @@ class BonnLatentBRDF(LightningModule):
 
         brdf_weight = brdf / pdf.clamp(min=1e-6)
         return wi, pdf, brdf_weight
+
+def _load_axf_brdf_core():
+    """Load the AxF pybind extension built from axf/eval."""
+    import glob
+    import importlib
+    import importlib.util
+    import os
+
+    here = os.path.dirname(os.path.abspath(__file__))
+    candidates = []
+
+    def _add(path):
+        path = os.path.abspath(os.path.expanduser(path))
+        if path and os.path.isdir(path) and path not in candidates:
+            candidates.append(path)
+
+    for key in ("AXF_BRDF_PY_PATH", "AXF_EVAL_BUILD"):
+        raw = os.environ.get(key, "")
+        if not raw:
+            continue
+        for part in raw.split(os.pathsep):
+            _add(part.strip())
+
+    _add(os.path.join(here, "../../axf/eval/build"))
+    parent = here
+    for _ in range(8):
+        _add(os.path.join(parent, "axf", "eval", "build"))
+        parent = os.path.dirname(parent)
+
+    ver_tag = f"cpython-{sys.version_info.major}{sys.version_info.minor}"
+    tried = []
+    for directory in candidates:
+        tried.append(directory)
+        matches = sorted(glob.glob(os.path.join(directory, "axf_brdf_core*.so")))
+        if not matches:
+            continue
+        preferred = [m for m in matches if ver_tag in os.path.basename(m)]
+        so_path = preferred[0] if preferred else matches[-1]
+        spec = importlib.util.spec_from_file_location("axf_brdf_core", so_path)
+        if spec is None or spec.loader is None:
+            continue
+        module = importlib.util.module_from_spec(spec)
+        try:
+            spec.loader.exec_module(module)
+            return module
+        except Exception as ex:
+            raise ImportError(
+                f"Found {so_path} but failed to load. "
+                f"Rebuild with: cmake -DPython3_EXECUTABLE=$(which python) .. && cmake --build .\n"
+                f"Original error: {ex}"
+            ) from ex
+
+    for directory in candidates:
+        if directory not in sys.path:
+            sys.path.insert(0, directory)
+
+    try:
+        return importlib.import_module("axf_brdf_core")
+    except ModuleNotFoundError as ex:
+        py_ver = f"{sys.version_info.major}.{sys.version_info.minor}"
+        nl = "\n"
+        raise ModuleNotFoundError(
+            f"No axf_brdf_core extension for Python {py_ver}. "
+            f"Tried directories:{nl}{nl.join(tried) or '(none)'}{nl}"
+            f"Set AXF_BRDF_PY_PATH to the folder that contains axf_brdf_core*.so, "
+            f"or build: cd axf/eval/build && cmake .. "
+            f"-DPython3_EXECUTABLE=$(which python) -DBUILD_AXF_PYBIND=ON && cmake --build ."
+        ) from ex
+
+class AXFBRDF(nn.Module):
+    """
+    Measured AxF BRDF via CPUDecoder::eval (same path as axf/eval/eval.cpp).
+
+    wi, wo must be in local tangent space with N = +Z (same convention as SvPBRBRDF
+    *before* local2world). The C++ SDK applies normalization and returns linear RGB
+    including the cosine term (BRDF * <N, L>).
+
+    Requires the Python extension ``axf_brdf_core`` (build axf/eval with BUILD_AXF_PYBIND=ON)
+    and ``LD_LIBRARY_PATH`` / rpath so ``libAxFDecoding.so`` can load.
+    """
+
+    def __init__(self, cfg, axf_path=None):
+        super().__init__()
+        self.axf_path = axf_path or getattr(cfg, "axf_path", None)
+        if not self.axf_path:
+            raise ValueError("AXFBRDF: config must set axf_path to an .axf file")
+        self.material_id = getattr(cfg, "material_id", "") or ""
+        self.patch_width = float(getattr(cfg, "patch_width", 0.4))
+        self.patch_length = float(getattr(cfg, "patch_length", 0.4))
+        self.learnable_factor = bool(getattr(cfg, "learnable_factor", False))
+        if self.learnable_factor:
+            self.factor = nn.Parameter(torch.ones(3, dtype=torch.float32))
+        core = _load_axf_brdf_core()
+        self._core = core.AXFBRDFCore(self.axf_path, self.material_id)
+
+    def _compute_planar_uv(self, pos):
+        if pos is None:
+            raise ValueError("AXFBRDF requires either uv or pos to derive planar UVs.")
+        half_w = self.patch_width * 0.5
+        half_l = self.patch_length * 0.5
+        u = (pos[:, 0] + half_w) / self.patch_width
+        v = (pos[:, 2] + half_l) / self.patch_length
+        return torch.stack([u, v], dim=-1).clamp(0.0, 1.0)
+
+    def _get_frame(self, wi, normal=None, TBN=None):
+        if TBN is not None:
+            tangent = NF.normalize(TBN[:, :, 0], dim=-1)
+            bitangent = NF.normalize(TBN[:, :, 1], dim=-1)
+            frame_normal = NF.normalize(TBN[:, :, 2], dim=-1)
+            return tangent, bitangent, frame_normal
+
+        if normal is None:
+            normal = torch.zeros_like(wi)
+            normal[:, 2] = 1.0
+        frame = get_normal_space(NF.normalize(normal, dim=-1))
+        tangent = frame[:, :, 0]
+        bitangent = frame[:, :, 1]
+        frame_normal = frame[:, :, 2]
+        return tangent, bitangent, frame_normal
+
+    def _world_to_local(self, vec, tangent, bitangent, normal):
+        return torch.stack([
+            (vec * tangent).sum(-1),
+            (vec * bitangent).sum(-1),
+            (vec * normal).sum(-1),
+        ], dim=-1)
+
+    def _local_to_world(self, vec_local, tangent, bitangent, normal):
+        return (
+            vec_local[:, 0:1] * tangent
+            + vec_local[:, 1:2] * bitangent
+            + vec_local[:, 2:3] * normal
+        )
+
+    def eval_brdf(
+        self,
+        pos=None,
+        wi=None,
+        wo=None,
+        normal=None,
+        uv=None,
+        TBN=None,
+        latent=None,
+        batch_mask=None,
+        footprint_vis=None,
+        dp_du=None,
+        dp_dv=None,
+        point_ids=None,
+        material_ids=None,
+    ):
+        if wi is None or wo is None:
+            raise ValueError("AXFBRDF.eval_brdf requires wi and wo.")
+
+        tangent, bitangent, frame_normal = self._get_frame(wi, normal=normal, TBN=TBN)
+        wi_local = self._world_to_local(NF.normalize(wi, dim=-1), tangent, bitangent, frame_normal)
+        wo_local = self._world_to_local(NF.normalize(wo, dim=-1), tangent, bitangent, frame_normal)
+
+        if uv is None:
+            uv = self._compute_planar_uv(pos)
+
+        NoL = wi_local[:, 2:3]
+        NoV = wo_local[:, 2:3]
+        valid = (NoL > 0) & (NoV > 0)
+        if not valid.any():
+            rgb = torch.zeros_like(wi)
+            pdf = torch.zeros(wi.shape[0], 1, device=wi.device, dtype=wi.dtype)
+            if point_ids is not None or material_ids is not None:
+                smooth_loss = torch.zeros((), device=wi.device, dtype=wi.dtype)
+                return rgb, frame_normal, pdf, smooth_loss
+            return rgb, pdf
+
+        print("uv",uv)
+        wi_np = wi_local.detach().cpu().numpy().astype(np.float32)
+        wo_np = wo_local.detach().cpu().numpy().astype(np.float32)
+        uv_np = uv.detach().cpu().numpy().astype(np.float32)
+        rgb_np = self._core.eval_brdf_batch(wi_np, wo_np, uv_np)
+        rgb = torch.from_numpy(np.asarray(rgb_np, dtype=np.float32)).to(
+            device=wi.device, dtype=wi.dtype
+        )
+        valid_3 = valid.expand(-1, 3)
+        rgb = torch.where(valid_3, rgb, torch.zeros_like(rgb))
+        if self.learnable_factor:
+            rgb = rgb * self.factor.view(1, 3).to(device=rgb.device, dtype=rgb.dtype)
+        # Cosine-weighted hemisphere PDF proxy (training only; not AxF importance sampling)
+        pdf = NoL / math.pi
+        pdf = torch.where(valid, pdf, torch.zeros_like(pdf))
+        if point_ids is not None or material_ids is not None:
+            smooth_loss = torch.zeros((), device=wi.device, dtype=wi.dtype)
+            return rgb, frame_normal, pdf, smooth_loss
+        return rgb, pdf
+
+    def sample_brdf(
+        self,
+        params,
+        pos,
+        sample1,
+        sample2,
+        wo,
+        normal,
+        latent=None,
+        batch_mask=None,
+        dp_du=None,
+        dp_dv=None,
+        uv=None,
+        TBN=None,
+    ):
+        del params, sample1, latent, batch_mask, dp_du, dp_dv
+        tangent, bitangent, frame_normal = self._get_frame(wo, normal=normal, TBN=TBN)
+
+        theta = torch.asin(sample2[:, 0].sqrt())
+        phi = 2.0 * math.pi * sample2[:, 1]
+        wi_local = angle2xyz(theta, phi)
+        wi = NF.normalize(self._local_to_world(wi_local, tangent, bitangent, frame_normal), dim=-1)
+
+        brdf, pdf = self.eval_brdf(
+            pos=pos,
+            wi=wi,
+            wo=wo,
+            normal=frame_normal,
+            uv=uv,
+            TBN=TBN,
+        )
+        brdf_weight = torch.where(pdf > 0, brdf / pdf.clamp(min=1e-6), torch.zeros_like(brdf))
+        brdf_weight[torch.isnan(brdf_weight)] = 0
+        return wi, pdf, brdf_weight
+
 
 
 class MERLBRDF(LightningModule):

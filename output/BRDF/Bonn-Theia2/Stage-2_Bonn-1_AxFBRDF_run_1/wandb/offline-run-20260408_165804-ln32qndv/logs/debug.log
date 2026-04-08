@@ -1,0 +1,25 @@
+2026-04-08 16:58:04,530 INFO    MainThread:2755529 [wandb_setup.py:_flush():76] Current SDK version is 0.16.4
+2026-04-08 16:58:04,530 INFO    MainThread:2755529 [wandb_setup.py:_flush():76] Configure stats pid to 2755529
+2026-04-08 16:58:04,530 INFO    MainThread:2755529 [wandb_setup.py:_flush():76] Loading settings from /home/haoran/.config/wandb/settings
+2026-04-08 16:58:04,530 INFO    MainThread:2755529 [wandb_setup.py:_flush():76] Loading settings from /home/haoran/BRDF-Fipt/wandb/settings
+2026-04-08 16:58:04,531 INFO    MainThread:2755529 [wandb_setup.py:_flush():76] Loading settings from environment variables: {'mode': 'offline'}
+2026-04-08 16:58:04,531 INFO    MainThread:2755529 [wandb_setup.py:_flush():76] Applying setup settings: {'_disable_service': False}
+2026-04-08 16:58:04,531 INFO    MainThread:2755529 [wandb_setup.py:_flush():76] Inferring run settings from compute environment: {'program_relpath': 'main.py', 'program_abspath': '/home/haoran/BRDF-Fipt/main.py', 'program': '/home/haoran/BRDF-Fipt/main.py'}
+2026-04-08 16:58:04,531 INFO    MainThread:2755529 [wandb_init.py:_log_setup():526] Logging user logs to /home/haoran/BRDF-Fipt/output/BRDF/Bonn-Theia2/Stage-2_Bonn-1_AxFBRDF_run_1/wandb/offline-run-20260408_165804-ln32qndv/logs/debug.log
+2026-04-08 16:58:04,531 INFO    MainThread:2755529 [wandb_init.py:_log_setup():527] Logging internal logs to /home/haoran/BRDF-Fipt/output/BRDF/Bonn-Theia2/Stage-2_Bonn-1_AxFBRDF_run_1/wandb/offline-run-20260408_165804-ln32qndv/logs/debug-internal.log
+2026-04-08 16:58:04,531 INFO    MainThread:2755529 [wandb_init.py:init():566] calling init triggers
+2026-04-08 16:58:04,531 INFO    MainThread:2755529 [wandb_init.py:init():573] wandb.init called with sweep_config: {}
+config: {}
+2026-04-08 16:58:04,531 INFO    MainThread:2755529 [wandb_init.py:init():616] starting backend
+2026-04-08 16:58:04,531 INFO    MainThread:2755529 [wandb_init.py:init():620] setting up manager
+2026-04-08 16:58:04,532 INFO    MainThread:2755529 [backend.py:_multiprocessing_setup():105] multiprocessing start_methods=fork,spawn,forkserver, using: spawn
+2026-04-08 16:58:04,533 INFO    MainThread:2755529 [wandb_init.py:init():628] backend started and connected
+2026-04-08 16:58:04,536 INFO    MainThread:2755529 [wandb_init.py:init():720] updated telemetry
+2026-04-08 16:58:04,542 INFO    MainThread:2755529 [wandb_init.py:init():753] communicating run to backend with 90.0 second timeout
+2026-04-08 16:58:04,546 INFO    MainThread:2755529 [wandb_init.py:init():804] starting run threads in backend
+2026-04-08 16:58:10,697 INFO    MainThread:2755529 [wandb_run.py:_console_start():2241] atexit reg
+2026-04-08 16:58:10,697 INFO    MainThread:2755529 [wandb_run.py:_redirect():2096] redirect: wrap_raw
+2026-04-08 16:58:10,697 INFO    MainThread:2755529 [wandb_run.py:_redirect():2161] Wrapping output streams.
+2026-04-08 16:58:10,697 INFO    MainThread:2755529 [wandb_run.py:_redirect():2186] Redirects installed.
+2026-04-08 16:58:10,698 INFO    MainThread:2755529 [wandb_init.py:init():847] run started, returning control to user process
+2026-04-08 16:58:14,080 WARNING MsgRouterThr:2755529 [router.py:message_loop():77] message_loop has been closed

@@ -246,7 +246,10 @@ def main(cfg):
         num_workers=cfg.data.num_workers,
     )
     print("==> initializing logger ...")
-    logger = hydra.utils.instantiate(cfg.model.logger, save_dir=cfg.exp_output_root_path)
+    if cfg.model.get("logger") in (False, None):
+        logger = False
+    else:
+        logger = hydra.utils.instantiate(cfg.model.logger, save_dir=cfg.exp_output_root_path)
 
     print("==> initializing monitor ...")
     lr_monitor = LearningRateMonitor(logging_interval='step')
@@ -275,7 +278,13 @@ def main(cfg):
     )
     # tracer = VizTracer()
     # tracer.start()
+    trainable_params = [p for p in model.parameters() if p.requires_grad]
+    has_trainable_params = len(trainable_params) > 0
+
     if cfg.model.test:
+        trainer.validate(model, val_loader)
+    elif not has_trainable_params:
+        print("No trainable parameters found. Skipping fit() and running validation only.")
         trainer.validate(model, val_loader)
     else:
         trainer.fit(model, train_loader, val_loader, ckpt_path=resume_ckpt_path)

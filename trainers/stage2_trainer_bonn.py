@@ -124,6 +124,7 @@ class Stage2Trainer_Bonn(pl.LightningModule):
         """
         dummy_normal = torch.zeros_like(wi)
         dummy_normal[..., 2] = 1.0
+        print("xyz",xyz)
         brdf, pred_normal, _pdf, smooth_loss = self.material.eval_brdf(
             xyz, wi, wo, dummy_normal,
             point_ids=point_ids, material_ids=material_ids)
