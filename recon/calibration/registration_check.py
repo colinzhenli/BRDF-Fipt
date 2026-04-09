@@ -23,9 +23,13 @@ if str(_HERE) not in sys.path:
 from read_write_model import read_images_binary  # noqa: E402
 
 # Materials with registered/K below this are unhealthy and must be re-run.
-# Empirically, healthy materials register 95-100% of scans; the 7 worst failure
-# cases registered <2%, the next tier 13-58%, and the marginal cases sit at 93-95%.
-REGISTRATION_THRESHOLD = 0.95
+# Empirical distribution across 299 materials in Dataset_Nov11:
+#   - 137 register >=99%, 141 register 97-99%, 8 register 95-97%
+#   - 1 marginal at 94.6%, 1 marginal at 92.9%
+#   - then a cliff: 0 in 80-90%, 11 truly broken cases all below 80%
+# Picking 0.90 catches the entire failure cliff while letting the two
+# 92-94% marginals through (avoids unnecessary exhaustive reruns).
+REGISTRATION_THRESHOLD = 0.90
 
 
 def count_registered_images(material_dir) -> int:

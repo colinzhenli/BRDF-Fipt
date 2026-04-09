@@ -6,7 +6,7 @@ validation rules added in Step 4:
 
   1. "good"            — all required files + healthy registration → VALID
   2. "no_struct"       — missing observations_structured.npz       → INVALID
-  3. "low_reg"         — has structured npz but registration < 95% → INVALID
+  3. "low_reg"         — has structured npz but registration below threshold → INVALID
   4. "missing_bbox"    — missing bbox.json                         → INVALID
 
 Then asserts that:

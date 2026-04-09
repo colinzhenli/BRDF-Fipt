@@ -119,12 +119,14 @@ class Stage1Trainer_Bonn(pl.LightningModule):
                 return latent_opt
 
         elif opt_name == 'Adam':
-            # Better to explicitly create two groups
-            opt_groups = [{'params': embedding_params, 'lr': lr}]
-
+            # NOTE: group order is [decoder, embedding] to match the
+            # parameter-group layout of pre-`0be34b5` checkpoints. Do not
+            # reorder without re-saving / migrating existing checkpoints.
+            opt_groups = []
             dense_params = decoder_params + factor_params if not self.freeze_decoder else factor_params
             if len(dense_params) > 0:
                 opt_groups.append({'params': dense_params, 'lr': decoder_lr})
+            opt_groups.append({'params': embedding_params, 'lr': lr})
 
             opt = torch.optim.Adam(opt_groups, betas=(0.9, 0.999), weight_decay=wd)
 

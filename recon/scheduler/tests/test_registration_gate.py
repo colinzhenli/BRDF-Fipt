@@ -5,7 +5,7 @@ Sets up fake material directories with stub COLMAP outputs (real binary
 images.bin so the read path is exercised) and asserts that the gate makes
 the right decision in three scenarios:
 
-  1. Healthy registration (>= 95%) → proceed to COLMAP_DONE
+  1. Healthy registration (>= REGISTRATION_THRESHOLD) → proceed to COLMAP_DONE
   2. Low registration on sequential variant → archive sparse, return retry signal
   3. Low registration on exhaustive variant → return failure signal
 
@@ -127,28 +127,28 @@ def test_low_exhaustive_marks_failed():
 
 def test_threshold_just_below():
     print(f"\n[Test 4] Registration just below threshold ({REGISTRATION_THRESHOLD*100:.0f}%)")
-    # 567/598 = 94.8% - exactly the marginal case from the live dataset (mat 1)
+    # 530/598 = 88.6% — sits just under the 0.90 gate
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
-        mat = make_fake_material(tmp, n_registered=567, n_scans=598)
+        mat = make_fake_material(tmp, n_registered=530, n_scans=598)
         info = make_info(mat, "sequential")
 
         healthy, msg = evaluate_colmap_registration("test", info)
         assert_(healthy is False, f"healthy=False (got {healthy}), msg={msg}")
-        assert_("94.8%" in msg, f"msg mentions 94.8% (got: {msg})")
+        assert_("88.6%" in msg, f"msg mentions 88.6% (got: {msg})")
 
 
 def test_threshold_just_above():
     print(f"\n[Test 5] Registration just above threshold ({REGISTRATION_THRESHOLD*100:.0f}%)")
-    # 576/588 = 97.96% - mat 92's actual numbers (legit sparse cloud, healthy ratio)
+    # 549/591 = 92.9% — mat 197's actual numbers (legit marginal, now allowed through)
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
-        mat = make_fake_material(tmp, n_registered=576, n_scans=588)
+        mat = make_fake_material(tmp, n_registered=549, n_scans=591)
         info = make_info(mat, "sequential")
 
         healthy, msg = evaluate_colmap_registration("test", info)
         assert_(healthy is True, f"healthy=True (got {healthy}), msg={msg}")
-        assert_("98.0%" in msg, f"msg mentions 98.0% (got: {msg})")
+        assert_("92.9%" in msg, f"msg mentions 92.9% (got: {msg})")
 
 
 def main():

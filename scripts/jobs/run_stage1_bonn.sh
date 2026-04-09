@@ -1,6 +1,6 @@
 #!/bin/bash
 
-export CUDA_VISIBLE_DEVICES=0
+export CUDA_VISIBLE_DEVICES=1
 
 python main.py \
     dataset_folder=/media/raid/cloth/Bonn_train \
@@ -14,7 +14,7 @@ python main.py \
     material=bonn_latent \
     experiment_name=Continue_Stage-1_Logrel_Softplus_SparseAdam_decoder-lr-1e-4_All-data_Latent-24_Color_No-Chunk-All-RGB-data_run_2 \
     model.optimizer.reset_latent_momentum_on_chunk_switch=False \
-    model.optimizer.name=SparseAdam \
+    model.optimizer.name=Adam \
     model.loss.recon_loss.name=logrel \
     model.loss.reg_loss.weight=0.0 \
     model.stage=1 \
