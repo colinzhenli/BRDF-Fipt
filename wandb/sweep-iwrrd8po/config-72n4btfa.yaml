@@ -1,0 +1,4 @@
+wandb_version: 1
+
+model.optimizer.decoder_lr:
+  value: 3.0e-05

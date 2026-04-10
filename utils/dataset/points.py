@@ -213,6 +213,11 @@ class MultiMaterialDenseDataset(IterableDataset):
         # Train/val split
         self.val_ratio = getattr(cfg.data, 'val_ratio', 0.1)
 
+        # Point subsampling: keep a random fraction of points per material.
+        # Seeded by material_id below so train/val instances pick the same subset
+        # even when built independently (without share_from).
+        self.point_subsample_ratio = float(getattr(cfg.data, 'point_subsample_ratio', 1.0))
+
         # Read training list
         self.training_list_path = cfg.data.training_list_path
         self.training_list = []
@@ -361,6 +366,24 @@ class MultiMaterialDenseDataset(IterableDataset):
 
             if len(valid_v) == 0:
                 continue
+
+            # Point subsampling: keep a random fraction of the XY-filtered points.
+            # Seeded per material so the same subset is selected across runs and
+            # across independent train/val instances. Dense arrays are compacted
+            # on the V axis so the latent bank and RAM footprint shrink
+            # proportionally; point_ids become dense 0..N_sub-1. The XY-filter-
+            # only path is untouched (compaction would break the model's
+            # num_points assumption that reads from point_metadata.json).
+            if self.point_subsample_ratio < 1.0:
+                N_sub = max(1, int(len(valid_v) * self.point_subsample_ratio))
+                rng = np.random.default_rng(material_id)
+                sel = np.sort(rng.choice(len(valid_v), size=N_sub, replace=False))
+                valid_v = valid_v[sel]
+
+                rgbs_dense = rgbs_dense[:, valid_v, :]
+                xyz = xyz[valid_v]
+                point_ids_np = np.arange(len(valid_v), dtype=np.int32)
+                valid_v = np.arange(len(valid_v))
 
             # Train/val split at image level
             split_idx = int(K * (1 - self.val_ratio))

@@ -12,6 +12,7 @@ pixel: True
 ray_diff: True
 custom_c2w: True
 filter_observations: False # whether to filter observations by XY region
+point_subsample_ratio: 1.0 # fraction of points to keep per material (1.0 = all); used by MultiMaterialDenseDataset and mirrored into cfg.material.point_subsample_ratio
 
 metadata_path: ${dataset_folder}/scan_log.json
 camera_metadata_path: ${dataset_folder}/rotated_camera.json

@@ -1628,7 +1628,13 @@ class MultiMaterialLatentBRDF(LightningModule):
         self.total_latent_dim = self.brdf_latent_dim + (6 if self.predict_frame else 0)
         # BRDF decoder settings
         self.use_pos_enc = cfg.use_pos_enc
-        
+
+        # Point subsampling ratio — must match cfg.data.point_subsample_ratio used
+        # by MultiMaterialDenseDataset so the latent bank size aligns with the
+        # point_ids emitted by the dataloader. Wired via Hydra interpolation in
+        # config/material/multi_material_latent.yaml.
+        self.point_subsample_ratio = float(getattr(cfg, 'point_subsample_ratio', 1.0))
+
         # Load point metadata from material subfolders
         print(f"Loading point metadata from {data_folder}...")
         self.metadata = self._load_point_metadata(data_folder)
@@ -1719,14 +1725,23 @@ class MultiMaterialLatentBRDF(LightningModule):
             try:
                 with open(metadata_path, 'r') as f:
                     point_meta = json.load(f)
-                
+
                 num_points = point_meta['num_points']
                 num_observations = point_meta.get('num_observations', 0)
-                
+
             except (json.JSONDecodeError, KeyError) as e:
                 print(f"  Warning: Failed to read {metadata_path}: {e}, skipping material {material_id}")
                 continue
-            
+
+            # Apply point subsampling: mirrors MultiMaterialDenseDataset, which
+            # keeps max(1, int(len(valid_v) * ratio)) points per material. When
+            # cfg.data.filter_observations is False (default for points_dense)
+            # len(valid_v) == num_points and the two counts agree exactly. If
+            # XY filtering is ever enabled, the dataloader will emit fewer
+            # point_ids than the bank allocates here (wasted capacity, no crash).
+            if self.point_subsample_ratio < 1.0:
+                num_points = max(1, int(num_points * self.point_subsample_ratio))
+
             # Store material info
             materials.append({
                 'material_id': material_id,
@@ -1736,10 +1751,10 @@ class MultiMaterialLatentBRDF(LightningModule):
                 'point_range': (global_point_offset, global_point_offset + num_points),
                 'folder': str(mat_folder)
             })
-            
+
             material_point_offsets[material_id] = global_point_offset
             global_point_offset += num_points
-            
+
             print(f"  Material {material_id}: {num_points:,} points, {num_observations:,} observations")
         
         if len(materials) == 0:

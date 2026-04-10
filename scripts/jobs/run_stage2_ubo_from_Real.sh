@@ -10,7 +10,7 @@ python main.py \
     data.valid_num=20 \
     renderer=multiarea_emitter \
     material=ubo_latent \
-    material.latent_dim=16 \
+    material.latent_dim=24 \
     material.learnable_factor=True \
     material.predict_frame=True \
     material.different_decoder=False \
@@ -33,6 +33,6 @@ python main.py \
     model.trainer.max_epochs=2000 \
     model.trainer.check_val_every_n_epoch=20 \
     model.trainer.limit_train_batches=512 \
-    model.ckpt_path=/media/raid/cloth/output/BRDF/points/All-materials_training_Single-color-head_run_1/training/model_0.20_0.20/last_decoder_only.ckpt
+    model.ckpt_path=/media/raid/cloth/output/BRDF/Bonn-Theia2/Stage1_Chunk_Adam8bit_Softplus_Logrel_materials/training/model_0.20_0.20/last_decoder_only.ckpt
     # To load a pretrained decoder, add:
     # model.ckpt_path=/path/to/pretrained/checkpoint.ckpt

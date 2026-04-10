@@ -1,0 +1,46 @@
+program: main.py
+method: grid
+metric:
+  name: val/loss
+  goal: minimize
+
+parameters:
+  model.optimizer.decoder_lr:
+    values: [1e-5, 3e-5, 1e-4, 3e-4, 1e-3]
+
+command:
+  - ${env}
+  - python
+  - ${program}
+  # --- fixed args (from run_stage1_dense.sh) ---
+  - dataset_folder=/media/raid/cloth/capture_data/Dataset_Nov11
+  - data=points_dense
+  - renderer=multiarea_emitter
+  - material=multi_material_latent
+  - experiment_name=sweep_lr_debug
+  - model.optimizer.name=Adam8bit
+  - model.optimizer.reset_latent_momentum_on_chunk_switch=False
+  - model.loss.recon_loss.name=logrel
+  - model.loss.reg_loss.weight=0.0
+  - model.stage=1
+  - model.test=False
+  - material.decoder.use_skip_connection=True
+  - material.latent_dim=24
+  - material.decoder.degree=3
+  - material.decoder.smooth_reg=False
+  - material.different_decoder=False
+  - data.filter_observations=False
+  - data.switch_iters=100
+  - data.chunk_size=2
+  # --- minimal training for debug ---
+  - model.trainer.max_epochs=5
+  - model.trainer.check_val_every_n_epoch=1
+  - model.trainer.limit_train_batches=10
+  - model.trainer.log_every_n_steps=5
+  # --- minimal data (2 materials, subsample points to 1%) ---
+  - data.training_list_path=/home/zla247/projects/BRDF-Fipt/scripts/debugging/train_debug_2materials.txt
+  - data.train_num=2
+  - data.val_num=1
+  - data.point_subsample_ratio=0.01
+  # --- sweep param injected here ---
+  - ${args_no_hyphens}
