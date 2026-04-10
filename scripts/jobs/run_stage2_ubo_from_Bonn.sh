@@ -29,8 +29,8 @@ python main.py \
     model.freeze_decoder=True \
     model.continue_training=False \
     model.trainer.max_epochs=2000 \
-    model.trainer.check_val_every_n_epoch=20 \
+    model.trainer.check_val_every_n_epoch=100 \
     model.trainer.limit_train_batches=512 \
     material.latent_dim=24 \
     material.different_decoder=False \
-    model.ckpt_path=/media/raid/cloth/output/BRDF/Bonn-Theia2/Stage-1_Logrel_Softplus_Fir_decoder-lr-1e-4_All-data_Latent-24_Color_No-Chunk-All-RGB-data_run_2/training/training/model_0.20_0.20/last_decoder_only.ckpt
+    model.ckpt_path=/media/raid/cloth/output/BRDF/Bonn-Theia2/Continue_Stage-1_Logrel_Softplus_Fir_decoder-lr-1e-4_All-data_Latent-24_Color_No-Chunk-All-RGB-data_run_2/training/training/model_0.20_0.20/last_decoder_only.ckpt

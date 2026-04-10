@@ -31,7 +31,7 @@ python main.py \
     model.freeze_decoder=True \
     model.continue_training=False \
     model.trainer.max_epochs=2000 \
-    model.trainer.check_val_every_n_epoch=20 \
+    model.trainer.check_val_every_n_epoch=100 \
     model.trainer.limit_train_batches=512 \
     model.ckpt_path=/media/raid/cloth/output/BRDF/Bonn-Theia2/Stage1_Chunk_Adam8bit_Softplus_Logrel_materials/training/model_0.20_0.20/last_decoder_only.ckpt
     # To load a pretrained decoder, add:

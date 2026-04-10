@@ -1,3 +1,4 @@
+project: brdf-capture
 program: main.py
 method: grid
 metric:
