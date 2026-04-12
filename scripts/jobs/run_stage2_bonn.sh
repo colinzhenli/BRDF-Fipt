@@ -1,6 +1,6 @@
 #!/bin/bash
 
-export CUDA_VISIBLE_DEVICES=3
+export CUDA_VISIBLE_DEVICES=1
 
 python main.py \
     dataset_folder=/media/raid/cloth/Bonn_val \
@@ -11,7 +11,7 @@ python main.py \
     material.different_decoder=False \
     material.decoder.use_skip_connection=True \
     material.learnable_factor=True \
-    experiment_name=Stage-2_Bonn-3_from_Fir-Bonn_stage1-trainer_run_1 \
+    experiment_name=Stage-2_Bonn-3_Lr-1e-3-Decoder-lr-1e-2_from_Fir-Bonn_stage1-trainer_run_1 \
     model.optimizer.reset_latent_momentum_on_chunk_switch=False \
     model.optimizer.name=Adam \
     model.loss.recon_loss.name=logrel \
@@ -22,9 +22,9 @@ python main.py \
     model.continue_training=False \
     model.trainer.max_epochs=4000 \
     model.trainer.check_val_every_n_epoch=20 \
-    model.optimizer.decoder_lr=1e-4 \
+    model.optimizer.decoder_lr=1e-2 \
     model.freeze_decoder=True \
-    model.optimizer.lr=0.01 \
+    model.optimizer.lr=0.001 \
     model.trainer.limit_train_batches=512 \
     material.decoder.use_skip_connection=True \
     material.decoder.use_film=False \

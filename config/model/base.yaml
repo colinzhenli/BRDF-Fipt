@@ -55,6 +55,10 @@ loss:
     weight: 0.1
   refiner_prior_loss:
     weight: 0.01
+  pan_weight: 0.5   # loss weight for panchromatic (grayscale) observations
+  lls_weight: 0.5   # loss weight for LLS (linear light source) observations
+
+lls_spp: 16          # Monte-Carlo samples per pixel for LLS integration
 
 # Linear fitting options for radiance-camera calibration
 linear_fitting:

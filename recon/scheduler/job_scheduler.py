@@ -659,6 +659,56 @@ def reset_failed_jobs(state: Dict, verbose: bool = True, force_restart_colmap: b
     
     return reset_count
 
+def force_redo_materials(state: Dict, material_ids: List[str], verbose: bool = True) -> int:
+    """
+    Force-reset specific materials to NOT_STARTED so COLMAP and shape matching
+    are re-run from scratch.  Works regardless of current status (COMPLETED,
+    COLMAP_DONE, RUNNING, FAILED, etc.).  Running processes are NOT killed here
+    — the scheduler's normal update loop will notice the status change.
+
+    Args:
+        state: Current scheduler state
+        material_ids: List of material ID strings to reset (folder names)
+        verbose: Whether to print reset messages
+
+    Returns: Number of materials actually reset
+    """
+    reset_count = 0
+    for mid in material_ids:
+        if mid not in state["materials"]:
+            if verbose:
+                print(f"  Warning: material '{mid}' not found in state — skipping")
+            continue
+
+        info = state["materials"][mid]
+        old_status = info["status"]
+
+        # Kill running process if any
+        if info.get("pid") is not None:
+            terminate_process(info["pid"], mid,
+                              "COLMAP" if old_status == JobStatus.COLMAP_RUNNING else "shape matching")
+
+        info["status"] = JobStatus.NOT_STARTED
+        info["pid"] = None
+        info["gpu"] = None
+        info["workers"] = None
+        info["colmap_start_time"] = None
+        info["colmap_end_time"] = None
+        info["shape_matching_start_time"] = None
+        info["shape_matching_end_time"] = None
+        info["error"] = None
+        info["colmap_variant"] = "sequential"
+        info["colmap_attempts"] = 0
+        info["ready"] = is_material_ready(info["folder_path"])
+
+        reset_count += 1
+        if verbose:
+            ready_tag = "ready" if info["ready"] else "not ready (no scan_log.json)"
+            print(f"  Force-redo material {mid}: {old_status} -> NOT_STARTED ({ready_tag})")
+
+    return reset_count
+
+
 def load_skip_list(dataset_root: str) -> set:
     """
     Load material IDs to skip from skip.txt file in dataset folder.
@@ -1116,17 +1166,18 @@ def try_launch_shape_matching_jobs(state: Dict, config: Config):
 
 # ==================== Scheduler Modes ====================
 
-def streaming_mode(dataset_root: str, config: Config, auto_detect: bool = False, retry_failed: bool = True, force_restart_colmap: bool = True):
+def streaming_mode(dataset_root: str, config: Config, auto_detect: bool = False, retry_failed: bool = True, force_restart_colmap: bool = True, force_redo_ids: Optional[List[str]] = None):
     """
     Streaming mode: Continuously schedule jobs as capacity becomes available.
     Runs until all materials are completed.
-    
+
     Args:
         dataset_root: Path to dataset root folder
         config: Scheduler configuration
         auto_detect: If True, periodically scan for new materials and process them automatically
         retry_failed: If True, reset failed jobs to retry them on startup
         force_restart_colmap: If True, always restart failed jobs from COLMAP (default True)
+        force_redo_ids: If provided, force these material IDs back to NOT_STARTED
     """
     print("\n" + "="*60)
     if auto_detect:
@@ -1145,15 +1196,22 @@ def streaming_mode(dataset_root: str, config: Config, auto_detect: bool = False,
     
     # Initialize materials (with failed job reset if requested)
     materials, new_count = initialize_materials(dataset_root, state, reset_failed=retry_failed, force_restart_colmap=force_restart_colmap)
+
+    # Force-redo specific materials if requested
+    if force_redo_ids:
+        print(f"\nForce-redo requested for {len(force_redo_ids)} material(s):")
+        n_redo = force_redo_materials(state, force_redo_ids)
+        print(f"Force-reset {n_redo} material(s)\n")
+
     save_state(state, config.STATE_FILE)
-    
+
     if not materials:
         print("No material folders found!")
         if not auto_detect:
             return
         else:
             print("Waiting for new materials...")
-    
+
     print(f"Monitoring {len(materials)} materials...")
     print(f"GPU IDs: {config.GPU_IDS}")
     print(f"Max COLMAP per GPU: {config.MAX_COLMAP_PER_GPU}")
@@ -1261,33 +1319,41 @@ def streaming_mode(dataset_root: str, config: Config, auto_detect: bool = False,
         print("State saved. Exiting.")
         sys.exit(0)
 
-def manual_mode(dataset_root: str, n_folders: int, config: Config, retry_failed: bool = True, force_restart_colmap: bool = True):
+def manual_mode(dataset_root: str, n_folders: int, config: Config, retry_failed: bool = True, force_restart_colmap: bool = True, force_redo_ids: Optional[List[str]] = None):
     """
     Manual mode: Schedule first N folders and wait for all to complete.
     Balances jobs across GPUs and CPUs upfront.
     Only schedules materials that are ready (have scan_log.json).
-    
+
     Args:
         dataset_root: Path to dataset root folder
         n_folders: Number of folders to process
         config: Scheduler configuration
         retry_failed: If True, reset failed jobs to retry them on startup
         force_restart_colmap: If True, always restart failed jobs from COLMAP (default True)
+        force_redo_ids: If provided, force these material IDs back to NOT_STARTED
     """
     print("\n" + "="*60)
     print(f"MANUAL MODE: Scheduling first {n_folders} folders")
     if retry_failed:
         print(f"Failed jobs will be retried (restart from {'COLMAP' if force_restart_colmap else 'failed stage'})")
     print("="*60 + "\n")
-    
+
     # Initialize GPU monitor
     gpu_monitor = GPUMonitor()
-    
+
     state = load_state(config.STATE_FILE)
     state["mode"] = "manual"
-    
+
     # Initialize materials (with failed job reset if requested)
     materials, new_count = initialize_materials(dataset_root, state, reset_failed=retry_failed, force_restart_colmap=force_restart_colmap)
+
+    # Force-redo specific materials if requested
+    if force_redo_ids:
+        print(f"\nForce-redo requested for {len(force_redo_ids)} material(s):")
+        n_redo = force_redo_materials(state, force_redo_ids)
+        print(f"Force-reset {n_redo} material(s)\n")
+
     save_state(state, config.STATE_FILE)
     
     if not materials:
@@ -1468,6 +1534,9 @@ Examples:
   # Show current status
   python job_scheduler.py --status --dataset /path/to/dataset
 
+  # Force redo specific materials (e.g. after recapturing)
+  python job_scheduler.py --dataset /path/to/dataset --mode streaming --force_redo 42 105 210
+
   # Custom configuration
   python job_scheduler.py --dataset /path/to/dataset --mode streaming \\
       --max_colmap_per_gpu 8 --cpu_per_colmap 6
@@ -1484,6 +1553,9 @@ Examples:
                        help="Don't retry failed jobs on restart (default: failed jobs are retried)")
     parser.add_argument("--retry_shape_matching_only", action="store_true",
                        help="When retrying failed jobs, only retry shape matching if COLMAP completed (default: always restart from COLMAP)")
+    parser.add_argument("--force_redo", type=str, nargs="+", default=None,
+                       help="Force redo COLMAP + shape matching for these material IDs (e.g. --force_redo 42 105 210). "
+                            "Resets them to NOT_STARTED regardless of current status.")
     
     # Optional configuration overrides
     parser.add_argument("--max_colmap_per_gpu", type=int, help=f"Max COLMAP jobs per GPU (default: {Config.MAX_COLMAP_PER_GPU})")
@@ -1538,9 +1610,9 @@ Examples:
     
     # Run scheduler
     if args.mode == "streaming":
-        streaming_mode(args.dataset, config, auto_detect=args.auto_detect, retry_failed=retry_failed, force_restart_colmap=force_restart_colmap)
+        streaming_mode(args.dataset, config, auto_detect=args.auto_detect, retry_failed=retry_failed, force_restart_colmap=force_restart_colmap, force_redo_ids=args.force_redo)
     elif args.mode == "manual":
-        manual_mode(args.dataset, args.n_folders, config, retry_failed=retry_failed, force_restart_colmap=force_restart_colmap)
+        manual_mode(args.dataset, args.n_folders, config, retry_failed=retry_failed, force_restart_colmap=force_restart_colmap, force_redo_ids=args.force_redo)
 
 if __name__ == "__main__":
     main()

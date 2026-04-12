@@ -259,33 +259,78 @@ class Stage1Trainer_Bonn(pl.LightningModule):
         rgbs_gt      = batch['rgbs'].squeeze(0)
         point_ids    = batch['point_ids'].squeeze(0)
         material_ids = batch['material_ids'].squeeze(0)
+        data_type    = batch['data_type'].squeeze(0)
+        lls_corners  = batch['lls_corners'].squeeze(0)
         confidence   = batch['confidence'].squeeze(0)
 
         gt_normals = batch.get('gt_normals')
         if gt_normals is not None:
             gt_normals = gt_normals.squeeze(0)
 
-        # All rays are polychromatic (RGB) — no pan/lls branching
-        brdf, _, smooth_loss = self._eval_brdf(
-            xyz, wi, wo, point_ids, material_ids, normals=gt_normals)
-        recon_loss = self._compute_loss(brdf, rgbs_gt, confidence)
-        total_loss = recon_loss + self.smooth_reg_weight * smooth_loss
+        poly_mask = data_type == DTYPE_POLY
+        pan_mask  = data_type == DTYPE_PAN
+        lls_mask  = data_type == DTYPE_LLS
 
-        # PSNR over valid (non-occluded) pixels only
-        valid = confidence > 0
-        if valid.any():
-            mse = ((brdf[valid] - rgbs_gt[valid]) ** 2).mean()
-            max_val = rgbs_gt[valid].max().clamp_min(1e-8)
-        else:
-            mse = torch.tensor(1.0, device=brdf.device)
-            max_val = torch.tensor(1.0, device=brdf.device)
-        psnr = 10.0 * torch.log10(max_val ** 2 / mse.clamp_min(1e-8))
+        total_loss   = torch.tensor(0.0, device=xyz.device)
+        smooth_total = torch.tensor(0.0, device=xyz.device)
+        poly_pred    = None
+
+        # --- polychromatic (RGB) loss ---
+        if poly_mask.any():
+            poly_normals = gt_normals[poly_mask] if gt_normals is not None else None
+            brdf, _, sm = self._eval_brdf(
+                xyz[poly_mask], wi[poly_mask], wo[poly_mask],
+                point_ids[poly_mask], material_ids[poly_mask],
+                normals=poly_normals)
+            total_loss = total_loss + self._compute_loss(brdf, rgbs_gt[poly_mask],
+                                                         confidence[poly_mask])
+            smooth_total = smooth_total + sm
+            poly_pred = brdf
+
+        # --- panchromatic (grayscale) loss ---
+        if pan_mask.any():
+            pan_normals = gt_normals[pan_mask] if gt_normals is not None else None
+            brdf_pan, _, sm = self._eval_brdf(
+                xyz[pan_mask], wi[pan_mask], wo[pan_mask],
+                point_ids[pan_mask], material_ids[pan_mask],
+                normals=pan_normals)
+            pred_gray = (brdf_pan * self.pan_weights).sum(-1, keepdim=True)
+            gt_gray   = rgbs_gt[pan_mask][:, :1]
+            total_loss = total_loss + self.pan_loss_weight * self._compute_loss(
+                pred_gray, gt_gray, confidence[pan_mask])
+            smooth_total = smooth_total + sm
+
+        # --- LLS (Monte-Carlo) loss ---
+        if lls_mask.any():
+            lls_pred = self._lls_monte_carlo(
+                xyz[lls_mask], wo[lls_mask], lls_corners[lls_mask],
+                point_ids[lls_mask], material_ids[lls_mask], self.lls_spp)
+            pred_gray = (lls_pred * self.pan_weights).sum(-1, keepdim=True)
+            gt_gray   = rgbs_gt[lls_mask][:, :1]
+            total_loss = total_loss + self.lls_loss_weight * self._compute_loss(
+                pred_gray, gt_gray, confidence[lls_mask])
+
+        # Smoothness regularisation (from poly branch only to avoid double-counting)
+        total_loss = total_loss + self.smooth_reg_weight * smooth_total
+
+        # PSNR — computed on poly RGB only
+        psnr = torch.tensor(0.0, device=xyz.device)
+        if poly_pred is not None and poly_pred.numel() > 0:
+            gt_poly = rgbs_gt[poly_mask]
+            valid = confidence[poly_mask] > 0
+            if valid.any():
+                mse = ((poly_pred[valid] - gt_poly[valid]) ** 2).mean()
+                max_val = gt_poly[valid].max().clamp_min(1e-8)
+            else:
+                mse = torch.tensor(1.0, device=xyz.device)
+                max_val = torch.tensor(1.0, device=xyz.device)
+            psnr = 10.0 * torch.log10(max_val ** 2 / mse.clamp_min(1e-8))
 
         self.log_dict({
             'train/total_loss': total_loss,
             'train/psnr':       psnr,
-            'train/poly_pred_mean': brdf.mean(),
-            'train/poly_gt_mean':   rgbs_gt.mean(),
+            'train/poly_pred_mean': poly_pred.mean() if poly_pred is not None else 0.0,
+            'train/poly_gt_mean':   rgbs_gt[poly_mask].mean() if poly_mask.any() else 0.0,
         }, prog_bar=True, batch_size=xyz.shape[0])
 
         opts = self.optimizers()
