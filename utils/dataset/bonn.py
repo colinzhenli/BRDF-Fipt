@@ -324,6 +324,7 @@ class BonnDataset(IterableDataset):
             # Assembly
             # ============================================================
             rgbs_parts       = []
+            gray_parts       = []
             light_parts      = []
             cam_parts        = []
             dtype_parts      = []
@@ -363,13 +364,12 @@ class BonnDataset(IterableDataset):
                     ch_ci = np.array([pan_name_to_idx[im['channel']]
                                       for im in pan_images])
                     pan_gray = pan_flat[:, ch_ci].T                  # (K, V)
-                    pan_rgbs = np.stack([pan_gray, pan_gray, pan_gray], axis=-1)
 
                     pan_light = np.array([
                         calib[im['rotation']][im['led']] for im in pan_images])
                     pan_cam = np.array([
                         calib[im['rotation']][im['camera']] for im in pan_images])
-                    rgbs_parts.append(pan_rgbs)
+                    gray_parts.append(pan_gray)
                     light_parts.append(pan_light)
                     cam_parts.append(pan_cam)
                     dtype_parts.append(np.full(n_pan, DTYPE_PAN, dtype=np.int64))
@@ -388,7 +388,6 @@ class BonnDataset(IterableDataset):
                     ch_ci = np.array([lls_name_to_idx[im['channel']]
                                       for im in lls_images])
                     lls_gray = lls_flat[:, ch_ci].T                  # (K, V)
-                    lls_rgbs = np.stack([lls_gray, lls_gray, lls_gray], axis=-1)
 
                     corners_list = []
                     center_list = []
@@ -404,7 +403,7 @@ class BonnDataset(IterableDataset):
                         calib[im['rotation']][im['camera']] for im in lls_images])
                     lls_corners_arr = np.array(corners_list, dtype=np.float32)
 
-                    rgbs_parts.append(lls_rgbs)
+                    gray_parts.append(lls_gray)
                     light_parts.append(lls_light)
                     cam_parts.append(lls_cam)
                     dtype_parts.append(np.full(n_lls, DTYPE_LLS, dtype=np.int64))
@@ -414,10 +413,11 @@ class BonnDataset(IterableDataset):
                 del lls_data
 
             # ---- concatenate across source types ------------------------
-            if not rgbs_parts:
+            if not rgbs_parts and not gray_parts:
                 return None
 
-            all_rgbs       = np.concatenate(rgbs_parts, axis=0)
+            all_rgbs       = np.concatenate(rgbs_parts, axis=0) if rgbs_parts else np.empty((0, n_pixels, 3), dtype=np.float16)
+            gray_vals      = np.concatenate(gray_parts, axis=0) if gray_parts else None
             all_light_pos  = np.concatenate(light_parts, axis=0)
             all_cam_pos    = np.concatenate(cam_parts, axis=0)
             all_data_type  = np.concatenate(dtype_parts, axis=0)
@@ -425,6 +425,8 @@ class BonnDataset(IterableDataset):
             all_lls_corner = np.concatenate(lls_corner_parts, axis=0)
 
             np.clip(all_rgbs, 0, None, out=all_rgbs)
+            if gray_vals is not None:
+                np.clip(gray_vals, 0, None, out=gray_vals)
 
             Visualize = False
             if Visualize:
@@ -518,20 +520,25 @@ class BonnDataset(IterableDataset):
                 print(f"  [Debug] Saved camera & light point clouds to {_dbg_dir}")
                 # --- end debug ------------------------------------------------
 
-            n_images = all_rgbs.shape[0]
+            n_poly_img = all_rgbs.shape[0]
+            n_gray_img = gray_vals.shape[0] if gray_vals is not None else 0
+            n_images = n_poly_img + n_gray_img
             mem_mb = all_rgbs.nbytes / 1e6
+            if gray_vals is not None:
+                mem_mb += gray_vals.nbytes / 1e6
             n_poly_loaded = (all_data_type == DTYPE_POLY).sum()
             n_pan_loaded  = (all_data_type == DTYPE_PAN).sum()
             n_lls_loaded  = (all_data_type == DTYPE_LLS).sum()
             print(f"  mat{mat_id:04d}: {n_pixels:,} px × {n_images} img "
                   f"(poly={n_poly_loaded}, pan={n_pan_loaded}, lls={n_lls_loaded})  "
-                  f"rgbs {mem_mb:.0f} MB")
+                  f"pixel data {mem_mb:.0f} MB")
 
             return {
                 'mat_id':      mat_id,
                 'xyz':         xyz_pts,         # (V, 3)   float32
                 'point_ids':   pids,            # (V,)     int64
-                'rgbs':        all_rgbs,        # (K, V, 3) float16
+                'rgbs':        all_rgbs,        # (K_poly, V, 3) float16
+                'gray_vals':   gray_vals,       # (K_gray, V) float16 or None
                 'light_pos':   all_light_pos,   # (K, 3)   float32
                 'cam_pos':     all_cam_pos,     # (K, 3)   float32
                 'data_type':   all_data_type,   # (K,)     int64
@@ -602,12 +609,16 @@ class BonnDataset(IterableDataset):
         if not materials:
             return BonnDataset.ChunkData(materials=[], total_obs=0)
 
-        total_obs = sum(m['rgbs'].shape[0] * m['rgbs'].shape[1] for m in materials)
-        total_rgb_mb = sum(m['rgbs'].nbytes for m in materials) / 1e6
+        total_obs = sum(
+            (m['rgbs'].shape[0] + (m['gray_vals'].shape[0] if m['gray_vals'] is not None else 0))
+            * m['rgbs'].shape[1] for m in materials)
+        total_pixel_mb = sum(
+            m['rgbs'].nbytes + (m['gray_vals'].nbytes if m['gray_vals'] is not None else 0)
+            for m in materials) / 1e6
 
         print(f"[{tag}] All data loaded: {total_obs:,} observations "
               f"from {len(materials)} materials  "
-              f"(rgbs {total_rgb_mb:.0f} MB)")
+              f"(pixel data {total_pixel_mb:.0f} MB)")
 
         return BonnDataset.ChunkData(materials=materials, total_obs=total_obs)
 
@@ -636,7 +647,8 @@ class BonnDataset(IterableDataset):
         if k is not None and 0 < k < len(materials):
             materials = [materials[i] for i in np.random.choice(len(materials), k, replace=False)]
         obs_counts = np.array(
-            [m['rgbs'].shape[0] * m['rgbs'].shape[1] for m in materials],
+            [(m['rgbs'].shape[0] + (m['gray_vals'].shape[0] if m['gray_vals'] is not None else 0))
+             * m['rgbs'].shape[1] for m in materials],
             dtype=np.float64)
         weights = obs_counts / obs_counts.sum()
         rays_per_mat = np.round(weights * n_rays).astype(int)
@@ -658,14 +670,25 @@ class BonnDataset(IterableDataset):
             if n <= 0:
                 continue
 
-            n_images = mat['rgbs'].shape[0]
+            n_poly = mat['rgbs'].shape[0]
+            n_gray = mat['gray_vals'].shape[0] if mat['gray_vals'] is not None else 0
+            n_images = n_poly + n_gray
             n_pixels = mat['rgbs'].shape[1]
 
             img_i = np.random.randint(0, n_images, n)
             pix_i = np.random.randint(0, n_pixels, n)
 
             parts_xyz.append(mat['xyz'][pix_i])
-            parts_rgbs.append(mat['rgbs'][img_i, pix_i].astype(np.float32))
+            # Fetch pixel values: poly → 3-ch RGB, pan/lls → 1-ch grayscale in ch0
+            rgbs_sampled = np.zeros((n, 3), dtype=np.float32)
+            poly_m = img_i < n_poly
+            if poly_m.any():
+                rgbs_sampled[poly_m] = mat['rgbs'][img_i[poly_m], pix_i[poly_m]].astype(np.float32)
+            if n_gray > 0:
+                gray_m = ~poly_m
+                if gray_m.any():
+                    rgbs_sampled[gray_m, 0] = mat['gray_vals'][img_i[gray_m] - n_poly, pix_i[gray_m]].astype(np.float32)
+            parts_rgbs.append(rgbs_sampled)
             parts_pids.append(mat['point_ids'][pix_i])
             parts_mids.append(np.full(n, mat['mat_id'], dtype=np.int64))
             parts_dtype.append(mat['data_type'][img_i])
@@ -984,6 +1007,7 @@ def _load_single_material_full(root_folder, mat_id, use_pan=False, use_lls=False
 
         # ---- assembly (no pixel subsampling) ----------------------------
         rgbs_parts      = []
+        gray_parts      = []
         light_parts     = []
         cam_parts       = []
         dtype_parts     = []
@@ -1022,13 +1046,12 @@ def _load_single_material_full(root_folder, mat_id, use_pan=False, use_lls=False
                 ch_ci = np.array([pan_name_to_idx[im['channel']]
                                   for im in pan_images])
                 pan_gray = pan_flat[:, ch_ci].T                  # (K, V)
-                pan_rgbs = np.stack([pan_gray, pan_gray, pan_gray], axis=-1)
 
                 pan_light = np.array([
                     calib[im['rotation']][im['led']] for im in pan_images])
                 pan_cam = np.array([
                     calib[im['rotation']][im['camera']] for im in pan_images])
-                rgbs_parts.append(pan_rgbs)
+                gray_parts.append(pan_gray)
                 light_parts.append(pan_light)
                 cam_parts.append(pan_cam)
                 dtype_parts.append(np.full(n_pan, DTYPE_PAN, dtype=np.int64))
@@ -1047,7 +1070,6 @@ def _load_single_material_full(root_folder, mat_id, use_pan=False, use_lls=False
                 ch_ci = np.array([lls_name_to_idx[im['channel']]
                                   for im in lls_images])
                 lls_gray = lls_flat[:, ch_ci].T                  # (K, V)
-                lls_rgbs = np.stack([lls_gray, lls_gray, lls_gray], axis=-1)
 
                 corners_list = []
                 center_list = []
@@ -1063,7 +1085,7 @@ def _load_single_material_full(root_folder, mat_id, use_pan=False, use_lls=False
                     calib[im['rotation']][im['camera']] for im in lls_images])
                 lls_corners_arr = np.array(corners_list, dtype=np.float32)
 
-                rgbs_parts.append(lls_rgbs)
+                gray_parts.append(lls_gray)
                 light_parts.append(lls_light)
                 cam_parts.append(lls_cam)
                 dtype_parts.append(np.full(n_lls, DTYPE_LLS, dtype=np.int64))
@@ -1072,10 +1094,11 @@ def _load_single_material_full(root_folder, mat_id, use_pan=False, use_lls=False
                 eid += n_lls
             del lls_data
 
-        if not rgbs_parts:
+        if not rgbs_parts and not gray_parts:
             return None
 
-        all_rgbs       = np.concatenate(rgbs_parts, axis=0)       # (K, V, 3)
+        all_rgbs       = np.concatenate(rgbs_parts, axis=0) if rgbs_parts else np.empty((0, n_pixels, 3), dtype=np.float16)
+        gray_vals      = np.concatenate(gray_parts, axis=0) if gray_parts else None
         all_light_pos  = np.concatenate(light_parts, axis=0)      # (K, 3)
         all_cam_pos    = np.concatenate(cam_parts, axis=0)        # (K, 3)
         all_data_type  = np.concatenate(dtype_parts, axis=0)      # (K,)
@@ -1083,15 +1106,22 @@ def _load_single_material_full(root_folder, mat_id, use_pan=False, use_lls=False
         all_lls_corner = np.concatenate(lls_corner_parts, axis=0) # (K, 4, 3)
 
         np.clip(all_rgbs, 0, None, out=all_rgbs)
-        n_images = all_rgbs.shape[0]
+        if gray_vals is not None:
+            np.clip(gray_vals, 0, None, out=gray_vals)
+
+        n_poly_img = all_rgbs.shape[0]
+        n_gray_img = gray_vals.shape[0] if gray_vals is not None else 0
+        n_images = n_poly_img + n_gray_img
 
         n_poly_loaded = (all_data_type == DTYPE_POLY).sum()
         n_pan_loaded  = (all_data_type == DTYPE_PAN).sum()
         n_lls_loaded  = (all_data_type == DTYPE_LLS).sum()
         mem_mb = all_rgbs.nbytes / 1e6
+        if gray_vals is not None:
+            mem_mb += gray_vals.nbytes / 1e6
         print(f"  mat{mat_id:04d}: {n_pixels:,} pixels × {n_images} images "
               f"(poly={n_poly_loaded}, pan={n_pan_loaded}, lls={n_lls_loaded})  "
-              f"rgbs {mem_mb:.0f} MB")
+              f"pixel data {mem_mb:.0f} MB")
 
         return {
             'mat_id':      mat_id,
@@ -1100,7 +1130,8 @@ def _load_single_material_full(root_folder, mat_id, use_pan=False, use_lls=False
             'H': H, 'W': W,
             'xyz':         xyz_pts,           # (V, 3)
             'point_ids':   pids,              # (V,)
-            'rgbs':        all_rgbs,          # (K, V, 3)
+            'rgbs':        all_rgbs,          # (K_poly, V, 3)
+            'gray_vals':   gray_vals,         # (K_gray, V) or None
             'light_pos':   all_light_pos,     # (K, 3)
             'cam_pos':     all_cam_pos,       # (K, 3)
             'data_type':   all_data_type,     # (K,)
@@ -1174,17 +1205,32 @@ class BonnSingleMaterialDataset(IterableDataset):
         self.xyz        = mat_data['xyz']                     # (V, 3)
         self.point_ids  = mat_data['point_ids']               # (V,)
         self.gt_normals = mat_data['gt_normals']              # (V, 3) or None
-        self.rgbs       = mat_data['rgbs'][indices]           # (K', V, 3)
         self.light_pos  = mat_data['light_pos'][indices]      # (K', 3)
         self.cam_pos    = mat_data['cam_pos'][indices]        # (K', 3)
         self.data_type  = mat_data['data_type'][indices]      # (K',)
         self.emitter_ids = mat_data['emitter_ids'][indices]   # (K',)
         self.lls_corners = mat_data['lls_corners'][indices]   # (K', 4, 3)
 
+        # Split pixel data: poly (3-ch) vs gray (1-ch) for memory efficiency
+        n_poly_total = mat_data['rgbs'].shape[0]
+        is_poly = indices < n_poly_total
+        self.rgbs = mat_data['rgbs'][indices[is_poly]] if is_poly.any() else np.empty((0, self.n_pixels, 3), dtype=np.float16)
+        if (~is_poly).any() and mat_data['gray_vals'] is not None:
+            self.gray_vals = mat_data['gray_vals'][indices[~is_poly] - n_poly_total]
+        else:
+            self.gray_vals = None
+        # local_idx: maps subset position → per-type array index
+        self.local_idx = np.empty(self.n_images, dtype=np.int64)
+        self.local_idx[is_poly] = np.arange(is_poly.sum())
+        if (~is_poly).any():
+            self.local_idx[~is_poly] = np.arange((~is_poly).sum())
+
         total_obs = self.n_pixels * self.n_images
         mem_mb = self.rgbs.nbytes / 1e6
+        if self.gray_vals is not None:
+            mem_mb += self.gray_vals.nbytes / 1e6
         print(f"  {split}: {self.n_pixels:,} pixels × {self.n_images} images "
-              f"= {total_obs:,} obs  (rgbs {mem_mb:.0f} MB)")
+              f"= {total_obs:,} obs  (pixel data {mem_mb:.0f} MB)")
         print(f"{'='*60}\n")
 
     # ------------------------------------------------------------------
@@ -1200,7 +1246,16 @@ class BonnSingleMaterialDataset(IterableDataset):
         pix_i = np.random.randint(0, self.n_pixels, n_rays)
 
         xyz      = self.xyz[pix_i]
-        rgbs     = self.rgbs[img_i, pix_i]
+        # Fetch pixel values: poly → 3-ch RGB, pan/lls → 1-ch grayscale in ch0
+        dt = self.data_type[img_i]
+        li = self.local_idx[img_i]
+        rgbs = np.zeros((n_rays, 3), dtype=np.float32)
+        poly_m = dt == DTYPE_POLY
+        if poly_m.any():
+            rgbs[poly_m] = self.rgbs[li[poly_m], pix_i[poly_m]].astype(np.float32)
+        gray_m = ~poly_m
+        if gray_m.any() and self.gray_vals is not None:
+            rgbs[gray_m, 0] = self.gray_vals[li[gray_m], pix_i[gray_m]].astype(np.float32)
         light    = self.light_pos[img_i]
         cam      = self.cam_pos[img_i]
 
@@ -1292,6 +1347,7 @@ class BonnSingleMaterialValDataset(Dataset):
         xyz_flat = mat_data['xyz']      # (V, 3)
         pids     = mat_data['point_ids']  # (V,)
 
+        n_poly_total = mat_data['rgbs'].shape[0]
         self._items = []
         for eid_local, k in enumerate(val_indices):
             light = mat_data['light_pos'][k]          # (3,)
@@ -1302,7 +1358,13 @@ class BonnSingleMaterialValDataset(Dataset):
             wo = cam[None, :] - xyz_flat
             wo /= np.maximum(np.linalg.norm(wo, axis=1, keepdims=True), 1e-8)
 
-            rgbs = mat_data['rgbs'][k]                # (V, 3)
+            # Fetch pixel data: poly → 3-ch, gray → 1-ch in ch0
+            if k < n_poly_total:
+                rgbs = mat_data['rgbs'][k]            # (V, 3) float16
+            else:
+                v = mat_data['gray_vals'][k - n_poly_total]  # (V,) float16
+                rgbs = np.zeros((self.n_pixels, 3), dtype=np.float16)
+                rgbs[:, 0] = v
 
             dtype_val = int(mat_data['data_type'][k])
             eid_val   = int(mat_data['emitter_ids'][k])

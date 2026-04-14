@@ -7,9 +7,9 @@ python main.py \
     output_folder=/home/zla247/scratch/output/BRDF \
     data=points_dense \
     renderer=multiarea_emitter \
-    renderer.spp.train=8 \
+    renderer.spp.train=2 \
     material=multi_material_latent \
-    experiment_name=Sweep_Stage1_Spp_8 \
+    experiment_name=Sweep_Stage1_Spp_2 \
     model.optimizer.name=Adam8bit \
     model.optimizer.reset_latent_momentum_on_chunk_switch=False \
     model.optimizer.decoder_lr=1e-4 \
