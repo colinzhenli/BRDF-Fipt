@@ -4018,3 +4018,437 @@ class UBOLatentBRDF(LightningModule):
             brdf = brdf * self.factor
 
         return brdf, smooth_loss
+
+
+# ============================================================================
+# PBR LATENT CLASSES FOR BONN AND UBO DATASETS
+# ============================================================================
+
+class BonnPBRLatentBRDF(LightningModule):
+    """PBR BRDF model for the Bonn SVBRDF dataset.
+
+    Same latent-bank architecture as BonnLatentBRDF but replaces the learned
+    MLP decoder (BRDFDecoder) with an analytical PBRDecoder.  The latent
+    codes now encode physical material properties directly:
+
+        Isotropic  (6):  [color(3), albedo(1), roughness(1), metallic(1)]
+        Anisotropic(9):  [diffuse(3), ao(1), roughness(1), metallic(1),
+                          ior(1), aniso_strength(1), aniso_rot(1)]
+        Disney     (12): anisotropic + [specularTint(1), sheen(1), sheenTint(1)]
+
+    The last 6 latent dimensions always store the predicted normal+tangent
+    frame, identical to BonnLatentBRDF.
+    """
+
+    def __init__(self, cfg):
+        super().__init__()
+
+        self.cfg = cfg
+        data_folder = getattr(cfg, 'data_folder', None)
+
+        self.anisotropic = getattr(cfg, 'anisotropic', False)
+        self.disney = getattr(cfg, 'disney', False)
+        self.soft_constraint = getattr(cfg, 'soft_constraint', True)
+        self.predict_frame = cfg.predict_frame
+
+        # PBR latent dim is fixed by model type
+        if self.disney:
+            self.brdf_latent_dim = 12
+        elif self.anisotropic:
+            self.brdf_latent_dim = 9
+        else:
+            self.brdf_latent_dim = 6
+
+        # Always reserve 6 dims for normal + tangent frame
+        self.total_latent_dim = self.brdf_latent_dim + 6
+
+        self.learnable_factor = getattr(cfg, 'learnable_factor', False)
+        if self.learnable_factor:
+            self.factor = nn.Parameter(torch.ones(3))
+
+        # Single-material mode
+        self.single_material_id = getattr(cfg, 'single_material_id', None)
+        self.single_material = self.single_material_id is not None
+
+        if self.single_material:
+            total_points, self._mat_H, self._mat_W = BonnLatentBRDF._load_single_material_metadata(
+                data_folder, self.single_material_id)
+            print(f"BonnPBRLatentBRDF single-material mode: mat{self.single_material_id:04d}, "
+                  f"{total_points:,} points")
+            self.point_latent_bank = nn.Embedding(
+                num_embeddings=total_points,
+                embedding_dim=self.total_latent_dim,
+                sparse=False,
+            )
+        else:
+            # Reuse metadata loader from BonnLatentBRDF (needs self.cfg for debug flags)
+            print(f"Loading Bonn point metadata from {data_folder} ...")
+            self.metadata = self._load_point_metadata(data_folder)
+
+            total_points = self.metadata['total_points']
+            print(f"Loaded {self.metadata['num_materials']} materials with {total_points:,} total points")
+
+            self.point_latent_bank = nn.Embedding(
+                num_embeddings=total_points,
+                embedding_dim=self.total_latent_dim,
+                sparse=False,  # PBR always dense (no encode_directions)
+            )
+
+        nn.init.normal_(self.point_latent_bank.weight, mean=0.0, std=cfg.init_std)
+
+        # Initialize frame slots: normal=(0,0,1), tangent=(0,1,0)
+        with torch.no_grad():
+            self.point_latent_bank.weight[:, -6:-3] = torch.tensor([0.0, 0.0, 1.0])
+            self.point_latent_bank.weight[:, -3:]   = torch.tensor([0.0, 1.0, 0.0])
+
+        # Expose latent_dim for compatibility with trainer visualization code
+        self.latent_dim = self.brdf_latent_dim
+
+        # PBRDecoder (no trainable parameters — purely analytical)
+        self.decoder = PBRDecoder(
+            cfg=cfg,
+            soft_constraint=self.soft_constraint,
+        )
+
+        print("BonnPBRLatentBRDF initialisation complete!")
+
+    # ------------------------------------------------------------------
+    # Metadata (delegate to BonnLatentBRDF's implementation)
+    # ------------------------------------------------------------------
+    def _load_point_metadata(self, data_folder):
+        """Load from ``bonn_point_metadata.json``.
+
+        Reuses the same JSON format as BonnLatentBRDF.
+        """
+        import json
+        from pathlib import Path
+
+        meta_path = Path(data_folder) / "bonn_point_metadata.json"
+        if not meta_path.exists():
+            raise FileNotFoundError(
+                f"{meta_path} not found.  Run:\n"
+                f"  python scripts/generate_bonn_metadata.py {data_folder}")
+
+        with open(meta_path) as f:
+            raw = json.load(f)
+
+        debug = getattr(self.cfg, 'debug', False)
+        debug_num = getattr(self.cfg, 'debug_num', 1)
+
+        sorted_keys = sorted(raw.keys(), key=lambda k: int(k))
+        if debug:
+            sorted_keys = sorted_keys[:debug_num]
+            print(f"[DEBUG] Using only {debug_num} material(s) for latent bank")
+
+        materials = []
+        material_point_offsets = {}
+        global_offset = 0
+
+        for mat_id_str in sorted_keys:
+            mat_id = int(mat_id_str)
+            entry = raw[mat_id_str]
+            num_points = entry['num_points']
+
+            materials.append({
+                'material_id': mat_id,
+                'name': f'mat{mat_id:04d}',
+                'H': entry['H'],
+                'W': entry['W'],
+                'num_points': num_points,
+                'num_observations': 0,
+                'point_range': (global_offset, global_offset + num_points),
+                'folder': str(data_folder),
+            })
+            material_point_offsets[mat_id] = global_offset
+            global_offset += num_points
+            print(f"  mat{mat_id:04d}: {entry['H']}x{entry['W']} = {num_points:,} points")
+
+        if not materials:
+            raise ValueError(f"No materials found in {meta_path}")
+
+        metadata = {
+            'num_materials': len(materials),
+            'total_points': global_offset,
+            'materials': materials,
+            'material_point_offsets': material_point_offsets,
+        }
+
+        max_mat_id = max(m['material_id'] for m in materials)
+        offset_tensor = torch.zeros(max_mat_id + 1, dtype=torch.long)
+        for m in materials:
+            offset_tensor[m['material_id']] = material_point_offsets[m['material_id']]
+        self.register_buffer('material_offset_tensor', offset_tensor)
+
+        return metadata
+
+    # ------------------------------------------------------------------
+    # Point-ID mapping
+    # ------------------------------------------------------------------
+    def get_global_point_id(self, material_id, local_point_id):
+        if self.single_material:
+            return local_point_id
+        offsets = self.material_offset_tensor[material_id]
+        return local_point_id + offsets
+
+    # ------------------------------------------------------------------
+    # Frame helpers (same as BonnLatentBRDF)
+    # ------------------------------------------------------------------
+    def extract_frame_from_latent(self, latent: torch.Tensor, input_normal=None):
+        if input_normal is not None:
+            predicted_normal = NF.normalize(input_normal, dim=-1)
+        else:
+            predicted_normal = NF.normalize(latent[..., -6:-3], dim=-1)
+
+        predicted_tangent = NF.normalize(latent[..., -3:], dim=-1)
+        predicted_tangent = predicted_tangent - \
+            torch.sum(predicted_tangent * predicted_normal, dim=-1, keepdim=True) * predicted_normal
+        predicted_tangent = NF.normalize(predicted_tangent, dim=-1)
+
+        return predicted_normal, predicted_tangent
+
+    def world_to_local(self, v, normal, tangent=None):
+        if tangent is None:
+            up = torch.tensor([0.0, 1.0, 0.0], device=normal.device).expand_as(normal)
+            tangent = torch.cross(up, normal)
+            tangent_len = tangent.norm(dim=-1, keepdim=True)
+            collinear_mask = tangent_len.squeeze(-1) < 1e-6
+            if collinear_mask.any():
+                right = torch.tensor([1.0, 0.0, 0.0], device=normal.device).expand_as(normal)
+                tangent[collinear_mask] = torch.cross(right[collinear_mask], normal[collinear_mask])
+                tangent_len = tangent.norm(dim=-1, keepdim=True)
+        else:
+            tangent_len = tangent.norm(dim=-1, keepdim=True)
+
+        tangent = tangent / (tangent_len + 1e-8)
+        bitangent = torch.cross(normal, tangent)
+
+        return torch.stack([
+            (v * tangent).sum(dim=-1),
+            (v * bitangent).sum(dim=-1),
+            (v * normal).sum(dim=-1),
+        ], dim=-1)
+
+    # ------------------------------------------------------------------
+    # BRDF evaluation
+    # ------------------------------------------------------------------
+    def eval_brdf(
+        self,
+        pos,
+        wi,
+        wo,
+        normal,
+        latent=None,
+        point_ids=None,
+        material_ids=None,
+    ):
+        if point_ids is None or material_ids is None:
+            raise ValueError("point_ids and material_ids must be provided")
+
+        global_point_ids = self.get_global_point_id(material_ids, point_ids)
+        latent = self.point_latent_bank(global_point_ids)
+
+        input_normal = None if self.predict_frame else normal
+        predicted_normal, predicted_tangent = self.extract_frame_from_latent(latent, input_normal)
+
+        NoL = (wi * predicted_normal).sum(-1, keepdim=True)
+        NoV = (wo * predicted_normal).sum(-1, keepdim=True)
+
+        # Transform to local frame
+        wi_local = self.world_to_local(wi, predicted_normal, predicted_tangent)
+        wo_local = self.world_to_local(wo, predicted_normal, predicted_tangent)
+
+        # PBR latent: first brdf_latent_dim channels
+        brdf_lat = latent[:, :self.brdf_latent_dim]
+
+        # PBRDecoder takes (wi, wo, latent) directly — no encode_directions needed
+        brdf, pdf = self.decoder(wi_local, wo_local, brdf_lat)
+
+        if self.learnable_factor:
+            brdf = brdf * self.factor
+
+        # No smooth_loss for PBR (analytical model, no learned function to regularize)
+        smooth_loss = torch.tensor(0.0, device=wi.device)
+
+        if torch.isnan(brdf).any():
+            print("brdf is nan")
+        if torch.isnan(predicted_normal).any():
+            print("normal is nan")
+
+        return brdf, predicted_normal, pdf, smooth_loss
+
+    # ------------------------------------------------------------------
+    # BRDF sampling (cosine-weighted hemisphere)
+    # ------------------------------------------------------------------
+    def sample_brdf(
+        self, params, pos, sample1, sample2, wo, normal,
+        latent=None, batch_mask=None, point_ids=None, material_ids=None,
+    ):
+        theta = torch.asin(torch.sqrt(sample2[..., 0]))
+        phi = 2 * math.pi * sample2[..., 1]
+
+        wi_local = torch.stack([
+            torch.sin(theta) * torch.cos(phi),
+            torch.sin(theta) * torch.sin(phi),
+            torch.cos(theta),
+        ], dim=-1)
+
+        up = torch.tensor([0.0, 1.0, 0.0], device=normal.device).expand_as(normal)
+        tangent = torch.cross(up, normal)
+        tangent = tangent / (tangent.norm(dim=-1, keepdim=True) + 1e-8)
+        bitangent = torch.cross(normal, tangent)
+
+        wi = (wi_local[..., 0:1] * tangent +
+              wi_local[..., 1:2] * bitangent +
+              wi_local[..., 2:3] * normal)
+
+        brdf, _, pdf, _ = self.eval_brdf(
+            pos, wi, wo, normal,
+            point_ids=point_ids, material_ids=material_ids)
+
+        brdf_weight = brdf / pdf.clamp(min=1e-6)
+        return wi, pdf, brdf_weight
+
+
+class UBOPBRLatentBRDF(LightningModule):
+    """PBR BRDF model for the Bonn UBO2014 BTF dataset.
+
+    Same per-texel latent-bank architecture as UBOLatentBRDF but replaces the
+    learned MLP decoder (BRDFDecoder) with an analytical PBRDecoder.
+
+    Latent codes encode physical material properties:
+        Isotropic  (6):  [color(3), albedo(1), roughness(1), metallic(1)]
+        Anisotropic(9):  [diffuse(3), ao(1), roughness(1), metallic(1),
+                          ior(1), aniso_strength(1), aniso_rot(1)]
+        Disney     (12): anisotropic + [specularTint(1), sheen(1), sheenTint(1)]
+    """
+
+    def __init__(self, cfg):
+        super().__init__()
+
+        self.cfg = cfg
+        self.anisotropic = getattr(cfg, 'anisotropic', False)
+        self.disney = getattr(cfg, 'disney', False)
+        self.soft_constraint = getattr(cfg, 'soft_constraint', True)
+        self.predict_frame = getattr(cfg, 'predict_frame', False)
+
+        # PBR latent dim is fixed by model type
+        if self.disney:
+            self.brdf_latent_dim = 12
+        elif self.anisotropic:
+            self.brdf_latent_dim = 9
+        else:
+            self.brdf_latent_dim = 6
+
+        # Frame dims
+        if self.predict_frame:
+            self.total_latent_dim = self.brdf_latent_dim + 6
+        else:
+            self.total_latent_dim = self.brdf_latent_dim
+
+        self.learnable_factor = getattr(cfg, 'learnable_factor', False)
+        if self.learnable_factor:
+            self.factor = nn.Parameter(torch.ones(3))
+
+        # Determine latent bank size from BTF file
+        btf_path = getattr(cfg, 'btf_path', None)
+        if btf_path is not None:
+            from btf_extractor import Ubo2014
+            btf = Ubo2014(btf_path)
+            H, W, _ = btf.img_shape
+            total_points = H * W
+            del btf
+            print(f"UBOPBRLatentBRDF: BTF {H}x{W} = {total_points:,} texels")
+        else:
+            H = getattr(cfg, 'img_height', 400)
+            W = getattr(cfg, 'img_width', 400)
+            total_points = H * W
+            print(f"UBOPBRLatentBRDF: using config {H}x{W} = {total_points:,} texels")
+
+        self._H = H
+        self._W = W
+
+        self.point_latent_bank = nn.Embedding(
+            num_embeddings=total_points,
+            embedding_dim=self.total_latent_dim,
+            sparse=False,
+        )
+
+        nn.init.normal_(self.point_latent_bank.weight, mean=0.0, std=cfg.init_std)
+
+        # Initialize frame slots if predict_frame
+        if self.predict_frame:
+            with torch.no_grad():
+                self.point_latent_bank.weight[:, -6:-3] = torch.tensor([0.0, 0.0, 1.0])
+                self.point_latent_bank.weight[:, -3:]   = torch.tensor([0.0, 1.0, 0.0])
+
+        # Expose latent_dim for compatibility with trainer visualization code
+        self.latent_dim = self.brdf_latent_dim
+
+        # PBRDecoder (no trainable parameters — purely analytical)
+        self.decoder = PBRDecoder(
+            cfg=cfg,
+            soft_constraint=self.soft_constraint,
+        )
+
+        print("UBOPBRLatentBRDF initialisation complete!")
+
+    # ------------------------------------------------------------------
+    # Frame helpers (only used when predict_frame=True)
+    # ------------------------------------------------------------------
+    def extract_frame_from_latent(self, latent: torch.Tensor):
+        predicted_normal = NF.normalize(latent[..., -6:-3], dim=-1)
+        predicted_tangent = NF.normalize(latent[..., -3:], dim=-1)
+
+        predicted_tangent = predicted_tangent - \
+            torch.sum(predicted_tangent * predicted_normal, dim=-1, keepdim=True) * predicted_normal
+        predicted_tangent = NF.normalize(predicted_tangent, dim=-1)
+
+        return predicted_normal, predicted_tangent
+
+    def world_to_local(self, v, normal, tangent):
+        bitangent = torch.cross(normal, tangent, dim=-1)
+        return torch.stack([
+            (v * tangent).sum(dim=-1),
+            (v * bitangent).sum(dim=-1),
+            (v * normal).sum(dim=-1),
+        ], dim=-1)
+
+    # ------------------------------------------------------------------
+    # BRDF evaluation
+    # ------------------------------------------------------------------
+    def eval_brdf(self, wi, wo, point_ids=None):
+        """Evaluate PBR BRDF for given directions and point IDs.
+
+        Args:
+            wi: [B, 3] light directions (local frame for flat BTF sample)
+            wo: [B, 3] view directions (local frame for flat BTF sample)
+            point_ids: [B] texel indices
+
+        Returns:
+            brdf: [B, 3] BRDF values
+            smooth_loss: scalar (always 0 for PBR — no learned function)
+        """
+        if point_ids is None:
+            raise ValueError("point_ids must be provided")
+
+        latent = self.point_latent_bank(point_ids)
+
+        if self.predict_frame:
+            predicted_normal, predicted_tangent = self.extract_frame_from_latent(latent)
+            wi_local = self.world_to_local(wi, predicted_normal, predicted_tangent)
+            wo_local = self.world_to_local(wo, predicted_normal, predicted_tangent)
+        else:
+            wi_local = wi
+            wo_local = wo
+
+        brdf_lat = latent[:, :self.brdf_latent_dim]
+
+        # PBRDecoder takes (wi, wo, latent) directly
+        brdf, pdf = self.decoder(wi_local, wo_local, brdf_lat)
+
+        if self.learnable_factor:
+            brdf = brdf * self.factor
+
+        smooth_loss = torch.tensor(0.0, device=wi.device)
+
+        return brdf, smooth_loss

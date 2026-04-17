@@ -78,6 +78,111 @@ def _parse_lls_channels(channel_names):
 
 
 # ---------------------------------------------------------------------------
+# Calibration parsing helpers
+# ---------------------------------------------------------------------------
+
+# Fallback weights when per-image calibration is unavailable (taken from the
+# global mean across the per-camera poly→pan coefficients, ~[0.35, 0.36, 0.28]).
+_DEFAULT_PAN_WEIGHTS = np.array([0.34, 0.36, 0.28], dtype=np.float32)
+
+# Empirical LLS↔(pan+poly) radiometric scale: observed ratio lls_GT / pan_GT at
+# matched (L, V). Drives by the missing pan2lls calibration coefficients in the
+# released Bonn .mat / .axf files (the linear-light spectrum is not shipped).
+# Measured from check_brdf_consistency_across_sources.py on mat0001.
+_LLS_EMPIRICAL_SCALE = 0.75
+
+
+def _parse_poly2pan_weights(raw_mat):
+    """Extract poly→pan RGB weights from a Bonn calibration .mat file.
+
+    The .mat file's ``poly2panWeights`` struct holds 20 entries keyed by
+    ``cv{01-04}_il{026,027,028,031,032}`` — the RGB-channel weights that
+    convert a polychromatic RGB capture under poly LED ``il`` seen by
+    camera ``cv`` to the corresponding panchromatic scalar response.
+
+    For non-poly captures (pan LEDs il01-il24 and LLS strips) the .mat
+    file provides no dedicated weights, so we fall back to the *global*
+    mean across all 20 calibrated poly LED × camera entries (the per-cv
+    mean differs from the global mean by <1 % — see
+    ``scripts/tests/inspect_calibration_per_cv.py``).
+
+    Returns a dict with three sub-dicts / arrays:
+        per_il:     {(cv, il) -> (3,) float32}   — poly LEDs only
+        per_cv:     {cv -> (3,) float32}         — mean across poly LEDs
+        global_avg: (3,) float32                 — mean across all 20
+    """
+    if 'poly2panWeights' not in raw_mat:
+        # Legacy / partial calibration files — fall back to global default.
+        per_cv = {f'cv{i:02d}': _DEFAULT_PAN_WEIGHTS.copy() for i in range(1, 5)}
+        return {'per_il': {}, 'per_cv': per_cv,
+                'global_avg': _DEFAULT_PAN_WEIGHTS.copy()}
+
+    wstruct = raw_mat['poly2panWeights'][0, 0]
+    per_il = {}
+    per_cv_accum = {f'cv{i:02d}': [] for i in range(1, 5)}
+    for field in wstruct.dtype.names:
+        # field example: 'cv01_il026'
+        m = re.match(r'(cv\d{2})_(il\d{3})', field)
+        if not m:
+            continue
+        cv, il = m.groups()
+        vec = np.asarray(wstruct[field], dtype=np.float32).flatten()
+        per_il[(cv, il)] = vec
+        per_cv_accum[cv].append(vec)
+
+    per_cv = {}
+    for cv, vecs in per_cv_accum.items():
+        if vecs:
+            per_cv[cv] = np.mean(np.stack(vecs, axis=0), axis=0).astype(np.float32)
+        else:
+            per_cv[cv] = _DEFAULT_PAN_WEIGHTS.copy()
+
+    if per_il:
+        all_vecs = np.stack(list(per_il.values()), axis=0)
+        global_avg = all_vecs.mean(axis=0).astype(np.float32)
+    else:
+        global_avg = _DEFAULT_PAN_WEIGHTS.copy()
+    return {'per_il': per_il, 'per_cv': per_cv, 'global_avg': global_avg}
+
+
+def _pan_weights_for_image(calib, rot, camera, led=None,
+                           is_poly=False, is_lls=False):
+    """Look up RGB→pan weights for a single image.
+
+    Args:
+        calib:   dict produced by the dataset's ``_load_calibration`` — must
+                 contain ``poly2pan_per_il`` and ``poly2pan_global_avg``.
+        rot:     rotation key (unused today — weights are instrument-only —
+                 kept to make future extensions obvious).
+        camera:  cv key e.g. ``'cv01'``.
+        led:     il key e.g. ``'il026'`` (poly LED) or ``None`` for pan/lls.
+        is_poly: True iff this is a poly-LED capture.  If the (cv, il)
+                 pair is one of the 5 calibrated filter LEDs
+                 (il026/027/028/031/032), the exact per-(cv, il) weight
+                 is returned; otherwise we fall back to the global mean
+                 across all 20 calibrated entries.
+        is_lls:  True iff this is a linear-light-source capture.  LLS has
+                 no dedicated radiometric calibration, so we apply the
+                 global mean scaled by ``_LLS_EMPIRICAL_SCALE`` to bring
+                 LLS predictions onto the same scale as pan / poly.
+
+    Returns: (3,) float32 vector.
+    """
+    per_il     = calib.get('poly2pan_per_il', {})
+    global_avg = calib.get('poly2pan_global_avg', _DEFAULT_PAN_WEIGHTS)
+    if is_poly and led is not None:
+        key = (camera, led)
+        if key in per_il:
+            return per_il[key].copy()
+        # poly under il01–il24 (no per-(cv, il) calibration).
+        return global_avg.copy()
+    if is_lls:
+        return (global_avg * _LLS_EMPIRICAL_SCALE).astype(np.float32)
+    # Pan: use global average of the 5 calibrated filter LEDs × 4 cameras.
+    return global_avg.copy()
+
+
+# ---------------------------------------------------------------------------
 # EXR reading helpers  (uses pyexr, matching the official Bonn reference code)
 # ---------------------------------------------------------------------------
 
@@ -274,6 +379,10 @@ class BonnDataset(IterableDataset):
                     rot_dict[padded] = rot_dict[field]
             calib[rot_key] = rot_dict
         calib['llsAnglesDegrees'] = raw['llsAnglesDegrees'].flatten().astype(np.float64)
+        w = _parse_poly2pan_weights(raw)
+        calib['poly2pan_per_il']     = w['per_il']
+        calib['poly2pan_per_cv']     = w['per_cv']
+        calib['poly2pan_global_avg'] = w['global_avg']
         return calib
 
     # ------------------------------------------------------------------
@@ -323,13 +432,14 @@ class BonnDataset(IterableDataset):
             # ============================================================
             # Assembly
             # ============================================================
-            rgbs_parts       = []
-            gray_parts       = []
-            light_parts      = []
-            cam_parts        = []
-            dtype_parts      = []
-            eid_parts        = []
-            lls_corner_parts = []
+            rgbs_parts        = []
+            gray_parts        = []
+            light_parts       = []
+            cam_parts         = []
+            dtype_parts       = []
+            eid_parts         = []
+            lls_corner_parts  = []
+            pan_weight_parts  = []
             eid = 0
 
             # --- Poly (RGB) ---------------------------------------------
@@ -343,6 +453,10 @@ class BonnDataset(IterableDataset):
                     calib[im['rotation']][im['led']] for im in poly_images])
                 poly_cam = np.array([
                     calib[im['rotation']][im['camera']] for im in poly_images])
+                poly_pan_w = np.stack([
+                    _pan_weights_for_image(calib, im['rotation'],
+                                           im['camera'], im['led'], is_poly=True)
+                    for im in poly_images], axis=0).astype(np.float32)
 
                 rgbs_parts.append(poly_rgbs)
                 light_parts.append(poly_light)
@@ -350,6 +464,7 @@ class BonnDataset(IterableDataset):
                 dtype_parts.append(np.full(n_poly, DTYPE_POLY, dtype=np.int64))
                 eid_parts.append(np.arange(eid, eid + n_poly, dtype=np.int64))
                 lls_corner_parts.append(np.zeros((n_poly, 4, 3), dtype=np.float32))
+                pan_weight_parts.append(poly_pan_w)
                 eid += n_poly
             del poly_data
 
@@ -369,12 +484,17 @@ class BonnDataset(IterableDataset):
                         calib[im['rotation']][im['led']] for im in pan_images])
                     pan_cam = np.array([
                         calib[im['rotation']][im['camera']] for im in pan_images])
+                    pan_pan_w = np.stack([
+                        _pan_weights_for_image(calib, im['rotation'],
+                                               im['camera'], led=None, is_poly=False)
+                        for im in pan_images], axis=0).astype(np.float32)
                     gray_parts.append(pan_gray)
                     light_parts.append(pan_light)
                     cam_parts.append(pan_cam)
                     dtype_parts.append(np.full(n_pan, DTYPE_PAN, dtype=np.int64))
                     eid_parts.append(np.arange(eid, eid + n_pan, dtype=np.int64))
                     lls_corner_parts.append(np.zeros((n_pan, 4, 3), dtype=np.float32))
+                    pan_weight_parts.append(pan_pan_w)
                     eid += n_pan
                 del pan_data
 
@@ -402,6 +522,11 @@ class BonnDataset(IterableDataset):
                     lls_cam = np.array([
                         calib[im['rotation']][im['camera']] for im in lls_images])
                     lls_corners_arr = np.array(corners_list, dtype=np.float32)
+                    lls_pan_w = np.stack([
+                        _pan_weights_for_image(calib, im['rotation'],
+                                               im['camera'], led=None,
+                                               is_poly=False, is_lls=True)
+                        for im in lls_images], axis=0).astype(np.float32)
 
                     gray_parts.append(lls_gray)
                     light_parts.append(lls_light)
@@ -409,6 +534,7 @@ class BonnDataset(IterableDataset):
                     dtype_parts.append(np.full(n_lls, DTYPE_LLS, dtype=np.int64))
                     eid_parts.append(np.arange(eid, eid + n_lls, dtype=np.int64))
                     lls_corner_parts.append(lls_corners_arr)
+                    pan_weight_parts.append(lls_pan_w)
                     eid += n_lls
                 del lls_data
 
@@ -423,6 +549,8 @@ class BonnDataset(IterableDataset):
             all_data_type  = np.concatenate(dtype_parts, axis=0)
             all_emitter_id = np.concatenate(eid_parts, axis=0)
             all_lls_corner = np.concatenate(lls_corner_parts, axis=0)
+            all_pan_weight = np.concatenate(pan_weight_parts, axis=0) \
+                if pan_weight_parts else np.empty((0, 3), dtype=np.float32)
 
             np.clip(all_rgbs, 0, None, out=all_rgbs)
             if gray_vals is not None:
@@ -544,6 +672,7 @@ class BonnDataset(IterableDataset):
                 'data_type':   all_data_type,   # (K,)     int64
                 'emitter_ids': all_emitter_id,  # (K,)     int64
                 'lls_corners': all_lls_corner,  # (K, 4, 3) float32
+                'pan_weights': all_pan_weight,  # (K, 3)   float32
                 'gt_normals':  gt_normals,      # (V, 3)   float32 or None
             }
 
@@ -664,6 +793,7 @@ class BonnDataset(IterableDataset):
         parts_light   = []
         parts_cam     = []
         parts_normals = []
+        parts_panw    = []
 
         for mi, mat in enumerate(materials):
             n = int(rays_per_mat[mi])
@@ -696,6 +826,7 @@ class BonnDataset(IterableDataset):
             parts_lls.append(mat['lls_corners'][img_i])
             parts_light.append(mat['light_pos'][img_i])
             parts_cam.append(mat['cam_pos'][img_i])
+            parts_panw.append(mat['pan_weights'][img_i])
             if mat['gt_normals'] is not None:
                 parts_normals.append(mat['gt_normals'][pix_i])
 
@@ -717,10 +848,11 @@ class BonnDataset(IterableDataset):
         dtypes  = np.concatenate(parts_dtype)
         eids    = np.concatenate(parts_eids)
         lls_c   = np.concatenate(parts_lls)
+        panw    = np.concatenate(parts_panw)
         perm = np.random.permutation(n_rays)
         xyz, wi, wo, rgbs, pids, mids = \
             xyz[perm], wi[perm], wo[perm], rgbs[perm], pids[perm], mids[perm]
-        dtypes, eids, lls_c = dtypes[perm], eids[perm], lls_c[perm]
+        dtypes, eids, lls_c, panw = dtypes[perm], eids[perm], lls_c[perm], panw[perm]
         if normals is not None:
             normals = normals[perm]
 
@@ -737,6 +869,7 @@ class BonnDataset(IterableDataset):
             'data_type':    torch.from_numpy(dtypes).long(),
             'emitter_ids':  torch.from_numpy(eids).long(),
             'lls_corners':  torch.from_numpy(lls_c).float(),
+            'pan_weights':  torch.from_numpy(panw).float(),
             'confidence':   torch.from_numpy(confidence),
             'gt_params':    torch.zeros(1),
         }
@@ -872,6 +1005,9 @@ class BonnValDataset(Dataset):
             # confidence = 0 only when all rgb channels are 0 (occluded pixels)
             confidence = (rgbs.sum(axis=-1) > 0).astype(np.float32)
 
+            pan_w = _pan_weights_for_image(
+                calib, img['rotation'], img['camera'], img['led'], is_poly=True)
+
             item = {
                 'xyz':          torch.from_numpy(xyz_flat.copy()).float(),
                 'wi':           torch.from_numpy(wi).float(),
@@ -885,6 +1021,8 @@ class BonnValDataset(Dataset):
                 'data_type':    torch.full((self.n_pixels,), DTYPE_POLY,
                                            dtype=torch.long),
                 'lls_corners':  torch.zeros(self.n_pixels, 4, 3),
+                'pan_weights':  torch.from_numpy(
+                    np.broadcast_to(pan_w, (self.n_pixels, 3)).copy()).float(),
                 'confidence':   torch.from_numpy(confidence),
                 'img_hw':       torch.tensor([self.H, self.W]),
                 'gt_params':    torch.zeros(1),
@@ -932,6 +1070,10 @@ class BonnValDataset(Dataset):
             calib[rot_key] = rot_dict
         calib['llsAnglesDegrees'] = raw['llsAnglesDegrees'].flatten() \
                                          .astype(np.float64)
+        w = _parse_poly2pan_weights(raw)
+        calib['poly2pan_per_il']     = w['per_il']
+        calib['poly2pan_per_cv']     = w['per_cv']
+        calib['poly2pan_global_avg'] = w['global_avg']
         return calib
 
     # ------------------------------------------------------------------
@@ -978,6 +1120,10 @@ def _load_single_material_full(root_folder, mat_id, use_pan=False, use_lls=False
                     rot_dict[padded] = rot_dict[field]
             calib[rot_key] = rot_dict
         calib['llsAnglesDegrees'] = raw['llsAnglesDegrees'].flatten().astype(np.float64)
+        w = _parse_poly2pan_weights(raw)
+        calib['poly2pan_per_il']     = w['per_il']
+        calib['poly2pan_per_cv']     = w['per_cv']
+        calib['poly2pan_global_avg'] = w['global_avg']
 
         # ---- xyz map ----------------------------------------------------
         xyz_map, H, W = _read_xyz_map(f'{prefix}_xyz_rot000.exr')
@@ -1006,13 +1152,14 @@ def _load_single_material_full(root_folder, mat_id, use_pan=False, use_lls=False
             assert (lH, lW) == (H, W)
 
         # ---- assembly (no pixel subsampling) ----------------------------
-        rgbs_parts      = []
-        gray_parts      = []
-        light_parts     = []
-        cam_parts       = []
-        dtype_parts     = []
-        eid_parts       = []
+        rgbs_parts       = []
+        gray_parts       = []
+        light_parts      = []
+        cam_parts        = []
+        dtype_parts      = []
+        eid_parts        = []
         lls_corner_parts = []
+        pan_weight_parts = []
         eid = 0
 
         # Poly (RGB)
@@ -1025,6 +1172,10 @@ def _load_single_material_full(root_folder, mat_id, use_pan=False, use_lls=False
                 calib[im['rotation']][im['led']] for im in poly_images])
             poly_cam = np.array([
                 calib[im['rotation']][im['camera']] for im in poly_images])
+            poly_pan_w = np.stack([
+                _pan_weights_for_image(calib, im['rotation'],
+                                       im['camera'], im['led'], is_poly=True)
+                for im in poly_images], axis=0).astype(np.float32)
 
             rgbs_parts.append(poly_rgbs)
             light_parts.append(poly_light)
@@ -1032,6 +1183,7 @@ def _load_single_material_full(root_folder, mat_id, use_pan=False, use_lls=False
             dtype_parts.append(np.full(n_poly, DTYPE_POLY, dtype=np.int64))
             eid_parts.append(np.arange(eid, eid + n_poly, dtype=np.int64))
             lls_corner_parts.append(np.zeros((n_poly, 4, 3), dtype=np.float32))
+            pan_weight_parts.append(poly_pan_w)
             eid += n_poly
         del poly_data
 
@@ -1051,12 +1203,17 @@ def _load_single_material_full(root_folder, mat_id, use_pan=False, use_lls=False
                     calib[im['rotation']][im['led']] for im in pan_images])
                 pan_cam = np.array([
                     calib[im['rotation']][im['camera']] for im in pan_images])
+                pan_pan_w = np.stack([
+                    _pan_weights_for_image(calib, im['rotation'],
+                                           im['camera'], led=None, is_poly=False)
+                    for im in pan_images], axis=0).astype(np.float32)
                 gray_parts.append(pan_gray)
                 light_parts.append(pan_light)
                 cam_parts.append(pan_cam)
                 dtype_parts.append(np.full(n_pan, DTYPE_PAN, dtype=np.int64))
                 eid_parts.append(np.arange(eid, eid + n_pan, dtype=np.int64))
                 lls_corner_parts.append(np.zeros((n_pan, 4, 3), dtype=np.float32))
+                pan_weight_parts.append(pan_pan_w)
                 eid += n_pan
             del pan_data
 
@@ -1084,6 +1241,11 @@ def _load_single_material_full(root_folder, mat_id, use_pan=False, use_lls=False
                 lls_cam = np.array([
                     calib[im['rotation']][im['camera']] for im in lls_images])
                 lls_corners_arr = np.array(corners_list, dtype=np.float32)
+                lls_pan_w = np.stack([
+                    _pan_weights_for_image(calib, im['rotation'],
+                                           im['camera'], led=None,
+                                           is_poly=False, is_lls=True)
+                    for im in lls_images], axis=0).astype(np.float32)
 
                 gray_parts.append(lls_gray)
                 light_parts.append(lls_light)
@@ -1091,6 +1253,7 @@ def _load_single_material_full(root_folder, mat_id, use_pan=False, use_lls=False
                 dtype_parts.append(np.full(n_lls, DTYPE_LLS, dtype=np.int64))
                 eid_parts.append(np.arange(eid, eid + n_lls, dtype=np.int64))
                 lls_corner_parts.append(lls_corners_arr)
+                pan_weight_parts.append(lls_pan_w)
                 eid += n_lls
             del lls_data
 
@@ -1104,6 +1267,8 @@ def _load_single_material_full(root_folder, mat_id, use_pan=False, use_lls=False
         all_data_type  = np.concatenate(dtype_parts, axis=0)      # (K,)
         all_emitter_id = np.concatenate(eid_parts, axis=0)        # (K,)
         all_lls_corner = np.concatenate(lls_corner_parts, axis=0) # (K, 4, 3)
+        all_pan_weight = np.concatenate(pan_weight_parts, axis=0) \
+            if pan_weight_parts else np.empty((0, 3), dtype=np.float32)
 
         np.clip(all_rgbs, 0, None, out=all_rgbs)
         if gray_vals is not None:
@@ -1137,6 +1302,7 @@ def _load_single_material_full(root_folder, mat_id, use_pan=False, use_lls=False
             'data_type':   all_data_type,     # (K,)
             'emitter_ids': all_emitter_id,    # (K,)
             'lls_corners': all_lls_corner,    # (K, 4, 3)
+            'pan_weights': all_pan_weight,    # (K, 3)
             'gt_normals':  gt_normals,        # (V, 3)  float32 or None
         }
 
@@ -1210,6 +1376,7 @@ class BonnSingleMaterialDataset(IterableDataset):
         self.data_type  = mat_data['data_type'][indices]      # (K',)
         self.emitter_ids = mat_data['emitter_ids'][indices]   # (K',)
         self.lls_corners = mat_data['lls_corners'][indices]   # (K', 4, 3)
+        self.pan_weights = mat_data['pan_weights'][indices]   # (K', 3)
 
         # Split pixel data: poly (3-ch) vs gray (1-ch) for memory efficiency
         n_poly_total = mat_data['rgbs'].shape[0]
@@ -1277,6 +1444,7 @@ class BonnSingleMaterialDataset(IterableDataset):
             'emitter_ids':  torch.from_numpy(self.emitter_ids[img_i].copy()).long(),
             'data_type':    torch.from_numpy(self.data_type[img_i].copy()).long(),
             'lls_corners':  torch.from_numpy(self.lls_corners[img_i].copy()).float(),
+            'pan_weights':  torch.from_numpy(self.pan_weights[img_i].copy()).float(),
             'confidence':   torch.from_numpy(confidence),
             'gt_params':    torch.zeros(1),
         }
@@ -1374,6 +1542,8 @@ class BonnSingleMaterialValDataset(Dataset):
             # confidence = 0 only when all rgb channels are 0 (occluded pixels)
             confidence = (rgbs.sum(axis=-1) > 0).astype(np.float32)
 
+            pan_w = mat_data['pan_weights'][k]  # (3,)
+
             item = {
                 'xyz':          torch.from_numpy(xyz_flat.copy()).float(),
                 'wi':           torch.from_numpy(wi).float(),
@@ -1389,6 +1559,8 @@ class BonnSingleMaterialValDataset(Dataset):
                 'lls_corners':  torch.from_numpy(
                     np.broadcast_to(mat_data['lls_corners'][k],
                                     (self.n_pixels, 4, 3)).copy()).float(),
+                'pan_weights':  torch.from_numpy(
+                    np.broadcast_to(pan_w, (self.n_pixels, 3)).copy()).float(),
                 'confidence':   torch.from_numpy(confidence),
                 'img_hw':       torch.tensor([self.H, self.W]),
                 'gt_params':    torch.zeros(1),

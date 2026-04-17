@@ -43,8 +43,10 @@ class Stage2Trainer_Bonn(pl.LightningModule):
 
     Forward model (after white-frame calibration):
       - Point-lit (poly / pan):  predicted = BRDF(wi, wo)
-      - LLS:  predicted = pi * sum(BRDF(wi_k, wo) * w_k) / sum(w_k)
+      - LLS:  predicted = sum(BRDF(wi_k, wo) * w_k) / sum(w_k)
               where w_k = cos_theta_i_k / dist_k^2
+              (matches the Bonn reference's point-light-at-center model
+              when the quad is small vs. distance.)
 
     Compared to Stage1Trainer_Bonn:
       - Uses dense Adam optimizer (same as Stage2Trainer for real data)
@@ -60,15 +62,22 @@ class Stage2Trainer_Bonn(pl.LightningModule):
         self.material = material
         self.freeze_decoder = cfg.model.freeze_decoder
 
-        # Loss weights
+        # Loss weights.  LLS has an empirical-only radiometric calibration
+        # (pan2lls coefficients are missing from the released dataset) and a
+        # larger intrinsic noise floor than pan/poly, so it is downweighted.
         self.pan_loss_weight = getattr(cfg.model.loss, 'pan_weight', 0.5)
-        self.lls_loss_weight = getattr(cfg.model.loss, 'lls_weight', 0.5)
+        self.lls_loss_weight = getattr(cfg.model.loss, 'lls_weight', 0.2)
         self.lls_spp = getattr(cfg.model, 'lls_spp', 16)
         self.latent_reg_weight = getattr(cfg.model, 'latent_reg_weight', 1e-4)
         self.smooth_reg_weight = getattr(cfg.model, 'smooth_reg_weight', 1e-3)
 
-        # Approximate RGB→gray weights for panchromatic supervision
-        self.register_buffer('pan_weights', torch.tensor([0.34, 0.36, 0.28]))
+        # Approximate RGB→gray weights for panchromatic supervision.
+        # Can be made learnable via cfg.model.loss.learnable_pan_weights.
+        init_pan_weights = torch.tensor([0.34, 0.36, 0.28])
+        if getattr(cfg.model.loss, 'learnable_pan_weights', False):
+            self.pan_weights = torch.nn.Parameter(init_pan_weights.clone())
+        else:
+            self.register_buffer('pan_weights', init_pan_weights)
 
     # ------------------------------------------------------------------
     # Optimiser  (dense Adam, same pattern as Stage2Trainer for real data)
@@ -132,7 +141,7 @@ class Stage2Trainer_Bonn(pl.LightningModule):
     def _lls_monte_carlo(self, xyz, wo, lls_corners, point_ids, material_ids, spp):
         """Monte-Carlo integration over LLS quad (white-frame calibrated).
 
-        predicted = pi * sum_k(BRDF(wi_k, wo) * w_k) / sum_k(w_k)
+        predicted = sum_k(BRDF(wi_k, wo) * w_k) / sum_k(w_k)
         w_k = max(0, cos_theta_i_k) / dist_k^2
 
         Args:
@@ -178,7 +187,7 @@ class Stage2Trainer_Bonn(pl.LightningModule):
 
         numerator   = (brdf_k * w_k).sum(dim=1)                     # (N, 3)
         denominator = w_k.sum(dim=1).clamp(min=1e-8)                # (N, 1)
-        return math.pi * numerator / denominator
+        return numerator / denominator
 
     # ------------------------------------------------------------------
     # Loss
@@ -216,6 +225,11 @@ class Stage2Trainer_Bonn(pl.LightningModule):
         data_type    = batch['data_type'].squeeze(0)
         lls_corners  = batch['lls_corners'].squeeze(0)
         confidence   = batch['confidence'].squeeze(0)
+        # Per-ray RGB→pan weights from calibration; fall back to global buffer.
+        if 'pan_weights' in batch:
+            ray_pan_w = batch['pan_weights'].squeeze(0)  # (N, 3)
+        else:
+            ray_pan_w = self.pan_weights.unsqueeze(0).expand(xyz.shape[0], -1)
 
         poly_mask = data_type == DTYPE_POLY
         pan_mask  = data_type == DTYPE_PAN
@@ -224,14 +238,19 @@ class Stage2Trainer_Bonn(pl.LightningModule):
         total_loss   = torch.tensor(0.0, device=xyz.device)
         smooth_total = torch.tensor(0.0, device=xyz.device)
         poly_pred    = None
+        zero         = torch.tensor(0.0, device=xyz.device)
+        poly_loss_raw = zero
+        pan_loss_raw  = zero
+        lls_loss_raw  = zero
 
         # --- polychromatic (RGB) loss ---
         if poly_mask.any():
             brdf, _, sm = self._eval_brdf(
                 xyz[poly_mask], wi[poly_mask], wo[poly_mask],
                 point_ids[poly_mask], material_ids[poly_mask])
-            total_loss = total_loss + self._compute_loss(brdf, rgbs_gt[poly_mask],
-                                                         confidence[poly_mask])
+            poly_loss_raw = self._compute_loss(brdf, rgbs_gt[poly_mask],
+                                               confidence[poly_mask])
+            total_loss = total_loss + poly_loss_raw
             smooth_total = smooth_total + sm
             poly_pred = brdf
 
@@ -240,10 +259,11 @@ class Stage2Trainer_Bonn(pl.LightningModule):
             brdf_pan, _, sm = self._eval_brdf(
                 xyz[pan_mask], wi[pan_mask], wo[pan_mask],
                 point_ids[pan_mask], material_ids[pan_mask])
-            pred_gray = (brdf_pan * self.pan_weights).sum(-1, keepdim=True)
+            pred_gray = (brdf_pan * ray_pan_w[pan_mask]).sum(-1, keepdim=True)
             gt_gray   = rgbs_gt[pan_mask][:, :1]
-            total_loss = total_loss + self.pan_loss_weight * self._compute_loss(
+            pan_loss_raw = self._compute_loss(
                 pred_gray, gt_gray, confidence[pan_mask])
+            total_loss = total_loss + self.pan_loss_weight * pan_loss_raw
             smooth_total = smooth_total + sm
 
         # --- LLS (Monte-Carlo) loss ---
@@ -251,10 +271,11 @@ class Stage2Trainer_Bonn(pl.LightningModule):
             lls_pred = self._lls_monte_carlo(
                 xyz[lls_mask], wo[lls_mask], lls_corners[lls_mask],
                 point_ids[lls_mask], material_ids[lls_mask], self.lls_spp)
-            pred_gray = (lls_pred * self.pan_weights).sum(-1, keepdim=True)
+            pred_gray = (lls_pred * ray_pan_w[lls_mask]).sum(-1, keepdim=True)
             gt_gray   = rgbs_gt[lls_mask][:, :1]
-            total_loss = total_loss + self.lls_loss_weight * self._compute_loss(
+            lls_loss_raw = self._compute_loss(
                 pred_gray, gt_gray, confidence[lls_mask])
+            total_loss = total_loss + self.lls_loss_weight * lls_loss_raw
 
         # Smoothness regularisation (from poly branch only to avoid double-counting)
         total_loss = total_loss + self.smooth_reg_weight * smooth_total
@@ -269,6 +290,9 @@ class Stage2Trainer_Bonn(pl.LightningModule):
 
         self.log_dict({
             'train/total_loss': total_loss,
+            'train/poly_loss':  poly_loss_raw,
+            'train/pan_loss':   pan_loss_raw,
+            'train/lls_loss':   lls_loss_raw,
             'train/psnr':       psnr,
         }, prog_bar=True, batch_size=xyz.shape[0])
 

@@ -32,6 +32,8 @@ class Stage1Trainer(pl.LightningModule):
         self.gt_folder = cfg.gt_folder
         self.camera_factor1 = cfg.renderer.camera.linear_factor1
         self.camera_factor2 = cfg.renderer.camera.linear_factor2
+        # Materials >= 352 captured at exposure 8000 instead of 20000; camera response is linear in exposure.
+        self.camera_factor3 = self.camera_factor2 * (8000.0 / 20000.0)
         #self.latent_dim = cfg.material.latent_dim
         # Create a mapping from roughness-metallic pairs to train latent indices
         self.radiance_rgb_pairs = {}
@@ -416,7 +418,10 @@ class Stage1Trainer(pl.LightningModule):
         # forward renders
         rgbs, vis, ray_params, _, smooth_loss = self.renderer.stage1_render(self.emitter, rays, xyz, emitter_ids, material_ids, point_ids, self.cfg.renderer.spp.train, None, None, validation=False)
         # Apply different camera factors based on material_ids
-        camera_factor = torch.where(material_ids < 100, self.camera_factor1, self.camera_factor2)
+        camera_factor = torch.where(
+            material_ids < 100, self.camera_factor1,
+            torch.where(material_ids < 352, self.camera_factor2, self.camera_factor3),
+        )
         rgbs = rgbs * camera_factor.squeeze(0).unsqueeze(-1)
         loss = self.loss_function(rgbs, rgbs_gt, vis)
 
@@ -476,7 +481,10 @@ class Stage1Trainer(pl.LightningModule):
             rays, prior = self.handeye_refiner.apply_handeye_delta_to_rays(rays, camera_ids)
         # forward renders
         rgbs, vis, ray_params, _, smooth_loss = self.renderer.stage1_render(self.emitter, rays, xyz, emitter_ids, material_ids, point_ids, self.cfg.renderer.spp.train, None, None, validation=False)
-        camera_factor = torch.where(material_ids < 100, self.camera_factor1, self.camera_factor2)
+        camera_factor = torch.where(
+            material_ids < 100, self.camera_factor1,
+            torch.where(material_ids < 352, self.camera_factor2, self.camera_factor3),
+        )
         rgbs = rgbs * camera_factor.squeeze(0).unsqueeze(-1)
         loss = self.loss_function(rgbs, rgbs_gt, vis)
 

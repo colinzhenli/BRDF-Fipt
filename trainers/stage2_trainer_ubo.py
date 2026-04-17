@@ -236,6 +236,8 @@ class Stage2Trainer_UBO(pl.LightningModule):
     def visualize_brdf_lobe(self, output_dir, num_latents=10, resolution=64):
         if not hasattr(self.material, 'decoder') or not hasattr(self.material, 'point_latent_bank'):
             return
+        if not hasattr(self.material.decoder, 'encode_directions'):
+            return  # PBRDecoder uses a different API
 
         import matplotlib
         matplotlib.use('Agg')
