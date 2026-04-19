@@ -19,20 +19,14 @@ sys.path.insert(0, str(_REPO_ROOT / "recon" / "calibration"))
 from registration_check import registration_ratio, REGISTRATION_THRESHOLD  # noqa: E402
 
 
-# Required files and folders based on valid material structure
-REQUIRED_FOLDERS = ['hdr', 'ldr', 'observations', 'sparse']
+# Required files and folders for stage 1 dense training (run_stage1_dense.sh).
+# `sparse/` is kept because the registration-health gate reads sparse/0/images.bin.
+REQUIRED_FOLDERS = ['sparse']
 REQUIRED_FILES = [
-    'bbox.json',
-    'colmap.log',
     'observations_structured.npz',
     'point_metadata.json',
     'rotated_camera.json',
     'scan_log.json',
-    'shape_matching.log',
-]
-# Files that must exist but can be empty
-REQUIRED_FILES_CAN_BE_EMPTY = [
-    'unmatched_scan_ids.json'
 ]
 
 
@@ -103,14 +97,6 @@ def validate_material_folder(material_folder: Path) -> tuple[bool, list[str]]:
             else:
                 issues.append(f"Empty file: {file_name}")
 
-    # Check files that can be empty (must exist but can be empty)
-    for file_name in REQUIRED_FILES_CAN_BE_EMPTY:
-        file_path = material_folder / file_name
-        if not file_path.exists():
-            issues.append(f"Missing file: {file_name}")
-        elif not file_path.is_file():
-            issues.append(f"Not a file: {file_name}")
-
     # Registration ratio gate (only meaningful if sparse + scan_log are present;
     # if they are missing the file checks above will already have flagged it).
     sparse_dir = material_folder / "sparse"
@@ -132,13 +118,11 @@ def get_material_id_from_folder(folder_name: str) -> int | None:
     Returns:
         int or None: The material id if valid, None otherwise
     """
-    try:
-        # The folder name should start with an integer
-        # It could be just the number or number followed by other chars
-        # For simplicity, we assume the folder name IS the material id
-        return int(folder_name)
-    except ValueError:
+    # Reject names with non-digit characters; int() accepts underscores
+    # (PEP 515), so e.g. "0_2" would otherwise be parsed as material 2.
+    if not folder_name.isdigit():
         return None
+    return int(folder_name)
 
 
 def validate_data_folder(data_folder: Path, verbose: bool = True) -> list[int]:

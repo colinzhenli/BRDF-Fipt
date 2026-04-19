@@ -370,7 +370,7 @@ class Stage1Trainer(pl.LightningModule):
                             os.path.join(output_dir, f'mipmap_metallic_level_{level}_{batch_idx}_{b}.png')
                         )
 
-    def loss_function(self, rgbs, rgbs_gt, vis):
+    def loss_function(self, rgbs, rgbs_gt, vis, camera_factor=None):
         # Calculate per-pixel loss
         if self.hparams.model.loss.recon_loss.name == "l1":
             per_pix = torch.abs(rgbs[vis] - rgbs_gt.squeeze(0)[vis]).mean(dim=-1)
@@ -387,6 +387,11 @@ class Stage1Trainer(pl.LightningModule):
             )  # fixed small constant
 
             ref = torch.as_tensor(rho_ref, dtype=rgbs.dtype, device=rgbs.device)
+            if camera_factor is not None:
+                # rho_ref is calibrated for camera_factor1; scale per-sample so all
+                # groups sit in the same regime of the logrel curve.
+                scale = camera_factor.squeeze(0).unsqueeze(-1) / self.camera_factor1
+                ref = ref * scale
 
             def log_mapping(x):
                 return torch.log((x + eps) / (ref + eps) + 1.0)
@@ -423,7 +428,7 @@ class Stage1Trainer(pl.LightningModule):
             torch.where(material_ids < 352, self.camera_factor2, self.camera_factor3),
         )
         rgbs = rgbs * camera_factor.squeeze(0).unsqueeze(-1)
-        loss = self.loss_function(rgbs, rgbs_gt, vis)
+        loss = self.loss_function(rgbs, rgbs_gt, vis, camera_factor=camera_factor)
 
         # Add L2 gradient smoothness regularization
         smooth_weight = getattr(self.cfg.model.loss.reg_loss, 'weight', 0.0)
@@ -486,7 +491,7 @@ class Stage1Trainer(pl.LightningModule):
             torch.where(material_ids < 352, self.camera_factor2, self.camera_factor3),
         )
         rgbs = rgbs * camera_factor.squeeze(0).unsqueeze(-1)
-        loss = self.loss_function(rgbs, rgbs_gt, vis)
+        loss = self.loss_function(rgbs, rgbs_gt, vis, camera_factor=camera_factor)
 
         # Add L2 gradient smoothness regularization
         smooth_weight = getattr(self.cfg.model.loss.reg_loss, 'weight', 0.0)
