@@ -16,7 +16,7 @@ python main.py \
     model.test=False \
     model.trainer.max_epochs=3000 \
     model.trainer.check_val_every_n_epoch=500 \
-    model.trainer.log_every_n_steps=50 \
+    model.trainer.log_every_n_steps=500 \
     model.trainer.limit_train_batches=512 \
     material.decoder.use_skip_connection=True \
     material.latent_dim=24 \
@@ -26,4 +26,5 @@ python main.py \
     data.filter_observations=False \
     data.switch_iters=100 \
     data.chunk_size=2 \
+    renderer.spp.train=4 \
 
