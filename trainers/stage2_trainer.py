@@ -777,11 +777,20 @@ class Stage2Trainer(pl.LightningModule):
         # ------------------------------------------------------------------
         # 7.  Logging  (now includes diagnostics)
         # ------------------------------------------------------------------
-        self.log_dict({
+        log_dict = {
             'train/recon_loss':   loss,
             'train/total_loss':   loss,
             'train/psnr':         psnr,
-        }, prog_bar=True, batch_size=rays.shape[0])
+        }
+        if getattr(self.material, 'learnable_factor', False):
+            factor_val = self.material.factor.detach()
+            if factor_val.ndim == 0:
+                log_dict['train/learnable_factor'] = factor_val
+            else:
+                log_dict['train/learnable_factor_r'] = factor_val[0]
+                log_dict['train/learnable_factor_g'] = factor_val[1]
+                log_dict['train/learnable_factor_b'] = factor_val[2]
+        self.log_dict(log_dict, prog_bar=True, batch_size=rays.shape[0])
 
         return loss
 
@@ -1091,9 +1100,15 @@ class Stage2Trainer(pl.LightningModule):
             
         self.log('val/loss', loss)
         self.log('val/emitter_radiance', emitter_radiance.mean())
-        if hasattr(self.material, 'factor'):
-            self.log('val/factor', self.material.factor)
-        self.log('val/psnr', psnr)        
+        if getattr(self.material, 'learnable_factor', False):
+            factor_val = self.material.factor.detach()
+            if factor_val.ndim == 0:
+                self.log('val/learnable_factor', factor_val)
+            else:
+                self.log('val/learnable_factor_r', factor_val[0])
+                self.log('val/learnable_factor_g', factor_val[1])
+                self.log('val/learnable_factor_b', factor_val[2])
+        self.log('val/psnr', psnr)
         return
 
     def test_step(self, batch, batch_idx):

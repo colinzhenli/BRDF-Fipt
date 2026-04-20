@@ -1,6 +1,6 @@
 #!/bin/bash
 
-export CUDA_VISIBLE_DEVICES=2
+export CUDA_VISIBLE_DEVICES=3
 
 python main.py \
     dataset_folder=/mnt/data/colin/colin/Bonn_BTF \
@@ -19,7 +19,7 @@ python main.py \
     material.decoder.use_color_decomp=False \
     material.decoder.degree=3 \
     material.decoder.smooth_reg=False \
-    experiment_name=Stage-2_UBO_carpet07_from-Real_Logrel-Learnable-factor_run_2 \
+    experiment_name=Stage-2_UBO_carpet07_from-Real_Epoch-500_Logrel-Learnable-factor_run_1 \
     model.optimizer.name=Adam \
     model.optimizer.lr=0.001 \
     model.optimizer.decoder_lr=1e-4 \
@@ -33,6 +33,6 @@ python main.py \
     model.trainer.max_epochs=2000 \
     model.trainer.check_val_every_n_epoch=200 \
     model.trainer.limit_train_batches=512 \
-    model.ckpt_path=/media/raid/cloth/output/BRDF/Bonn-Theia2/Stage1_Chunk_Adam8bit_Softplus_Logrel_materials/training/model_0.20_0.20/last_decoder_only.ckpt
+    model.ckpt_path=/media/raid/cloth/output/BRDF/Bonn-Theia2/Stage1_Chunk_Adam8bit_Softplus_Logrel_materials/training/model_0.20_0.20/previous_last_decoder_only.ckpt
     # To load a pretrained decoder, add:
     # model.ckpt_path=/path/to/pretrained/checkpoint.ckpt

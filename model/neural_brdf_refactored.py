@@ -1061,8 +1061,8 @@ class AnisotropicLatentTexturedModel(LightningModule):
         self.Gaussian_blur = cfg.Gaussian_blur
         self.learnable_factor = cfg.learnable_factor
         if self.learnable_factor:
-            self.factor = nn.Parameter(torch.tensor(1.0))
-            
+            self.factor = nn.Parameter(torch.ones(3))
+
         self.mono_brdf = cfg.mono_brdf
         
         # Neural geometry settings

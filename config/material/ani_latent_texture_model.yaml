@@ -18,9 +18,9 @@ Gaussian_blur: True
 decoder:
   use_skip_connection: True
   skip_layer: 2
-  hidden_layers: [256, 128, 128, 64, 32]
-  # hidden_layers: [128, 128, 64, 32, 16] # previous small decoder
-  activation: "leakyrelu" # only for output layer
+  activation: "softplus" # only for output layer
+  hidden_layers: [256, 256, 256, 256]
+  intermediate_activation: "leakyrelu"  # hidden-layer activation; "relu" matches merl-branch pretrained weights
   output_channels: 3
   degree: 3  # SH degree for positional encoding
   

@@ -1,0 +1,166 @@
+{
+  "neurips_2026_ed_dataset_hosting_spec": {
+    "high_level_summary": {
+      "submission_deadline_requirement": "Dataset must be hosted and accessible to reviewers at submission time",
+      "public_release_requirement": "Dataset must be public by camera-ready if accepted",
+      "metadata_requirement": "Croissant metadata (core + Responsible AI) must be provided and validated",
+      "large_dataset_requirement": "Provide a small sample subset if dataset >4GB",
+      "code_requirement": "Required only if contribution is executable artifact; otherwise strongly encouraged",
+      "website_requirement": "Optional but recommended",
+      "failure_condition": "Missing access or invalid metadata may lead to desk rejection"
+    },
+    "dataset_accessibility": {
+      "must_have": [
+        "Dataset URL accessible to reviewers at submission time"
+      ],
+      "access_type": [
+        "public",
+        "private_preview_link"
+      ],
+      "must_not": [
+        "Require reviewers to email authors for access",
+        "Delayed or conditional access"
+      ],
+      "notes": [
+        "Dataset does not need to be fully public at submission",
+        "Must be immediately accessible and stable",
+        "Must not require manual approval"
+      ]
+    },
+    "hosting_platforms": {
+      "preferred_platforms": [
+        "Harvard Dataverse",
+        "Kaggle",
+        "Hugging Face",
+        "OpenML"
+      ],
+      "platform_capabilities": {
+        "Harvard_Dataverse": {
+          "private_preview": true,
+          "max_dataset_size": "1TB",
+          "max_file_size": "2.5GB",
+          "croissant_auto": true
+        },
+        "Kaggle": {
+          "private_preview": true,
+          "max_dataset_size": "200GB",
+          "croissant_auto": true
+        },
+        "HuggingFace": {
+          "private_preview": false,
+          "public_required": true,
+          "max_dataset_size": "300GB",
+          "croissant_auto": true
+        },
+        "OpenML": {
+          "private_preview": false,
+          "public_required": true,
+          "max_dataset_size": "200GB",
+          "croissant_auto": true
+        }
+      },
+      "custom_hosting": {
+        "allowed": true,
+        "requirements": [
+          "Stable URL",
+          "No login barriers unless justified",
+          "Manual Croissant metadata required"
+        ]
+      }
+    },
+    "croissant_metadata": {
+      "required": true,
+      "components": [
+        "Core Croissant metadata",
+        "Responsible AI (RAI) metadata"
+      ],
+      "validation": "Must pass validation before submission",
+      "multiple_datasets": {
+        "allowed": true,
+        "requirement": "One Croissant file per dataset",
+        "submission_format": "zip if multiple"
+      },
+      "notes": [
+        "Auto-generated metadata is not sufficient alone",
+        "RAI fields must be added manually"
+      ]
+    },
+    "large_dataset_handling": {
+      "threshold": "4GB",
+      "requirements_if_exceeded": [
+        "Provide a small representative subset",
+        "Ensure subset reflects data quality and structure"
+      ],
+      "recommended": [
+        "Example samples",
+        "Visualization notebook",
+        "Quick inspection scripts"
+      ]
+    },
+    "public_release_policy": {
+      "at_submission": "Can be private if reviewer-accessible",
+      "if_accepted": "Must be made public",
+      "deadline": "Camera-ready submission",
+      "exceptions": "Only for ethically restricted datasets"
+    },
+    "code_availability": {
+      "required_if": [
+        "Contribution is a benchmark",
+        "Evaluation framework",
+        "Data generation tool",
+        "Executable artifact"
+      ],
+      "optional_if": [
+        "Dataset-only contribution",
+        "Analysis-based work"
+      ],
+      "recommendation": "Strongly encouraged in all cases"
+    },
+    "optional_recommendations": {
+      "recommended_items": [
+        "Dataset website",
+        "Documentation (README)",
+        "Visualization tools",
+        "Leaderboard (optional)"
+      ]
+    },
+    "failure_cases": {
+      "desk_reject_risks": [
+        "Dataset not accessible at submission",
+        "Broken or restricted links",
+        "Missing Croissant metadata",
+        "Invalid metadata format",
+        "Dataset not in final form",
+        "No sample provided for large dataset"
+      ]
+    },
+    "agent_processing_checklist": {
+      "checks": [
+        "Dataset URL accessible without human interaction",
+        "Croissant metadata present and valid",
+        "RAI fields included",
+        "Sample subset provided if dataset >4GB",
+        "Dataset is stable and final",
+        "Hosting platform is compliant or equivalent",
+        "Private preview link supported if dataset not public",
+        "Dataset can be made public if accepted"
+      ]
+    },
+    "minimal_tldr": {
+      "must_do": [
+        "Host dataset before submission",
+        "Provide reviewer-accessible URL",
+        "Submit validated Croissant metadata",
+        "Provide sample if dataset is large"
+      ],
+      "must_not": [
+        "Delay dataset release until after review",
+        "Require manual approval for access"
+      ],
+      "strongly_recommended": [
+        "Release code",
+        "Provide documentation and examples"
+      ]
+    }
+  }
+}
