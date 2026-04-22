@@ -12,10 +12,28 @@ from dataclasses import dataclass
 import random
 import pyexr
 import imageio
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 DTYPE_POLY = 0
 DTYPE_PAN = 1
 DTYPE_LLS = 2
+
+
+def _pool_load_worker(args):
+    """ProcessPoolExecutor worker: load one material in a subprocess.
+
+    Builds a stub BonnDataset (bypassing __init__) with only the attributes
+    _load_single_material needs, then delegates to it. Keeps the existing
+    loader logic as the single source of truth — no duplicated code.
+    """
+    mat_id, root_folder_str, calib, svfresnel_dir_str, use_pan, use_lls = args
+    stub = BonnDataset.__new__(BonnDataset)
+    stub.root_folder = Path(root_folder_str)
+    stub.calibrations = {mat_id: calib}
+    stub.svfresnel_dir = Path(svfresnel_dir_str)
+    stub.use_pan = use_pan
+    stub.use_lls = use_lls
+    return stub._load_single_material(mat_id)
 
 
 # ---------------------------------------------------------------------------
@@ -294,6 +312,7 @@ class BonnDataset(IterableDataset):
         self.use_pan = getattr(cfg.data, 'use_pan', False)
         self.use_lls = getattr(cfg.data, 'use_lls', False)
         self.svfresnel_dir = self.root_folder / 'Bonn_svfresnel'
+        self.num_load_workers = int(getattr(cfg.data, 'num_load_workers', 0))
         self.step = 0
 
         # Approximate luminance weights for pan→scalar projection
@@ -723,12 +742,16 @@ class BonnDataset(IterableDataset):
         else:
             selected = self.mat_ids  # load ALL materials
 
-        materials = []
         tag = 'val' if val_mode else 'train'
-        for mid in tqdm(selected, desc=f"Loading {tag} (all materials)"):
-            result = self._load_single_material(mid)
-            if result is not None:
-                materials.append(result)
+
+        if self.num_load_workers > 0 and len(selected) > 1:
+            materials = self._load_materials_parallel(selected, tag)
+        else:
+            materials = []
+            for mid in tqdm(selected, desc=f"Loading {tag} (all materials)"):
+                result = self._load_single_material(mid)
+                if result is not None:
+                    materials.append(result)
 
         # Debug pair: duplicate first material with modification
         if (self.debug_rotate or self.debug_swap_channels) and materials:
@@ -750,6 +773,42 @@ class BonnDataset(IterableDataset):
               f"(pixel data {total_pixel_mb:.0f} MB)")
 
         return BonnDataset.ChunkData(materials=materials, total_obs=total_obs)
+
+    # ------------------------------------------------------------------
+    # Parallel material loader (ProcessPoolExecutor)
+    # ------------------------------------------------------------------
+    def _load_materials_parallel(self, mat_ids, tag):
+        """Load materials in parallel using ProcessPoolExecutor.
+
+        Returns materials in the same order as mat_ids (sorted by mat_id),
+        matching the serial loader. Failed loads are dropped.
+        """
+        n_workers = min(self.num_load_workers, len(mat_ids))
+        print(f"[{tag}] Parallel load: {len(mat_ids)} materials, "
+              f"{n_workers} workers (ProcessPoolExecutor)")
+
+        tasks = [
+            (mid, str(self.root_folder), self.calibrations[mid],
+             str(self.svfresnel_dir), self.use_pan, self.use_lls)
+            for mid in mat_ids
+        ]
+
+        results = {}
+        with ProcessPoolExecutor(max_workers=n_workers) as ex:
+            future_to_mid = {ex.submit(_pool_load_worker, t): t[0] for t in tasks}
+            for fut in tqdm(as_completed(future_to_mid),
+                            total=len(future_to_mid),
+                            desc=f"Loading {tag} (parallel)"):
+                mid = future_to_mid[fut]
+                try:
+                    res = fut.result()
+                except Exception as exc:
+                    print(f"  [Warning] mat{mid:04d} worker raised: {exc}")
+                    res = None
+                if res is not None:
+                    results[mid] = res
+
+        return [results[mid] for mid in mat_ids if mid in results]
 
     # ------------------------------------------------------------------
     # Training-loop interface
@@ -879,6 +938,21 @@ class BonnDataset(IterableDataset):
 
     # ------------------------------------------------------------------
     def __iter__(self):
+        # Per-(rank, worker) RNG seed so DDP ranks and DataLoader workers
+        # don't all draw the same indices. Sampling is with replacement, so
+        # different streams across ranks just contribute fresh batches to the
+        # effective per-step batch (gradients all-reduce afterwards).
+        try:
+            import torch.distributed as dist
+            rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
+        except Exception:
+            rank = 0
+        worker_info = torch.utils.data.get_worker_info()
+        worker_id = worker_info.id if worker_info is not None else 0
+        seed = (np.random.SeedSequence(entropy=[rank, worker_id, self.step])
+                .generate_state(1)[0])
+        np.random.seed(int(seed))
+
         # ----- training (infinite, all data in memory) -----
         if hasattr(self, '_all_data'):
             while True:

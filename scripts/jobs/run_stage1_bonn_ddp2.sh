@@ -1,19 +1,32 @@
 #!/bin/bash
+# Stage-1 Bonn training, DDP on 2 GPUs.
+#
+# Mirrors run_stage1_bonn.sh exactly except for:
+#   - CUDA_VISIBLE_DEVICES=1,2  (use idle GPUs; GPU 0 is shared)
+#   - model.trainer.devices=2
+#   - model.trainer.strategy=ddp_find_unused_parameters_true
+#   - data.num_load_workers=16  (parallel cold load; ~3-4x speedup at full scale)
+#
+# Notes:
+#   - Effective batch size = devices * data.rays_num. Consider scaling decoder_lr
+#     by sqrt(devices) when going to >2 GPUs.
+#   - limit_train_batches is per-GPU, so 2 GPUs means 2x the actual samples per
+#     epoch. Reduce it (or max_epochs) if you want to keep total work constant.
 
-export CUDA_VISIBLE_DEVICES=1
+export CUDA_VISIBLE_DEVICES=1,2
 
 python main.py \
     dataset_folder=/media/raid/cloth/Bonn_train \
     data=bonn \
-    data.num_load_workers=16 \
     data.use_pan=True \
     data.use_lls=True \
     data.debug=False \
-    data.debug_num=200 \
+    data.debug_num=10 \
     data.rays_num=131072 \
+    data.num_load_workers=16 \
     renderer=multiarea_emitter \
     material=bonn_latent \
-    experiment_name=Stage-1_Bonn_Theia2_Debug_1 \
+    experiment_name=Stage-1_Bonn_DDP2_debug_run_1 \
     model.optimizer.reset_latent_momentum_on_chunk_switch=False \
     model.optimizer.name=Adam8bit \
     model.loss.recon_loss.name=logrel \
@@ -26,9 +39,11 @@ python main.py \
     model.test=False \
     model.continue_training=False \
     model.trainer.max_epochs=3000 \
+    model.trainer.devices=2 \
+    model.trainer.strategy=ddp_find_unused_parameters_true \
     model.optimizer.decoder_lr=1e-4 \
     model.trainer.limit_train_batches=512 \
-    model.trainer.check_val_every_n_epoch=100 \
+    model.trainer.check_val_every_n_epoch=20 \
     material.decoder.use_skip_connection=True \
     material.decoder.use_film=False \
     material.decoder.use_color_decomp=False \
@@ -36,5 +51,5 @@ python main.py \
     material.decoder.degree=3 \
     material.decoder.smooth_reg=False \
     material.different_decoder=False \
-    data.filter_observations=False \
-    # model.ckpt_path=/home/zla247/scratch/output/BRDF/Bonn-Theia2/Stage-1_Logrel_Softplus_Fir_decoder-lr-1e-4_All-data_Latent-24_Color_No-Chunk-All-RGB-data_run_2/training/model_0.20_0.20/last.ckpt
+    data.filter_observations=False
+

@@ -16,6 +16,7 @@ trainer:
   accelerator: gpu
   devices: 1
   num_nodes: 1
+  strategy: auto            # 'auto' for single-GPU; set to 'ddp_find_unused_parameters_true' for DDP
   max_epochs: 1000          # ← will be respected
   check_val_every_n_epoch: 1
   limit_train_batches: 512 # 200 iterations per epoch

@@ -1,6 +1,6 @@
 {
   "description": "Materials needing full rerun (COLMAP + shape_matching) after the colmap.sh merge-bug patch and shape_matching.py 16mm filter.",
-  "total": 36,
+  "total": 35,
   "categories": {
     "merge_bug": {
       "reason": "colmap.sh model_merger silently failed; fixed by patch (use sparse/0 only). Rerun COLMAP + shape_matching.",
@@ -24,9 +24,8 @@
     },
     "not_finished": {
       "reason": "Shape matching did not finish (disk-space casualties). Rerun shape_matching; COLMAP may still be OK.",
-      "count": 15,
+      "count": 14,
       "materials": [
-        111,
         396,
         397,
         406,
@@ -60,7 +59,6 @@
   "materials": [
     13,
     27,
-    111,
     115,
     126,
     244,

@@ -2,7 +2,7 @@ PROJECT="${1:?usage: $0 <project_dir>}"
 gpu_id="${2:?usage: $0 <gpu_id>}"
 
 # === LOCAL STORAGE SETUP (avoid slow NFS I/O) ===
-TMP_BASE="/mnt/data/colin/colin/colmap_tmp"
+TMP_BASE="/data/colin/colmap_tmp"
 PROJECT_NAME=$(basename "${PROJECT}")
 TMP_PROJECT="${TMP_BASE}/${PROJECT_NAME}_$$"  # $$ = PID for uniqueness
 

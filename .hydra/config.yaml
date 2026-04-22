@@ -1,0 +1,299 @@
+data:
+  train_num: 44
+  val_num: 9
+  test_num: 1
+  num_workers: 0
+  rays_num: 131072
+  ccm:
+  - - 3.6724617
+    - -0.94800931
+    - 0.08428962
+  - - -0.44629176
+    - 2.96095854
+    - -1.17898539
+  - - -0.47909694
+    - -0.39991418
+    - 2.10705124
+  chunk_size: 20
+  switch_iters: 1000
+  random_chunks: true
+  importance_sampling: false
+  use_single_chunk_sampling: false
+  uniform_sampling: false
+  importance_sampling_num: 32768
+  batch_size: 1
+  multi_resolution: false
+  downsample_iter:
+  - -1
+  - -1
+  debug: false
+  debug_num: 10
+  training_list_path: ${dataset_folder}/training_list.txt
+  valid_on_train_set: false
+  val_ratio: 0.01
+  visualize_uv: false
+  start_idx: 0
+  valid_num: 15
+  use_fixed_val: false
+  hold_out_val_num: 240
+  dataset_name: bonn
+  pbr_path: null
+  shape:
+    type: real
+    center:
+    - 0.0
+    - 0.0
+    - 0.0
+    radius: 0.2
+  pixel: true
+  ray_diff: true
+  custom_c2w: true
+  filter_observations: false
+  metadata_path: ${dataset_folder}/scan_log.json
+  camera_metadata_path: ${dataset_folder}/rotated_camera.json
+  handeye_refiner: false
+  use_pan: true
+  use_lls: true
+  num_load_workers: 16
+  debug_rotate: false
+  debug_swap_channels: false
+  points_per_material: 2000
+  random_observations: true
+  subsample_ratio: 0.05
+  random_sample_material_number: null
+  val_materials: 2
+  val_points: 500
+  overfit_mat_id: null
+  val_view_ratio: 0.2
+  val_seed: 42
+  learnable_factor: false
+renderer:
+  type: path_tracing_realarea_emitter
+  brdf_sampling: false
+  emitter_sampling: true
+  indir_depth: 0
+  shape_matching:
+    folder_path: /media/raid/cloth/capture_data/BRDF_recon_Oct31_cloth
+    num_workers: 32
+    z_outlier_percentile: 5.0
+  camera:
+    linear_factor: 467090956.0
+    linear_factor1: 259494976.0
+    linear_factor2: 467090956.0
+    colmap_camera: true
+    distance: 0.2
+    number_of_views: 40
+    number_of_view_test: 120
+    altitude_angle: 60.0
+    views_per_batch: 8
+    look_at:
+    - 0.0
+    - 0.0
+    - 0.0
+    up:
+    - 0.0
+    - 1.0
+    - 0.0
+    position:
+    - 0.0
+    - 0.0
+    - -2.0
+    camera_angle_x: 0.5
+    R_c2g:
+    - - -0.000717667595
+      - 0.999776474
+      - 0.0211302413
+    - - -0.00442126179
+      - 0.021126868
+      - -0.999767027
+    - - -0.999989969
+      - -0.000810922726
+      - 0.00440511146
+    t_c2g:
+    - 0.0326272696
+    - -0.0161560433
+    - 0.0280920856
+    intrinsics:
+      width: 3072
+      height: 2048
+      focal_length: 6721.054
+      cx: 1536
+      cy: 1024
+      distortion: -0.0648
+  mesh:
+    path: null
+    use_hemisphere: false
+    mitsuba_scene: false
+    rectangle:
+      bbox_json: ${dataset_folder}/bbox.json
+      center:
+      - 0.16
+      - -0.11
+      - -0.061
+      width: 0.14
+      length: 0.14
+  emitter:
+    direction_json: ${dataset_folder}/emitter_calibration.json
+    training_list_path: ${data.training_list_path}
+    folder_path: ${dataset_folder}
+    type: realarea
+    num_lights: 120
+    dist: 4.0
+    radius: 0.007
+    fwhm_deg: 115.0
+    positions:
+    - 0.0
+    - 0.0
+    - 0.0
+    radiance:
+    - 1.0
+    - 1.0
+    - 1.0
+    turntable:
+      center:
+      - 0.16084722
+      - -0.11011424
+      - -0.021
+      axis:
+      - -0.00876202
+      - -0.01346449
+      - 0.99987096
+    R_l2g:
+    - - 1.0
+      - 0.0
+      - 0.0
+    - - 0.0
+      - 1.0
+      - 0.0
+    - - 0.0
+      - 0.0
+      - 1.0
+    t_l2g:
+    - 0.0
+    - -0.102
+    - 0.02112
+    base2_to_base1:
+    - - 0.999999959
+      - 0.000233227594
+      - -0.000169051819
+      - 0.00722042468
+    - - -0.00023674068
+      - 0.999777598
+      - -0.0210878871
+      - 0.00826339062
+    - - 0.000164095944
+      - 0.0210879262
+      - 0.999777611
+      - 0.00393500345
+    - - 0.0
+      - 0.0
+      - 0.0
+      - 1.0
+  spp:
+    train: 16
+    val: 16
+    test: 16
+  SPP_chunk: 4
+  resolution:
+  - 2048
+  - 2048
+model:
+  ckpt_path: null
+  stage: 1
+  freeze_decoder: false
+  continue_training: false
+  test: false
+  emitter_calibration: false
+  test_novel_view: false
+  logger:
+    _target_: pytorch_lightning.loggers.WandbLogger
+    project: brdf-capture
+    name: ${experiment_name}
+  trainer:
+    accelerator: gpu
+    devices: 2
+    num_nodes: 1
+    strategy: ddp_find_unused_parameters_true
+    max_epochs: 3000
+    check_val_every_n_epoch: 20
+    limit_train_batches: 512
+    num_sanity_val_steps: 2
+    enable_checkpointing: true
+    log_every_n_steps: 10
+  checkpoint_monitor:
+    _target_: pytorch_lightning.callbacks.ModelCheckpoint
+    save_top_k: 2
+    every_n_epochs: 1
+    filename: '{epoch}'
+    dirpath: ${exp_output_root_path}/training
+  optimizer:
+    name: Adam8bit
+    reset_latent_momentum_on_chunk_switch: false
+    weight_decay: 0.0
+    lr: 0.001
+    decoder_lr: 0.0001
+    inference_lr: 0.001
+    inference_steps: 3400
+    warmup_steps_ratio: 0.5
+  loss:
+    recon_loss:
+      name: logrel
+      weight: 1.0
+      log_space:
+        logrel_ref: 0.05
+        logrel_eps: 0.001
+    reg_loss:
+      name: l2_smooth
+      weight: 0.0
+    refiner_prior_loss:
+      weight: 0.01
+    pan_weight: 0.5
+    lls_weight: 0.5
+    learnable_pan_weights: false
+  lls_spp: 4
+  linear_fitting:
+    skip_ransac: false
+  lr_decay:
+    decay_start_epoch: 700
+material:
+  type: BonnLatentBRDF
+  module: model.neural_brdf_refactored
+  data_folder: ${dataset_folder}
+  debug: ${data.debug}
+  debug_num: ${data.debug_num}
+  debug_rotate: ${data.debug_rotate}
+  debug_swap_channels: ${data.debug_swap_channels}
+  latent_dim: 24
+  predict_frame: true
+  init_normal_from_gt: false
+  use_pos_enc: true
+  different_decoder: false
+  learnable_factor: false
+  init_std: 0.1
+  single_material_id: ${data.overfit_mat_id}
+  optimizer:
+    name: ${model.optimizer.name}
+  decoder:
+    use_film: false
+    use_color_decomp: false
+    color_latent_dim: 6
+    smooth_reg: false
+    smooth_reg_eps: 0.02
+    use_skip_connection: true
+    skip_layer: 2
+    activation: softplus
+    hidden_layers:
+    - 256
+    - 256
+    - 256
+    - 256
+    intermediate_activation: leakyrelu
+    output_channels: 3
+    degree: 3
+experiment_name: Stage-1_Bonn_DDP2_debug_run_1
+dataset_folder: /media/raid/cloth/Bonn_train
+output_folder: /media/raid/cloth/output/BRDF
+exp_output_root_path: ${output_folder}/Bonn-Theia2/${experiment_name}
+gt_folder: ${dataset_folder}/hdr
+test_on_train: true
+global_train_seed: 42

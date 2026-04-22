@@ -266,11 +266,20 @@ def main(cfg):
 
     print("==> initializing trainer ...")
 
+    # PL 1.x doesn't accept the `ddp_find_unused_parameters_{true,false}` string
+    # aliases (added in PL 2.x), so map them to a DDPStrategy instance.
+    trainer_kwargs = dict(cfg.model.trainer)
+    _strategy = trainer_kwargs.get('strategy')
+    if _strategy == 'ddp_find_unused_parameters_true':
+        trainer_kwargs['strategy'] = DDPStrategy(find_unused_parameters=True)
+    elif _strategy == 'ddp_find_unused_parameters_false':
+        trainer_kwargs['strategy'] = DDPStrategy(find_unused_parameters=False)
+
     trainer = pl.Trainer(
-        callbacks=callbacks, logger=logger, 
+        callbacks=callbacks, logger=logger,
         # track_grad_norm=2,  # Disabled: broken with automatic_optimization=False
         # gradient_clip_val=1.0,  # Optional: clip gradients
-        **cfg.model.trainer
+        **trainer_kwargs
     )
     # tracer = VizTracer()
     # tracer.start()
