@@ -37,8 +37,28 @@ CCM = np.array([
 
 GLOBAL_SAMPLES_PER_MAT = 200_000
 
+# Default `logrel_ref` currently used in real-data Stage-1 jobs.
+DEFAULT_REF = 30_000.0
+
 QUANTILES = [1, 5, 10, 25, 50, 75, 90, 95, 99, 99.9]
 ABOVE_THRESHOLDS = [10.0, 100.0, 1000.0, 5000.0, 10_000.0, 30_000.0, 50_000.0]
+
+
+def _ref_position(pool: np.ndarray, ref: float) -> dict:
+    """Where the chosen ref sits inside the distribution."""
+    pool = pool.astype(np.float64)
+    pos = pool[pool > 0]
+    pct_below = float((pool <= ref).mean()) * 100
+    median = float(np.median(pool))
+    geomean = float(np.exp(np.log(pos + 1e-12).mean())) if pos.size else 0.0
+    return {
+        "ref": ref,
+        "percentile_in_pool": pct_below,
+        "ref/median": ref / max(median, 1e-12),
+        "ref/geomean": ref / max(geomean, 1e-12),
+        "median": median,
+        "geomean": geomean,
+    }
 
 
 def _summarize(label: str, values: np.ndarray) -> dict:
@@ -130,6 +150,13 @@ def main():
     ap.add_argument("--max-materials", type=int, default=None)
     ap.add_argument("--data-dir", type=Path, default=DATA_DIR)
     ap.add_argument("--samples-per-mat", type=int, default=GLOBAL_SAMPLES_PER_MAT)
+    ap.add_argument("--min-id", type=int, default=0,
+                    help="Skip materials with id < min-id (inclusive of min-id).")
+    ap.add_argument("--max-id", type=int, default=350,
+                    help="Skip materials with id > max-id (inclusive of max-id). "
+                         "Default 350 keeps cohorts 1+2 only.")
+    ap.add_argument("--ref", type=float, default=DEFAULT_REF,
+                    help=f"logrel_ref to evaluate (default {DEFAULT_REF}).")
     args = ap.parse_args()
 
     if not args.data_dir.exists():
@@ -137,10 +164,11 @@ def main():
         sys.exit(1)
 
     mat_ids = _list_material_ids(args.data_dir)
+    mat_ids = [m for m in mat_ids if args.min_id <= m <= args.max_id]
     if args.max_materials is not None:
         mat_ids = mat_ids[: args.max_materials]
     print(f"Found {len(mat_ids)} materials with observations_structured.npz "
-          f"in {args.data_dir}")
+          f"in {args.data_dir} (id range {args.min_id}..{args.max_id})")
     print(f"Subsampling {args.samples_per_mat:,} values / material "
           f"for the global pool.\n")
 
@@ -223,6 +251,38 @@ def main():
         print(f"  mean(per-mat medians, mat<100) = "
               f"{float(np.mean(cohort1_meds)):.4g}    "
               "<- aligned with current factor1 reference cohort")
+
+    # ----- where does the configured ref actually sit? ---------------------
+    print("\n" + "-" * 76)
+    print(f"REF POSITION  (current real ref = {args.ref:g})")
+    print("-" * 76)
+    rp_global = _ref_position(pool_all, args.ref)
+    print(f"  ref                                = {rp_global['ref']:.6g}")
+    print(f"  percentile inside global pool      = "
+          f"{rp_global['percentile_in_pool']:.2f}%   (fraction of values <= ref)")
+    print(f"  ref / global-median                = "
+          f"{rp_global['ref/median']:.3g}   (median = {rp_global['median']:.4g})")
+    print(f"  ref / global-geomean               = "
+          f"{rp_global['ref/geomean']:.3g}   (geomean(>0) = {rp_global['geomean']:.4g})")
+    if rp_global['ref/median'] >= 1:
+        print("  -> ref >= median: most loss mass falls in the LINEAR regime "
+              "(small-rel-error, gradient ~ 1/ref).")
+    else:
+        print("  -> ref <  median: most loss mass falls in the LOG regime "
+              "(log_mapping ~ log(x/ref) for x >> ref).")
+
+    # Per-cohort ref positioning (since ref is scaled by camera_factor at
+    # train time -- this prints the effective ref location per cohort).
+    print("\n  per-cohort ref position (raw ref, before per-cohort scaling):")
+    for cohort_name, parts in cohort_pools.items():
+        if not parts:
+            continue
+        cpool = np.concatenate(parts)
+        rp = _ref_position(cpool, args.ref)
+        print(f"    {cohort_name:42s}  "
+              f"pct={rp['percentile_in_pool']:6.2f}%  "
+              f"ref/med={rp['ref/median']:.3g}  "
+              f"ref/geo={rp['ref/geomean']:.3g}")
 
 
 if __name__ == "__main__":

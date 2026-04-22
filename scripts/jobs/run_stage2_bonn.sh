@@ -33,5 +33,5 @@ python main.py \
     material.decoder.degree=3 \
     material.decoder.smooth_reg=False \
     material.different_decoder=False \
-    model.ckpt_path=/media/raid/cloth/output/BRDF/Bonn-Theia2/Stage-1_Logrel_Softplus_Fir_decoder-lr-1e-4_All-data_Latent-24_Color_No-Chunk-All-RGB-data_run_2/training/training/model_0.20_0.20/last_decoder_only.ckpt
+    model.ckpt_path=/media/raid/cloth/output/BRDF/Bonn-Theia2/Stage-1_Logrel_Softplus_Fir_decoder-lr-1e-4_All-data_Latent-24_Color_All-RGB-Pan-0.5_run_1/training/training/model_0.20_0.20/last_decoder_only.ckpt
 

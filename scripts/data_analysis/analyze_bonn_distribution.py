@@ -39,8 +39,28 @@ BONN_DIR = Path("/media/raid/cloth/Bonn_train")
 # subsample to keep RAM bounded while still giving a representative pool.
 GLOBAL_SAMPLES_PER_MAT = 200_000
 
+# Default `logrel_ref` currently used in scripts/jobs/run_stage1_bonn_cc.sh
+DEFAULT_REF = 0.05
+
 QUANTILES = [1, 5, 10, 25, 50, 75, 90, 95, 99, 99.9]
 ABOVE_THRESHOLDS = [1e-3, 1e-2, 0.1, 0.5, 1.0, 5.0, 10.0, 100.0]
+
+
+def _ref_position(pool: np.ndarray, ref: float) -> dict:
+    """Where the chosen ref sits inside the distribution."""
+    pool = pool.astype(np.float64)
+    pos = pool[pool > 0]
+    pct_below = float((pool <= ref).mean()) * 100
+    median = float(np.median(pool))
+    geomean = float(np.exp(np.log(pos + 1e-12).mean())) if pos.size else 0.0
+    return {
+        "ref": ref,
+        "percentile_in_pool": pct_below,
+        "ref/median": ref / max(median, 1e-12),
+        "ref/geomean": ref / max(geomean, 1e-12),
+        "median": median,
+        "geomean": geomean,
+    }
 
 
 def _summarize(label: str, values: np.ndarray) -> dict:
@@ -115,6 +135,8 @@ def main():
                     help="Override the Bonn dataset directory.")
     ap.add_argument("--samples-per-mat", type=int, default=GLOBAL_SAMPLES_PER_MAT,
                     help="Per-material random subsample for the global pool.")
+    ap.add_argument("--ref", type=float, default=DEFAULT_REF,
+                    help=f"logrel_ref to evaluate (default {DEFAULT_REF}).")
     args = ap.parse_args()
 
     bonn_dir = args.bonn_dir
@@ -207,6 +229,25 @@ def main():
           "<- log-symmetric (matches log_mapping)")
     print(f"  mean(per-mat medians)   = {float(pmed.mean()):.4g}    "
           "<- robust to one giant material")
+
+    # ----- where does the configured ref actually sit? ---------------------
+    print("\n" + "-" * 76)
+    print(f"REF POSITION  (current Bonn ref = {args.ref:g})")
+    print("-" * 76)
+    rp = _ref_position(pool, args.ref)
+    print(f"  ref                          = {rp['ref']:.6g}")
+    print(f"  percentile inside global pool= {rp['percentile_in_pool']:.2f}%   "
+          f"(fraction of values <= ref)")
+    print(f"  ref / global-median          = {rp['ref/median']:.3g}   "
+          f"(median = {rp['median']:.4g})")
+    print(f"  ref / global-geomean         = {rp['ref/geomean']:.3g}   "
+          f"(geomean(>0) = {rp['geomean']:.4g})")
+    if rp['ref/median'] >= 1:
+        print("  -> ref >= median: most loss mass falls in the LINEAR regime "
+              "(small-rel-error, gradient ~ 1/ref).")
+    else:
+        print("  -> ref <  median: most loss mass falls in the LOG regime "
+              "(log_mapping ~ log(x/ref) for x >> ref).")
 
 
 if __name__ == "__main__":

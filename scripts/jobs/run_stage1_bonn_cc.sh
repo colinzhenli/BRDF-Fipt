@@ -9,7 +9,7 @@ python main.py \
     data.use_lls=True \
     data.debug=False \
     data.debug_num=200 \
-    data.rays_num=100000 \
+    data.rays_num=131072 \
     renderer=multiarea_emitter \
     material=bonn_latent \
     experiment_name=Stage-1_Logrel_Softplus_Fir_decoder-lr-1e-4_All-data_Latent-24_Color_All-RGB-Pan-LLS_run_1 \

@@ -6,6 +6,7 @@ python main.py \
     dataset_folder=/media/raid/cloth/capture_data/Dataset_Debug_Feb10/227 \
     data=real \
     data.rays_num=65535 \
+    data.use_fixed_val=True \
     renderer=multiarea_emitter \
     renderer.spp.train=4 \
     renderer.emitter.direction_json=/media/raid/cloth/capture_data/Dataset_Nov11/emitter_calibration.json \
@@ -15,7 +16,7 @@ python main.py \
     material.different_decoder=False \
     material.neural_geometry.factor=0.04 \
     material.decoder.use_skip_connection=True \
-    experiment_name=Stage-2_L1-loss_Material-227_Spp-4_New-decoder_From-Real_Latent-dim-24_Degree-3_Fixed-Val-227_run_1 \
+    experiment_name=Correct_Stage-2_L1-loss_Material-227_Spp-4_New-decoder_From-Real_Latent-dim-24_Degree-3_Fixed-Val-227_run_2 \
     model.stage=2 \
     model.test=False \
     model.continue_training=False \

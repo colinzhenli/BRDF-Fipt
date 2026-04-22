@@ -17,6 +17,7 @@ import os
 import sys
 import json
 import time
+import shutil
 import subprocess
 import argparse
 from pathlib import Path
@@ -33,6 +34,7 @@ from registration_check import (  # noqa: E402
     is_well_registered,
     REGISTRATION_THRESHOLD,
 )
+from quality_check import detect_quality_warnings  # noqa: E402
 
 # ==================== Configuration ====================
 
@@ -50,7 +52,13 @@ class Config:
     POLL_INTERVAL_SEC = 10  # How often to check job status
     MATERIAL_SCAN_INTERVAL_SEC = 30  # How often to scan for new materials in auto mode
     STATE_FILE_NAME = "scheduler_state.json"  # State file name (saved in dataset folder)
-    
+
+    # COLMAP writes tmp files to COLMAP_TMP_BASE (mirrors TMP_BASE in colmap.sh).
+    # Require at least MIN_FREE_DISK_GB free before launching a new COLMAP job,
+    # so disk-full failures can't take down the whole batch mid-flight.
+    COLMAP_TMP_BASE = "/mnt/data/colin/colin/colmap_tmp"
+    MIN_FREE_DISK_GB = 20.0
+
     # Paths
     COLMAP_SCRIPT = "recon/colmap/colmap.sh"
     COLMAP_EXHAUSTIVE_SCRIPT = "recon/colmap/colmap_exhaustive.sh"
@@ -326,6 +334,40 @@ def check_cpu_capacity(state: Dict, config: Config, for_shape_matching: bool = F
         else:
             return False
 
+def _free_disk_gb(path: str) -> float:
+    """Return free space in GB on the filesystem containing `path`.
+
+    If `path` does not exist yet, walk up to the nearest existing ancestor so
+    we still measure the correct filesystem on first startup.
+    """
+    probe = path
+    while probe and not os.path.exists(probe):
+        parent = os.path.dirname(probe)
+        if parent == probe:
+            break
+        probe = parent
+    try:
+        usage = shutil.disk_usage(probe or "/")
+    except OSError:
+        return -1.0
+    return usage.free / (1024 ** 3)
+
+
+def check_disk_capacity(config: Config) -> Tuple[bool, float]:
+    """
+    Check whether the filesystem hosting COLMAP_TMP_BASE has at least
+    MIN_FREE_DISK_GB free. COLMAP jobs copy the full `ldr/` image set to
+    TMP_BASE, so starting one when space is low has caused whole-batch
+    failures (tmp files are only cleaned after each job finishes).
+
+    Returns (ok, free_gb). If `free_gb` is < 0 the filesystem is unreadable;
+    treat as unavailable so we don't launch blind.
+    """
+    free_gb = _free_disk_gb(config.COLMAP_TMP_BASE)
+    ok = free_gb >= config.MIN_FREE_DISK_GB
+    return ok, free_gb
+
+
 def is_process_alive(pid: int) -> bool:
     """Check if a process is still running."""
     try:
@@ -588,6 +630,12 @@ def verify_completed_materials(state: Dict, verbose: bool = True) -> Tuple[int, 
             info["error"] = None
             n_shape_reset += 1
             continue
+
+        # Check 3 (advisory): re-scan quality warnings. Always refreshes so
+        # threshold changes or log re-writes are picked up. Silent here to
+        # avoid spamming the log on restart with potentially hundreds of
+        # warnings; use `show_status` to see them after startup.
+        _record_quality_warnings(material, info, announce=False)
 
     return n_colmap_reset, n_shape_reset
 
@@ -1001,6 +1049,33 @@ def check_shape_matching_completion(folder_path: str) -> bool:
     
     return False
 
+def _record_quality_warnings(material: str, info: Dict, announce: bool = True) -> None:
+    """
+    Run post-hoc quality checks on a just-completed material and record any
+    warnings in info["warnings"] (list[dict]). When announce=True, prints each
+    warning so it is visible in the scheduler log alongside normal status
+    output (used when a material first completes). When announce=False the
+    warnings are only stored (used during bulk startup backfill).
+
+    Safe to re-call (overwrites previous warnings list).
+    """
+    folder_path = info["folder_path"]
+    try:
+        warnings = detect_quality_warnings(folder_path)
+    except Exception as e:
+        # Never let the warning scanner crash the scheduler loop.
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] WARNING check failed "
+              f"for material {material}: {e}")
+        info["warnings"] = []
+        return
+
+    info["warnings"] = warnings
+    if announce and warnings:
+        ts = datetime.now().strftime('%H:%M:%S')
+        for w in warnings:
+            print(f"[{ts}] WARNING material {material} [{w['code']}]: {w['msg']}")
+
+
 def evaluate_colmap_registration(material: str, info: Dict) -> Tuple[bool, str]:
     """
     Decide what to do with a COLMAP run that just finished.
@@ -1116,10 +1191,10 @@ def update_job_status(state: Dict, config: Config):
             folder_path = info["folder_path"]
             pid = info.get("pid")
             process_alive = pid and is_process_alive(pid)
-            
+
             # Check for completion flag in log file
             shape_completed = check_shape_matching_completion(folder_path)
-            
+
             # If completed OR process is dead, check final status
             if shape_completed or not process_alive:
                 if shape_completed:
@@ -1129,6 +1204,7 @@ def update_job_status(state: Dict, config: Config):
                     info["shape_matching_end_time"] = datetime.now().isoformat()
                     info["pid"] = None
                     info["workers"] = None
+                    _record_quality_warnings(material, info)
                 else:
                     # Process died but no completion flag - check if output exists
                     obs_folder = os.path.join(folder_path, "sparse", "observations")
@@ -1139,6 +1215,7 @@ def update_job_status(state: Dict, config: Config):
                         info["shape_matching_end_time"] = datetime.now().isoformat()
                         info["pid"] = None
                         info["workers"] = None
+                        _record_quality_warnings(material, info)
                     else:
                         print(f"[{datetime.now().strftime('%H:%M:%S')}] Shape matching failed for material {material} (process died, no completion flag)")
                         terminate_process(pid, material, "shape matching")
@@ -1241,25 +1318,45 @@ def streaming_mode(dataset_root: str, config: Config, auto_detect: bool = False,
             
             # Try to launch shape matching for completed COLMAP jobs (priority)
             try_launch_shape_matching_jobs(state, config)
-            
+
+            # Disk gate: once per iteration. If tmp filesystem is below
+            # MIN_FREE_DISK_GB we skip *all* COLMAP launches this cycle and
+            # wait for at least one in-flight job to finish so its TMP dir
+            # gets cleaned up. Shape matching is not gated (it doesn't touch
+            # COLMAP_TMP_BASE).
+            disk_ok, free_gb = check_disk_capacity(config)
+            if not disk_ok:
+                running_colmap = sum(1 for info in state["materials"].values()
+                                     if info["status"] == JobStatus.COLMAP_RUNNING)
+                # Throttle: only log once per ~minute to avoid spam.
+                if iteration % 6 == 1:
+                    print(f"[{datetime.now().strftime('%H:%M:%S')}] "
+                          f"Disk gate: {free_gb:.1f} GB free at "
+                          f"{config.COLMAP_TMP_BASE} < {config.MIN_FREE_DISK_GB:.0f} GB — "
+                          f"waiting for {running_colmap} running COLMAP job(s) to finish")
+
             # Try to launch new COLMAP jobs
             for material in materials:
                 info = state["materials"][material]
-                
+
                 if info["status"] == JobStatus.NOT_STARTED:
                     # Check if material is ready (has scan_log.json)
                     if not info.get("ready", False):
                         continue  # Skip materials that aren't ready yet
-                    
+
                     # Check GPU availability
                     gpu_id = get_least_loaded_gpu(state, config, gpu_monitor)
                     if gpu_id is None:
                         break  # No GPU available
-                    
+
                     # Check CPU capacity
                     if not check_cpu_capacity(state, config, for_shape_matching=False):
                         break  # No CPU capacity
-                    
+
+                    # Check tmp-disk capacity (computed once above)
+                    if not disk_ok:
+                        break  # Wait for running COLMAP(s) to free tmp space
+
                     # Launch COLMAP
                     pid = launch_colmap(material, info["folder_path"], gpu_id, state, config)
                     if pid:
@@ -1285,19 +1382,23 @@ def streaming_mode(dataset_root: str, config: Config, auto_detect: bool = False,
                 running_colmap = statuses.count(JobStatus.COLMAP_RUNNING)
                 running_shape = statuses.count(JobStatus.SHAPE_MATCHING_RUNNING)
                 not_started = statuses.count(JobStatus.NOT_STARTED)
-                
+
                 # Count ready vs not ready materials
-                ready_count = sum(1 for info in state["materials"].values() 
+                ready_count = sum(1 for info in state["materials"].values()
                                  if info["status"] == JobStatus.NOT_STARTED and info.get("ready", False))
                 not_ready_count = not_started - ready_count
-                
+
+                warn_count = sum(1 for info in state["materials"].values()
+                                 if info.get("warnings"))
+
                 print(f"[{datetime.now().strftime('%H:%M:%S')}] Status: "
                       f"COLMAP: {running_colmap}, "
                       f"Shape: {running_shape}, "
                       f"Ready: {ready_count}, "
                       f"Not ready: {not_ready_count}, "
                       f"Completed: {completed}/{total}, "
-                      f"Failed: {failed}")
+                      f"Failed: {failed}, "
+                      f"Warnings: {warn_count}")
             
             # Save state periodically
             save_state(state, config.STATE_FILE)
@@ -1389,7 +1490,7 @@ def manual_mode(dataset_root: str, n_folders: int, config: Config, retry_failed:
         if info["status"] == JobStatus.NOT_STARTED:
             # Round-robin GPU assignment
             gpu_id = config.GPU_IDS[i % len(config.GPU_IDS)]
-            
+
             # Check GPU availability (memory + utilization)
             is_available, reason = gpu_monitor.is_gpu_available(
                 gpu_id,
@@ -1409,7 +1510,19 @@ def manual_mode(dataset_root: str, n_folders: int, config: Config, retry_failed:
                 if not is_available:
                     print(f"Skipping material {material} due to GPU unavailability: {reason}")
                     continue
-            
+
+            # Block until the tmp filesystem has MIN_FREE_DISK_GB free. In
+            # manual mode we haven't started polling yet, so we sleep-and-
+            # retry here instead of breaking out of the loop.
+            disk_ok, free_gb = check_disk_capacity(config)
+            while not disk_ok:
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] "
+                      f"Disk gate: {free_gb:.1f} GB free at "
+                      f"{config.COLMAP_TMP_BASE} < {config.MIN_FREE_DISK_GB:.0f} GB — "
+                      f"waiting 30s for running COLMAP(s) to finish")
+                time.sleep(30)
+                disk_ok, free_gb = check_disk_capacity(config)
+
             # Launch COLMAP
             pid = launch_colmap(material, info["folder_path"], gpu_id, state, config)
             if pid:
@@ -1445,11 +1558,15 @@ def manual_mode(dataset_root: str, n_folders: int, config: Config, retry_failed:
                 print("="*60 + "\n")
                 break
             
+            warn_count = sum(1 for m in selected_materials
+                             if state["materials"][m].get("warnings"))
+
             print(f"[{datetime.now().strftime('%H:%M:%S')}] Status: "
                   f"COLMAP running: {running_colmap}, "
                   f"Shape matching running: {running_shape}, "
                   f"Completed: {completed}/{len(selected_materials)}, "
-                  f"Failed: {failed}")
+                  f"Failed: {failed}, "
+                  f"Warnings: {warn_count}")
             
             save_state(state, config.STATE_FILE)
             time.sleep(config.POLL_INTERVAL_SEC)
@@ -1511,7 +1628,20 @@ def show_status(config: Config):
                 print(f"  Material {material}: COLMAP on GPU {info.get('gpu', '?')} (PID: {info.get('pid', '?')})")
             else:
                 print(f"  Material {material}: Shape matching with {info.get('workers', '?')} workers (PID: {info.get('pid', '?')})")
-    
+
+    # Show completed-with-warnings materials
+    warn_mats = [(m, info) for m, info in
+                 sorted(state["materials"].items(), key=lambda x: int(x[0]))
+                 if info.get("warnings")]
+    if warn_mats:
+        print()
+        print(f"Warnings ({len(warn_mats)} materials):")
+        for material, info in warn_mats:
+            codes = ",".join(w["code"] for w in info["warnings"])
+            print(f"  Material {material} [{codes}]")
+            for w in info["warnings"]:
+                print(f"    - {w['code']}: {w['msg']}")
+
     print("="*60 + "\n")
 
 # ==================== Main ====================
@@ -1556,6 +1686,10 @@ Examples:
     parser.add_argument("--force_redo", type=str, nargs="+", default=None,
                        help="Force redo COLMAP + shape matching for these material IDs (e.g. --force_redo 42 105 210). "
                             "Resets them to NOT_STARTED regardless of current status.")
+    parser.add_argument("--force_redo_file", type=str, default=None,
+                       help="Path to JSON file with materials to force-redo. Accepts either "
+                            "a flat list [1,2,3] or an object with a 'materials' key "
+                            "(e.g. recon/scheduler/redo_list.json). Merged with --force_redo.")
     
     # Optional configuration overrides
     parser.add_argument("--max_colmap_per_gpu", type=int, help=f"Max COLMAP jobs per GPU (default: {Config.MAX_COLMAP_PER_GPU})")
@@ -1607,12 +1741,37 @@ Examples:
     retry_failed = not args.no_retry_failed
     # Determine restart behavior (default is True = always restart from COLMAP)
     force_restart_colmap = not args.retry_shape_matching_only
-    
+
+    # Merge --force_redo and --force_redo_file into a single list of str IDs
+    force_redo_ids = list(args.force_redo) if args.force_redo else []
+    if args.force_redo_file:
+        if not os.path.exists(args.force_redo_file):
+            parser.error(f"--force_redo_file not found: {args.force_redo_file}")
+        with open(args.force_redo_file) as f:
+            payload = json.load(f)
+        if isinstance(payload, list):
+            file_ids = payload
+        elif isinstance(payload, dict) and "materials" in payload:
+            file_ids = payload["materials"]
+        else:
+            parser.error(f"--force_redo_file: expected a list or object with "
+                         f"'materials' key, got {type(payload).__name__}")
+        force_redo_ids.extend(str(m) for m in file_ids)
+        print(f"Loaded {len(file_ids)} material(s) to force-redo from "
+              f"{args.force_redo_file}")
+    # Deduplicate while preserving order
+    if force_redo_ids:
+        seen = set()
+        force_redo_ids = [x for x in force_redo_ids
+                          if not (x in seen or seen.add(x))]
+    else:
+        force_redo_ids = None
+
     # Run scheduler
     if args.mode == "streaming":
-        streaming_mode(args.dataset, config, auto_detect=args.auto_detect, retry_failed=retry_failed, force_restart_colmap=force_restart_colmap, force_redo_ids=args.force_redo)
+        streaming_mode(args.dataset, config, auto_detect=args.auto_detect, retry_failed=retry_failed, force_restart_colmap=force_restart_colmap, force_redo_ids=force_redo_ids)
     elif args.mode == "manual":
-        manual_mode(args.dataset, args.n_folders, config, retry_failed=retry_failed, force_restart_colmap=force_restart_colmap, force_redo_ids=args.force_redo)
+        manual_mode(args.dataset, args.n_folders, config, retry_failed=retry_failed, force_restart_colmap=force_restart_colmap, force_redo_ids=force_redo_ids)
 
 if __name__ == "__main__":
     main()

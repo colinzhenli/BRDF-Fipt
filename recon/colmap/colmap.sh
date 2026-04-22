@@ -40,20 +40,10 @@ CUDA_VISIBLE_DEVICES=$gpu_id colmap mapper \
     --image_path=${IMG_DIR} \
     --output_path=${TMP_PROJECT}/sparse
 
-echo "== Bundle adjust =="
+echo "== Using submodel 0 (largest) as final reconstruction =="
+# model_merger silently fails when submodels don't share images, producing a
+# corrupt merged model. Keep only sparse/0 (the largest submodel).
 cp ${TMP_PROJECT}/sparse/0/*.bin ${TMP_PROJECT}/sparse/
-for path in ${TMP_PROJECT}/sparse/*/; do
-    m=$(basename ${path})
-    if [ ${m} != "0" ]; then
-        colmap model_merger \
-            --input_path1=${TMP_PROJECT}/sparse \
-            --input_path2=${TMP_PROJECT}/sparse/${m} \
-            --output_path=${TMP_PROJECT}/sparse
-        colmap bundle_adjuster \
-            --input_path=${TMP_PROJECT}/sparse \
-            --output_path=${TMP_PROJECT}/sparse
-    fi
-done
 
 echo "== Convert sparse model to text =="
 colmap model_converter \

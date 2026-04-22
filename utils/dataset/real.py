@@ -198,6 +198,7 @@ def load_metadata(colmap_camera, metadata_path, camera_metadata_path, gt_folder,
         print(f"Debug mode: {len(selected_metadata)} images selected")
     else:
         if use_fixed_val:
+            Shuffle_val = True
             # Use first fixed_val_num images for validation, rest for training
             # Split first, then permute each set separately
             if split == 'val':
@@ -207,7 +208,8 @@ def load_metadata(colmap_camera, metadata_path, camera_metadata_path, gt_folder,
                 # selected_metadata = metadata
                 selected_metadata = metadata[fixed_val_num:]
                 print(f"Training set: {len(selected_metadata)} images (after first {fixed_val_num})")
-                # Permute the selected metadata
+            # Permute the selected metadata (both val and train when Shuffle_val=True)
+            if Shuffle_val or split != 'val':
                 perm_indices = torch.randperm(len(selected_metadata)).tolist()
                 selected_metadata = [selected_metadata[i] for i in perm_indices]
         else:

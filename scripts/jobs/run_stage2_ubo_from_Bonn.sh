@@ -1,11 +1,11 @@
 #!/bin/bash
 
-export CUDA_VISIBLE_DEVICES=3
+export CUDA_VISIBLE_DEVICES=2
 
 python main.py \
     dataset_folder=/mnt/data/colin/colin/Bonn_BTF \
     data=ubo \
-    data.btf_filename=carpet07_W400xH400_L151xV151.btf \
+    data.btf_filename=fabric11_W400xH400_L151xV151.btf \
     data.rays_num=131072 \
     data.valid_num=20 \
     renderer=multiarea_emitter \
@@ -17,7 +17,7 @@ python main.py \
     material.decoder.use_color_decomp=False \
     material.decoder.degree=3 \
     material.decoder.smooth_reg=False \
-    experiment_name=Stage-2_UBO_carpet07_from-Bonn_Logrel-Learnable-factor_run_2 \
+    experiment_name=Stage-2_UBO_fabric11_from-Bonn-With-pan-lls_Logrel-Learnable-factor_run_2 \
     model.optimizer.name=Adam \
     model.optimizer.lr=0.001 \
     model.optimizer.decoder_lr=1e-4 \
@@ -33,4 +33,4 @@ python main.py \
     model.trainer.limit_train_batches=512 \
     material.latent_dim=24 \
     material.different_decoder=False \
-    model.ckpt_path=/media/raid/cloth/output/BRDF/Bonn-Theia2/Continue_Stage-1_Logrel_Softplus_Fir_decoder-lr-1e-4_All-data_Latent-24_Color_No-Chunk-All-RGB-data_run_2/training/model_0.20_0.20/last_decoder_only.ckpt
+    model.ckpt_path=/media/raid/cloth/output/BRDF/Bonn-Theia2/Stage-1_Logrel_Softplus_Fir_decoder-lr-1e-4_All-data_Latent-24_Color_All-RGB-Pan-0.5_LLS_0.2_run_1/training/training/model_0.20_0.20/last_decoder_only.ckpt

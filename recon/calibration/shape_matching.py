@@ -64,10 +64,10 @@ def T_about_point(R, p):
 
 def parse_colmap_images_txt(images):
     """
-    images (read_model output) → dict[name] = 4x4 c2w
+    images (read_model output) → dict[name] = (colmap_image_id, 4x4 c2w)
     """
     cam_c2w_dict = {}
-    for img in images.values():
+    for img_id, img in images.items():
         rotation = qvec2rotmat(img.qvec)
         translation = img.tvec.reshape(3, 1)
         w2c = np.concatenate([rotation, translation], 1)
@@ -80,7 +80,7 @@ def parse_colmap_images_txt(images):
         ], dtype=np.float64)
         w2c = opencv_to_opengl @ w2c
         c2w = np.linalg.inv(w2c)
-        cam_c2w_dict[img.name] = c2w
+        cam_c2w_dict[img.name] = (img_id, c2w)
     return cam_c2w_dict
 
 def find_matching_entry(fname, scan_log):
@@ -160,8 +160,8 @@ def load_robot_poses_c2w0(scan_log_path, images, R_c2g, t_c2g, rotation_center, 
 
     colmap_c2w_dict = parse_colmap_images_txt(images)
 
-    robot_poses, cam_c2w, scan_id = [], [], []
-    for fname, c2w in colmap_c2w_dict.items():
+    robot_poses, cam_c2w, scan_id, image_ids = [], [], [], []
+    for fname, (img_id, c2w) in colmap_c2w_dict.items():
 
         idx = find_matching_entry(fname, scan_log)
         if idx is None:
@@ -175,11 +175,12 @@ def load_robot_poses_c2w0(scan_log_path, images, R_c2g, t_c2g, rotation_center, 
         T = rotated_c2w(entry, R_c2g, t_c2g, rotation_center, rotation_axis)
         robot_poses.append(T)
         scan_id.append(idx)
+        image_ids.append(img_id)
 
     save_unmatched_scan_ids(colmap_c2w_dict, scan_log, unmatched_scan_ids_path)
-    
+
     print(f"Matched {len(robot_poses)}/{len(colmap_c2w_dict)} frames.")
-    return robot_poses, cam_c2w, scan_id
+    return robot_poses, cam_c2w, scan_id, image_ids
 
 
 # -------------------- world->base estimation (your pipeline kept) --------------------
@@ -190,7 +191,7 @@ def estimate_world2base(scan_log_path, images, R_c2g, t_c2g, rotation_center, ro
     If solve_center_xy=True, first refines ROTATION_CENTER[0:2] from data.
     """
     # Now build your matched robot & colmap poses using the (possibly) updated center
-    robot_T, cam_c2w, scan_id = load_robot_poses_c2w0(scan_log_path, images, R_c2g, t_c2g, rotation_center, rotation_axis, unmatched_scan_ids_path)
+    robot_T, cam_c2w, scan_id, image_ids = load_robot_poses_c2w0(scan_log_path, images, R_c2g, t_c2g, rotation_center, rotation_axis, unmatched_scan_ids_path)
 
     # collect centres
     cam_centres_base, cam_centres_world = [], []
@@ -213,7 +214,48 @@ def estimate_world2base(scan_log_path, images, R_c2g, t_c2g, rotation_center, ro
     mean_err = np.mean(np.linalg.norm(W2B - cam_centres_base, axis=1))
     print(f"[umeyama] mean error: {mean_err:.6f} m  (N={len(cam_centres_world)})")
 
-    return T_BW, cam_c2w, robot_T, s, scan_id
+    return T_BW, cam_c2w, robot_T, s, scan_id, image_ids
+
+
+def filter_high_error_images(cam_c2w, robot_T, scan_id, image_ids, T_BW, threshold_mm=16.0):
+    """Remove images whose per-image translation error exceeds threshold_mm.
+
+    These images are treated exactly like never-registered scans in downstream
+    outputs (rotated_camera.json, observations_structured.npz). Their excluded
+    records are returned so callers can persist them to JSON.
+    """
+    threshold_m = threshold_mm / 1000.0
+    keep_cam, keep_robot, keep_scan, keep_ids = [], [], [], []
+    excluded = []
+
+    for C2W, R_pose, sid, iid in zip(cam_c2w, robot_T, scan_id, image_ids):
+        C2B = T_BW @ np.asarray(C2W)
+        err_m = float(np.linalg.norm(C2B[:3, 3] - np.asarray(R_pose)[:3, 3]))
+        if err_m <= threshold_m:
+            keep_cam.append(C2W)
+            keep_robot.append(R_pose)
+            keep_scan.append(sid)
+            keep_ids.append(iid)
+        else:
+            excluded.append({
+                'colmap_image_id': int(iid),
+                'scan_log_index': int(sid),
+                'translation_error_m': err_m,
+                'translation_error_mm': err_m * 1000.0,
+            })
+
+    n_excl = len(excluded)
+    n_total = len(cam_c2w)
+    print(f"\n[filter] Removing {n_excl}/{n_total} images with per-image "
+          f"translation error > {threshold_mm:.1f} mm")
+    for ex in excluded[:50]:
+        print(f"  excluded: scan_log_index={ex['scan_log_index']} "
+              f"(colmap img_id={ex['colmap_image_id']}) "
+              f"error={ex['translation_error_mm']:.1f} mm")
+    if n_excl > 50:
+        print(f"  ... and {n_excl - 50} more")
+
+    return keep_cam, keep_robot, keep_scan, keep_ids, excluded
 
 # -------------------- mesh transform & camera log save (kept) --------------------
 
@@ -871,227 +913,131 @@ def build_and_save_structured_observations(
     }
 
 
-def save_points_pixel_data_reprojection(pcd_filtered, points_world_filtered, cameras, images, hdr_path, observations_folder, num_workers=32, num_chunks=50):
+def save_points_pixel_data_reprojection(pcd_filtered, points_world_filtered, cameras, images, hdr_path, material_folder, num_workers=32):
     """
     Reproject filtered 3D points to all camera views with SIMPLE_RADIAL distortion.
     Uses multiprocessing to speed up processing.
-    
+
     Args:
         pcd_filtered: Open3D pointcloud (filtered and transformed to base frame) - used for getting base frame coordinates
         points_world_filtered: (N, 3) array of filtered points in COLMAP world frame (same order as pcd_filtered)
         cameras: dict of COLMAP Camera objects (from read_cameras_binary/text)
         images: dict of COLMAP Image objects (from read_images_binary/text)
         hdr_path: Path to folder containing HDR images
-        observations_folder: Path to folder where observation chunks will be saved
+        material_folder: Path to the material's folder (where outputs are written)
         num_workers: Number of parallel workers
-        num_chunks: Number of chunks to split observations into
-    
+
     Saves:
-        - npz files in observations_folder, each containing a chunk of shuffled observations
-          with columns: [x, y, z, image_id, pixel_x, pixel_y, r, g, b, point_id]
-        - point_metadata.json in parent folder containing num_points and num_observations
+        - observations_structured.npz in material_folder (dense (K, V, 3) RGB format)
+        - point_positions.npz in material_folder (unique point_id -> xyz)
+        - point_metadata.json in material_folder (num_points and num_observations)
     """
     import cv2
     import os
     from tqdm import tqdm
     from multiprocessing import Pool
-    
+
     print(f"\n{'='*60}")
     print(f"Reprojecting Points to All Camera Views (Multiprocessing)")
     print(f"{'='*60}")
-    
+
     # Get points_base and points_world with guaranteed matching indices
     points_base = np.asarray(pcd_filtered.points).astype(np.float32)  # (N, 3) in base frame
     points_world = points_world_filtered.astype(np.float32)  # (N, 3) in COLMAP world frame - SAME ORDER!
-    
+
     num_points = len(points_world)
-    
+
     print(f"Filtered points to reproject: {num_points:,}")
     print(f"Total cameras: {len(images)}")
     print(f"Using {num_workers} parallel workers")
-    
+
     # Split camera IDs into batches for better progress tracking
     img_ids = list(images.keys())
     camera_batch_size = max(1, len(img_ids) // num_workers)  # Process cameras in batches based on workers
     batches = [img_ids[i:i+camera_batch_size] for i in range(0, len(img_ids), camera_batch_size)]
-    
+
     print(f"Split into {len(batches)} batches (~{camera_batch_size} cameras each)")
-    
+
     # Prepare arguments for each batch
     batch_args = [
         (batch, images, cameras, points_world, points_base, hdr_path)
         for batch in batches
     ]
-    
+
     # Process batches in parallel
     print("\nProcessing cameras in parallel...")
     all_observations = []
-    
+
     with Pool(processes=num_workers) as pool:
          results = list(tqdm(
             pool.imap(_process_camera_batch, batch_args),
             total=len(batch_args),
             desc="Processing batches"
         ))
-    
+
     # Combine results from all batches (concatenate numpy arrays)
     for batch_result in results:
         all_observations.extend(batch_result)
-    
+
     # Convert to numpy array by stacking all observation arrays
     if all_observations:
         observations = np.vstack(all_observations)  # (M, 10)
 
     total_obs = len(observations)
-    
+
     print(f"\nTotal valid observations: {total_obs:,}")
     print(f"Average observations per point: {total_obs / num_points:.2f}")
     print(f"Average observations per camera: {total_obs / len(images):.2f}")
-    
+
     # Calculate storage size
     storage_size_mb = observations.nbytes / (1024 * 1024)
     print(f"Uncompressed size: {storage_size_mb:.2f} MB")
-    
-    # Save to chunks
-    save_observations_to_chunks(observations, observations_folder, num_chunks=num_chunks, num_workers=num_workers)
-    
+
     # Extract unique point_id -> xyz mapping from observations
     import json
     point_ids = observations[:, 9].astype(np.int64)
     unique_pids, first_idx = np.unique(point_ids, return_index=True)
     unique_xyz = observations[first_idx, :3].astype(np.float32)
-    
+
     # Save as (num_unique, 4): [point_id, x, y, z]
-    material_folder = os.path.dirname(observations_folder)
     positions_path = os.path.join(material_folder, 'point_positions.npz')
     np.savez(positions_path, point_ids=unique_pids, positions=unique_xyz)
     print(f"\nSaved point positions to: {positions_path}")
     print(f"  Unique points: {len(unique_pids)} / {num_points}")
-    
+
     # Save point metadata JSON
     metadata_path = os.path.join(material_folder, 'point_metadata.json')
-    
+
     point_metadata = {
         'num_points': int(num_points),
         'num_observations': int(total_obs),
-        'observations_folder': os.path.basename(observations_folder)
     }
-    
+
     with open(metadata_path, 'w') as f:
         json.dump(point_metadata, f, indent=2)
-    
+
     print(f"\nSaved point metadata to: {metadata_path}")
     print(f"  num_points: {num_points}")
     print(f"  num_observations: {total_obs}")
 
     # Build observations_structured.npz inline from the in-memory observations array.
-    # This is the dense (K, V, 3) format used downstream by training; previously it was
-    # produced by scripts/reformat_data/convert_single.py as a separate step.
-    # Skipping requires the chunks anyway, so we keep both paths in sync.
+    # This is the dense (K, V, 3) format used downstream by training.
     structured_path = os.path.join(material_folder, 'observations_structured.npz')
     scan_log_path = os.path.join(material_folder, 'scan_log.json')
     if os.path.exists(scan_log_path):
-        try:
-            build_and_save_structured_observations(
-                observations=observations,
-                unique_pids=unique_pids,
-                unique_xyz=unique_xyz,
-                scan_log_path=scan_log_path,
-                output_path=structured_path,
-                verbose=True,
-            )
-        except Exception as e:
-            # Don't fail the whole shape_matching run if the structured save errors;
-            # the chunks are already on disk and convert_single.py can recover later.
-            print(f"WARNING: failed to write {structured_path}: {e}")
+        build_and_save_structured_observations(
+            observations=observations,
+            unique_pids=unique_pids,
+            unique_xyz=unique_xyz,
+            scan_log_path=scan_log_path,
+            output_path=structured_path,
+            verbose=True,
+        )
     else:
         print(f"WARNING: scan_log.json not found at {scan_log_path}; "
               f"skipping observations_structured.npz")
 
 
-def _save_chunk(args):
-    """
-    Worker function to save a single chunk.
-    """
-    import os
-    chunk_data, chunk_idx, output_folder = args
-    
-    # Save chunk
-    output_path = os.path.join(output_folder, f"observations_chunk_{chunk_idx:02d}.npz")
-    np.savez_compressed(output_path, observations=chunk_data)
-    
-    # Return stats
-    file_size_mb = os.path.getsize(output_path) / (1024 * 1024)
-    return chunk_idx, len(chunk_data), file_size_mb
-
-
-def save_observations_to_chunks(observations, output_folder, num_chunks=50, num_workers=32):
-    """
-    Shuffle observations via index permutation and save to multiple npz files using multiprocessing.
-    
-    Args:
-        observations: (N, 9) numpy array
-        output_folder: Path to output folder
-        num_chunks: Number of files to split into
-        num_workers: Number of parallel workers for saving (default: 32)
-    """
-    import os
-    from tqdm import tqdm
-    from multiprocessing import Pool
-    
-    print(f"\n{'='*60}")
-    print(f"Saving Observations to Chunks (Multiprocessing)")
-    print(f"{'='*60}")
-    
-    # Create output folder
-    os.makedirs(output_folder, exist_ok=True)
-    
-    # Randomly shuffle indices instead of the whole array (much faster!)
-    total_obs = len(observations)
-    print(f"Total observations: {total_obs:,}")
-    print(f"Number of chunks: {num_chunks}")
-    print(f"Using {num_workers} parallel workers")
-    
-    print("Shuffling via index permutation...")
-    shuffled_indices = np.random.permutation(total_obs)
-    
-    # Split shuffled indices into chunks
-    chunk_size = int(np.ceil(total_obs / num_chunks))
-    print(f"Approximate observations per chunk: {chunk_size:,}")
-    
-    # Prepare chunk data and arguments for parallel processing
-    print("\nPreparing chunks for parallel saving...")
-    chunk_args = []
-    for i in range(num_chunks):
-        start_idx = i * chunk_size
-        end_idx = min((i + 1) * chunk_size, total_obs)
-        
-        if start_idx >= total_obs:
-            break
-        
-        # Get chunk using shuffled indices (already shuffled, no need to shuffle again!)
-        chunk_indices = shuffled_indices[start_idx:end_idx]
-        chunk_data = observations[chunk_indices].copy()  # Make a copy for each worker
-        
-        chunk_args.append((chunk_data, i, output_folder))
-    
-    # Save chunks in parallel
-    print(f"\nSaving {len(chunk_args)} chunks in parallel...")
-    with Pool(processes=num_workers) as pool:
-        results = list(tqdm(
-            pool.imap(_save_chunk, chunk_args),
-            total=len(chunk_args),
-            desc="Saving chunks"
-        ))
-    
-    # Print results
-    print("\nChunk Summary:")
-    for chunk_idx, chunk_len, file_size_mb in sorted(results):
-        print(f"  Chunk {chunk_idx:02d}: {chunk_len:,} observations, {file_size_mb:.2f} MB")
-    
-    print(f"\nSaved {len(results)} chunks to: {output_folder}")
-    print(f"{'='*60}\n")
-    
 def _debayer_single_image(args):
     """Worker function to debayer a single mosaic HDR image."""
     import cv2
@@ -1181,20 +1127,38 @@ def debayer_mosaic_hdr(mosaic_hdr_path, hdr_path, num_workers=32):
 
 # -------------------- main --------------------
 
-def main_process(cfg, cameras, images, points3D=None, scan_log_path=None, mesh_path=None, camera_log_path=None, hdr_path=None, mosaic_hdr_path=None, observations_folder=None, pointcloud_path=None, bbox_json_path=None, unmatched_scan_ids_path=None, z_outlier_percentile=5.0, num_workers=32, num_chunks=50):
+def main_process(cfg, cameras, images, points3D=None, scan_log_path=None, mesh_path=None, camera_log_path=None, hdr_path=None, mosaic_hdr_path=None, pointcloud_path=None, bbox_json_path=None, unmatched_scan_ids_path=None, excluded_scan_ids_path=None, error_threshold_mm=16.0, z_outlier_percentile=5.0, num_workers=32):
     # Extract parameters from config
     R_c2g = np.array(cfg.camera.R_c2g)
     t_c2g = np.array(cfg.camera.t_c2g)
     rotation_center = np.array(cfg.emitter.turntable.center)
     rotation_axis = np.array(cfg.emitter.turntable.axis)
-    
-    T_BW, cam_c2w, robot_T, s, scan_id = estimate_world2base(scan_log_path, images, R_c2g, t_c2g, rotation_center, rotation_axis, unmatched_scan_ids_path)
-    
+
+    T_BW, cam_c2w, robot_T, s, scan_id, image_ids = estimate_world2base(
+        scan_log_path, images, R_c2g, t_c2g, rotation_center, rotation_axis,
+        unmatched_scan_ids_path)
+
+    # Filter out high-error images. They are treated identically to never-registered
+    # scans: dropped from rotated_camera.json and reprojection (so their rows in
+    # observations_structured.npz stay zero).
+    cam_c2w, robot_T, scan_id, image_ids, excluded = filter_high_error_images(
+        cam_c2w, robot_T, scan_id, image_ids, T_BW, threshold_mm=error_threshold_mm)
+
+    if excluded_scan_ids_path is not None:
+        with open(excluded_scan_ids_path, 'w') as f:
+            json.dump(excluded, f, indent=2)
+        print(f"Saved {len(excluded)} excluded (high-error) records to: {excluded_scan_ids_path}")
+
+    # Drop excluded images from COLMAP dict before reprojection.
+    excluded_img_ids = {ex['colmap_image_id'] for ex in excluded}
+    images = {k: v for k, v in images.items() if k not in excluded_img_ids}
+
     material_id = int(Path(camera_log_path).parent.name)
-    
+    material_folder = str(Path(camera_log_path).parent)
+
     if mesh_path is not None:
         transform_mesh_to_base(mesh_path, T_BW, output_path=str(Path(mesh_path).with_name(Path(mesh_path).stem + "_transformed.ply")))
-    
+
     if mosaic_hdr_path is not None and Path(mosaic_hdr_path).is_dir() and not Path(hdr_path).exists():
         debayer_mosaic_hdr(mosaic_hdr_path, hdr_path, num_workers=num_workers)
     # Process pointcloud if path provided
@@ -1204,8 +1168,8 @@ def main_process(cfg, cameras, images, points3D=None, scan_log_path=None, mesh_p
             pointcloud_path, T_BW, cfg, output_path=output_pcd_path, z_outlier_percentile=z_outlier_percentile,
             material_id=material_id,
         )
-        
-        save_points_pixel_data_reprojection(pcd_filtered, points_world_filtered, cameras, images, hdr_path, observations_folder, num_workers=num_workers, num_chunks=num_chunks)
+
+        save_points_pixel_data_reprojection(pcd_filtered, points_world_filtered, cameras, images, hdr_path, material_folder, num_workers=num_workers)
 
         # Save bounding box info to a JSON file
         bbox_info = {
@@ -1218,7 +1182,7 @@ def main_process(cfg, cameras, images, points3D=None, scan_log_path=None, mesh_p
         with open(bbox_json_path, 'w') as f:
             json.dump(bbox_info, f, indent=2)
         print(f"Bounding box info saved to: {bbox_json_path}")
-    
+
     save_camera_log_from_colmap(cam_c2w, robot_T, s, T_BW, scan_id, camera_log_path)
 
 @hydra.main(version_base=None, config_path="../../config/renderer", config_name="realcapture_area_emitter")
@@ -1226,9 +1190,11 @@ def main(cfg: DictConfig) -> None:
     # Get parameters from Hydra config (can be overridden via command line)
     folder_path = cfg.shape_matching.folder_path
     num_workers = cfg.shape_matching.num_workers
-    num_chunks = 50
     z_outlier_percentile = cfg.shape_matching.z_outlier_percentile
-    
+    # Threshold on per-image translation error; images above this are dropped from
+    # rotated_camera.json and reprojection (treated like never-registered scans).
+    error_threshold_mm = getattr(cfg.shape_matching, 'error_threshold_mm', 16.0)
+
     # Build paths from folder_path
     scan_log_path = os.path.join(folder_path, "scan_log.json")
     mesh_path = None  # Optional mesh transformation
@@ -1237,19 +1203,20 @@ def main(cfg: DictConfig) -> None:
     points3D_path = os.path.join(model_path, "points3D.bin")
     mosaic_hdr_path = os.path.join(folder_path, "hdr_raw")
     hdr_path = os.path.join(folder_path, "hdr")
-    observations_folder = os.path.join(folder_path, "observations")
     camera_log_path = os.path.join(folder_path, "rotated_camera.json")
     bbox_json_path = os.path.join(folder_path, "bbox.json")
     unmatched_scan_ids_path = os.path.join(folder_path, "unmatched_scan_ids.json")
+    excluded_scan_ids_path = os.path.join(folder_path, "excluded_high_error_scan_ids.json")
     print(f"Unmatched scan ids path: {unmatched_scan_ids_path}")
+    print(f"Excluded (high-error) scan ids path: {excluded_scan_ids_path}")
     print(f"Processing folder: {folder_path}")
     print(f"Number of workers: {num_workers}")
-    print(f"Number of chunks: {num_chunks}")
     print(f"Z outlier percentile: {z_outlier_percentile}")
+    print(f"Per-image error threshold: {error_threshold_mm:.1f} mm")
 
     # Load COLMAP data (cameras, images, points3D)
     cameras, images = read_model(model_path, ext=".bin")
-    
+
     # Load points3D with format detection
     if detect_model_format(model_path, ".bin"):
         points3D = read_points3D_binary(points3D_path)
@@ -1257,12 +1224,16 @@ def main(cfg: DictConfig) -> None:
         points3D = read_points3D_text(points3D_path)
     else:
         raise ValueError(f"Could not detect COLMAP model format in {model_path}")
-    
+
     print(f"Loaded {len(points3D)} 3D points from COLMAP")
 
-    main_process(cfg, cameras, images, points3D=points3D, scan_log_path=scan_log_path, mesh_path=mesh_path, 
-                 camera_log_path=camera_log_path, hdr_path=hdr_path, mosaic_hdr_path=mosaic_hdr_path, observations_folder=observations_folder, 
-                 pointcloud_path=pointcloud_path, bbox_json_path=bbox_json_path, unmatched_scan_ids_path=unmatched_scan_ids_path, z_outlier_percentile=z_outlier_percentile, num_workers=num_workers, num_chunks=num_chunks)
+    main_process(cfg, cameras, images, points3D=points3D, scan_log_path=scan_log_path, mesh_path=mesh_path,
+                 camera_log_path=camera_log_path, hdr_path=hdr_path, mosaic_hdr_path=mosaic_hdr_path,
+                 pointcloud_path=pointcloud_path, bbox_json_path=bbox_json_path,
+                 unmatched_scan_ids_path=unmatched_scan_ids_path,
+                 excluded_scan_ids_path=excluded_scan_ids_path,
+                 error_threshold_mm=error_threshold_mm,
+                 z_outlier_percentile=z_outlier_percentile, num_workers=num_workers)
     print(f"Finished shape matching for {folder_path}")
 
 if __name__ == "__main__":
