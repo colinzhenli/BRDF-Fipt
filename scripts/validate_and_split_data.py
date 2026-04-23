@@ -8,6 +8,7 @@ Usage:
 """
 
 import argparse
+import json
 import os
 import random
 import sys
@@ -123,6 +124,32 @@ def get_material_id_from_folder(folder_name: str) -> int | None:
     if not folder_name.isdigit():
         return None
     return int(folder_name)
+
+
+def load_warning_mat_ids(state_path: Path) -> set[int]:
+    """
+    Return material IDs with non-empty `warnings` in a scheduler_state.json.
+
+    These are materials where the scheduler's quality check flagged issues
+    (e.g. MANY_UNMATCHED scans). They should never enter train or test lists.
+    """
+    try:
+        with open(state_path) as f:
+            state = json.load(f)
+    except (OSError, json.JSONDecodeError) as e:
+        print(f"[WARN] Could not read {state_path}: {e}")
+        return set()
+    mats = state.get('materials', state)
+    bad: set[int] = set()
+    for k, v in mats.items():
+        if not isinstance(v, dict):
+            continue
+        if v.get('warnings') or v.get('quality_warnings'):
+            try:
+                bad.add(int(k))
+            except (TypeError, ValueError):
+                pass
+    return bad
 
 
 def validate_data_folder(data_folder: Path, verbose: bool = True) -> list[int]:
@@ -268,7 +295,18 @@ def main():
     
     # Validate all material folders
     valid_ids = validate_data_folder(data_folder, verbose=not args.quiet)
-    
+
+    # Drop materials flagged by the scheduler's quality check (non-empty `warnings`).
+    # These must never appear in the training or test list.
+    state_path = data_folder / "scheduler_state.json"
+    if state_path.is_file():
+        warning_ids = load_warning_mat_ids(state_path)
+        dropped = sorted(m for m in valid_ids if m in warning_ids)
+        if dropped:
+            valid_ids = [m for m in valid_ids if m not in warning_ids]
+            print(f"\nExcluded {len(dropped)} materials with scheduler warnings "
+                  f"(from {state_path.name}): {dropped}")
+
     if len(valid_ids) == 0:
         print("Error: No valid material folders found!")
         return 1

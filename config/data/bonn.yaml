@@ -12,6 +12,7 @@ pixel: True
 ray_diff: True
 custom_c2w: True
 filter_observations: False # whether to filter observations by XY region
+point_subsample_ratio: 1.0 # fraction of pixels to keep per material (1.0 = all); used by BonnDataset/BonnValDataset and mirrored into cfg.material.point_subsample_ratio
 
 metadata_path: ${dataset_folder}/scan_log.json
 # metadata_path: /media/raid/cloth/capture_data/BRDF_recon_Oct21_color_checker_5_distance_grey_center/scan_log.json

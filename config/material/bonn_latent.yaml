@@ -12,6 +12,9 @@ use_pos_enc: True
 different_decoder: False
 learnable_factor: False
 init_std: 0.1
+# Must match cfg.data.point_subsample_ratio — BonnDataset/BonnValDataset compact
+# point_ids to a dense 0..N_sub-1 range and the latent bank must be sized accordingly.
+point_subsample_ratio: ${data.point_subsample_ratio}
 
 single_material_id: ${data.overfit_mat_id}
 optimizer:

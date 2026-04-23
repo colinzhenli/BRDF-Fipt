@@ -1,6 +1,6 @@
 #!/bin/bash
 
-export CUDA_VISIBLE_DEVICES=1
+export CUDA_VISIBLE_DEVICES=2
 
 python main.py \
     dataset_folder=/media/raid/cloth/Bonn_train \
@@ -10,17 +10,18 @@ python main.py \
     data.use_lls=True \
     data.debug=False \
     data.debug_num=200 \
-    data.rays_num=131072 \
+    data.rays_num=600000 \
+    data.point_subsample_ratio=0.1 \
     renderer=multiarea_emitter \
     material=bonn_latent \
-    experiment_name=Stage-1_Bonn_Theia2_Debug_1 \
+    experiment_name=Stage-1_Bonn_Theia2_GPU-Mem_1 \
     model.optimizer.reset_latent_momentum_on_chunk_switch=False \
     model.optimizer.name=Adam8bit \
     model.loss.recon_loss.name=logrel \
     model.loss.recon_loss.log_space.logrel_ref=0.05 \
     model.loss.reg_loss.weight=0.0 \
-    model.loss.pan_weight=0.5 \
-    model.loss.lls_weight=0.5 \
+    model.loss.pan_weight=1.0 \
+    model.loss.lls_weight=1.0 \
     model.lls_spp=4 \
     model.stage=1 \
     model.test=False \
@@ -28,7 +29,7 @@ python main.py \
     model.trainer.max_epochs=3000 \
     model.optimizer.decoder_lr=1e-4 \
     model.trainer.limit_train_batches=512 \
-    model.trainer.check_val_every_n_epoch=100 \
+    model.trainer.check_val_every_n_epoch=1 \
     material.decoder.use_skip_connection=True \
     material.decoder.use_film=False \
     material.decoder.use_color_decomp=False \

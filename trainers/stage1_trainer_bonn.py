@@ -449,6 +449,9 @@ class Stage1Trainer_Bonn(pl.LightningModule):
         material_ids = batch['material_ids'].squeeze(0)
         confidence   = batch['confidence'].squeeze(0)          # (N,)
         img_hw       = batch['img_hw'].squeeze(0)              # (2,)
+        # Scatter map: original H*W flat index for each of the N supervised
+        # pixels. Identity arange when point_subsample_ratio == 1.0.
+        sub_indices  = batch['sub_indices'].squeeze(0).long()  # (N,)
 
         gt_normals = batch.get('gt_normals')
         if gt_normals is not None:
@@ -487,8 +490,20 @@ class Stage1Trainer_Bonn(pl.LightningModule):
         # ---- reconstruct 2-D images and save ----------------------------
         H, W = img_hw[0].item(), img_hw[1].item()
 
-        gt_img   = rgbs_gt.reshape(H, W, 3)
-        pred_img = brdf.reshape(H, W, 3)
+        # Scatter the N supervised flat values back onto the original H*W grid.
+        # Non-supervised pixels (when point_subsample_ratio < 1.0) stay zero,
+        # rendering as black in the saved PNG so the spatial layout of the
+        # supervised set is visible at a glance.
+        def _scatter_to_image(flat: torch.Tensor) -> torch.Tensor:
+            C = flat.shape[-1]
+            if sub_indices.shape[0] == H * W:
+                return flat.reshape(H, W, C)
+            canvas = torch.zeros(H * W, C, device=flat.device, dtype=flat.dtype)
+            canvas.index_copy_(0, sub_indices.to(flat.device), flat)
+            return canvas.reshape(H, W, C)
+
+        gt_img   = _scatter_to_image(rgbs_gt)
+        pred_img = _scatter_to_image(brdf)
 
         output_dir = os.path.join(self.cfg.exp_output_root_path, 'images')
         os.makedirs(output_dir, exist_ok=True)
@@ -529,8 +544,8 @@ class Stage1Trainer_Bonn(pl.LightningModule):
                 else:
                     pred_normal, pred_tangent = self.material.extract_frame_from_latent(latent, gt_normals)
 
-            normal_img  = pred_normal.reshape(H, W, 3)
-            tangent_img = pred_tangent.reshape(H, W, 3)
+            normal_img  = _scatter_to_image(pred_normal)
+            tangent_img = _scatter_to_image(pred_tangent)
             # map [-1, 1] → [0, 255]
             normal_png  = ((normal_img.clamp(-1.0, 1.0) * 0.5 + 0.5) * 255).byte().cpu().numpy()
             tangent_png = ((tangent_img.clamp(-1.0, 1.0) * 0.5 + 0.5) * 255).byte().cpu().numpy()

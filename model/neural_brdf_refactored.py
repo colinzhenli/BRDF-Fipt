@@ -2051,6 +2051,13 @@ class BonnLatentBRDF(LightningModule):
         if self.learnable_factor:
             self.factor = nn.Parameter(torch.ones(3))
 
+        # Per-material point subsampling ratio. Must match cfg.data.point_subsample_ratio
+        # so the bank size lines up with the dataloader's compacted point_ids
+        # (BonnDataset / BonnValDataset emit dense 0..N_sub-1 per material).
+        # Stage-2 single-material mode keeps the full bank — subsampling is
+        # only meaningful for multi-material stage-1 training.
+        self.point_subsample_ratio = float(getattr(cfg, 'point_subsample_ratio', 1.0))
+
         # Single-material mode: load only one material from the metadata
         # file and use a dense (non-sparse) embedding for dense Adam.
         self.single_material_id = getattr(cfg, 'single_material_id', None)
@@ -2149,6 +2156,13 @@ class BonnLatentBRDF(LightningModule):
             entry = raw[mat_id_str]
             num_points = entry['num_points']
 
+            # Apply per-material point subsampling to align with the dataloader,
+            # which compacts point_ids to dense 0..N_sub-1 per material. Same
+            # max(1, int(N * ratio)) recipe as MultiMaterialDenseDataset and
+            # BonnDataset._load_single_material.
+            if self.point_subsample_ratio < 1.0:
+                num_points = max(1, int(num_points * self.point_subsample_ratio))
+
             materials.append({
                 'material_id': mat_id,
                 'name': f'mat{mat_id:04d}',
@@ -2171,6 +2185,8 @@ class BonnLatentBRDF(LightningModule):
             materials.append({
                 'material_id': fake_id,
                 'name': f'mat{fake_id:04d}',
+                'H': first.get('H'),
+                'W': first.get('W'),
                 'num_points': num_points,
                 'num_observations': 0,
                 'point_range': (global_offset, global_offset + num_points),
@@ -2228,6 +2244,7 @@ class BonnLatentBRDF(LightningModule):
     def _initialize_normals_from_gt(self, data_folder):
         """Initialize latent bank normal slots from AxF-decoded GT normal maps."""
         from pathlib import Path
+        import numpy as np
         from utils.dataset.bonn import _read_gt_normal_map
 
         svfresnel_dir = Path(data_folder) / 'Bonn_svfresnel'
@@ -2252,13 +2269,24 @@ class BonnLatentBRDF(LightningModule):
                     n_pts = mat_info['num_points']
 
                     gt_n = _read_gt_normal_map(svfresnel_dir, mat_id, H, W)
-                    if gt_n is not None:
-                        self.point_latent_bank.weight[offset:offset + n_pts, -6:-3] = \
-                            torch.from_numpy(gt_n)
-                        count += 1
-                    else:
+                    if gt_n is None:
                         print(f"  [Warning] GT normal not found for mat{mat_id:04d}, "
                               f"keeping default (0,0,1)")
+                        continue
+
+                    # Subsample with the same seed (mat_id) and ratio used by
+                    # the dataloader so the slot at local index k holds the
+                    # same physical pixel's GT normal that the dataloader emits.
+                    if self.point_subsample_ratio < 1.0 and gt_n.shape[0] != n_pts:
+                        full_n = gt_n.shape[0]
+                        rng = np.random.default_rng(mat_id)
+                        sub_idx = np.sort(
+                            rng.choice(full_n, size=n_pts, replace=False))
+                        gt_n = gt_n[sub_idx]
+
+                    self.point_latent_bank.weight[offset:offset + n_pts, -6:-3] = \
+                        torch.from_numpy(gt_n)
+                    count += 1
 
         print(f"Initialized normals from GT for {count} material(s)")
 

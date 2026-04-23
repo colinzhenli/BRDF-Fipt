@@ -26,13 +26,15 @@ def _pool_load_worker(args):
     _load_single_material needs, then delegates to it. Keeps the existing
     loader logic as the single source of truth — no duplicated code.
     """
-    mat_id, root_folder_str, calib, svfresnel_dir_str, use_pan, use_lls = args
+    (mat_id, root_folder_str, calib, svfresnel_dir_str,
+     use_pan, use_lls, point_subsample_ratio) = args
     stub = BonnDataset.__new__(BonnDataset)
     stub.root_folder = Path(root_folder_str)
     stub.calibrations = {mat_id: calib}
     stub.svfresnel_dir = Path(svfresnel_dir_str)
     stub.use_pan = use_pan
     stub.use_lls = use_lls
+    stub.point_subsample_ratio = point_subsample_ratio
     return stub._load_single_material(mat_id)
 
 
@@ -314,6 +316,13 @@ class BonnDataset(IterableDataset):
         self.svfresnel_dir = self.root_folder / 'Bonn_svfresnel'
         self.num_load_workers = int(getattr(cfg.data, 'num_load_workers', 0))
         self.step = 0
+
+        # Per-material point subsampling ratio. Mirrors MultiMaterialDenseDataset
+        # in points.py: each material keeps a deterministic random subset of its
+        # H*W pixels (seeded by mat_id) and emits dense point_ids 0..N_sub-1 so
+        # the BonnLatentBRDF latent bank stays aligned across train/val/decoder.
+        self.point_subsample_ratio = float(
+            getattr(cfg.data, 'point_subsample_ratio', 1.0))
 
         # Approximate luminance weights for pan→scalar projection
         self.pan_weights = np.array([0.34, 0.36, 0.28], dtype=np.float32)
@@ -667,6 +676,28 @@ class BonnDataset(IterableDataset):
                 print(f"  [Debug] Saved camera & light point clouds to {_dbg_dir}")
                 # --- end debug ------------------------------------------------
 
+            # Per-material point subsampling. Compacts every V-indexed array
+            # (xyz, all_rgbs, gray_vals, gt_normals) onto a deterministic random
+            # subset of pixels, seeded by mat_id so train/val/BRDF agree on the
+            # same subset. point_ids are reset to dense 0..N_sub-1 so the latent
+            # bank in BonnLatentBRDF (sized num_points*ratio per material) lines
+            # up with the dataloader's emitted indices.
+            ratio = float(getattr(self, 'point_subsample_ratio', 1.0))
+            if ratio < 1.0:
+                rng = np.random.default_rng(mat_id)
+                N_sub = max(1, int(n_pixels * ratio))
+                sub_idx = np.sort(rng.choice(n_pixels, size=N_sub, replace=False))
+
+                xyz_pts = xyz_pts[sub_idx]
+                pids = np.arange(N_sub, dtype=np.int64)
+                if gt_normals is not None:
+                    gt_normals = gt_normals[sub_idx]
+                if all_rgbs.shape[1] > 0:
+                    all_rgbs = all_rgbs[:, sub_idx, :]
+                if gray_vals is not None:
+                    gray_vals = gray_vals[:, sub_idx]
+                n_pixels = N_sub
+
             n_poly_img = all_rgbs.shape[0]
             n_gray_img = gray_vals.shape[0] if gray_vals is not None else 0
             n_images = n_poly_img + n_gray_img
@@ -789,7 +820,8 @@ class BonnDataset(IterableDataset):
 
         tasks = [
             (mid, str(self.root_folder), self.calibrations[mid],
-             str(self.svfresnel_dir), self.use_pan, self.use_lls)
+             str(self.svfresnel_dir), self.use_pan, self.use_lls,
+             self.point_subsample_ratio)
             for mid in mat_ids
         ]
 
@@ -997,6 +1029,11 @@ class BonnValDataset(Dataset):
         self.debug = getattr(cfg.data, 'debug', False)
         self.debug_rotate = getattr(cfg.data, 'debug_rotate', False)
         self.debug_swap_channels = getattr(cfg.data, 'debug_swap_channels', False)
+        # Per-material subsampling — must match BonnDataset (and the latent bank
+        # in BonnLatentBRDF). Seed is the EXR mat_id so the subset is identical
+        # to training, even when validate_id differs (debug_rotate / swap mode).
+        self.point_subsample_ratio = float(
+            getattr(cfg.data, 'point_subsample_ratio', 1.0))
         self.svfresnel_dir = Path(root_folder) / 'Bonn_svfresnel'
 
         # ---- discover materials & pick one ---------------------
@@ -1031,6 +1068,22 @@ class BonnValDataset(Dataset):
         xyz_flat = self.xyz_map.reshape(self.n_pixels, 3).astype(np.float32)
         pids = np.arange(self.n_pixels, dtype=np.int64)
 
+        # Per-material point subsampling (same recipe as BonnDataset).
+        # Seed by self.mat_id (the EXR loaded), not validate_id, so the subset
+        # matches training — in debug_rotate/swap mode the synthetic mat 2
+        # in BonnDataset just deepcopies mat 1's already-subsampled points.
+        self._sub_indices = None
+        if self.point_subsample_ratio < 1.0:
+            rng = np.random.default_rng(self.mat_id)
+            N_sub = max(1, int(self.n_pixels * self.point_subsample_ratio))
+            self._sub_indices = np.sort(
+                rng.choice(self.n_pixels, size=N_sub, replace=False))
+            xyz_flat = xyz_flat[self._sub_indices]
+            pids = np.arange(N_sub, dtype=np.int64)
+            if self.gt_normals is not None:
+                self.gt_normals = self.gt_normals[self._sub_indices]
+            self.n_pixels = N_sub
+
         # ---- read poly data using pyexr (same as official Bonn code) -----
         poly_data, poly_ch_names, pH, pW = _read_exr(f'{prefix}_poly.exr')
         assert (pH, pW) == (self.H, self.W)
@@ -1055,6 +1108,8 @@ class BonnValDataset(Dataset):
             idx = img['ch_start']
             rgbs = poly_data[:, :, idx:idx+3].reshape(-1, 3)    # (H*W, 3)
             np.clip(rgbs, 0, None, out=rgbs)
+            if self._sub_indices is not None:
+                rgbs = rgbs[self._sub_indices]
 
             # Apply same debug transforms as training _make_debug_pair
             if self.debug and self.debug_rotate:
@@ -1082,6 +1137,18 @@ class BonnValDataset(Dataset):
             pan_w = _pan_weights_for_image(
                 calib, img['rotation'], img['camera'], img['led'], is_poly=True)
 
+            # sub_indices maps each of the N_sub flat entries back to its
+            # ORIGINAL position in the H*W image grid. The trainer scatters
+            # per-pixel predictions onto a zero canvas at these positions
+            # (non-supervised pixels stay black) so 2-D visualisations remain
+            # geometrically correct even when point_subsample_ratio < 1.0.
+            # When ratio == 1.0 we still emit arange(H*W) so the trainer can
+            # always rely on the same scatter path.
+            if self._sub_indices is not None:
+                sub_idx_t = torch.from_numpy(self._sub_indices.astype(np.int64))
+            else:
+                sub_idx_t = torch.arange(self.n_pixels, dtype=torch.long)
+
             item = {
                 'xyz':          torch.from_numpy(xyz_flat.copy()).float(),
                 'wi':           torch.from_numpy(wi).float(),
@@ -1099,6 +1166,7 @@ class BonnValDataset(Dataset):
                     np.broadcast_to(pan_w, (self.n_pixels, 3)).copy()).float(),
                 'confidence':   torch.from_numpy(confidence),
                 'img_hw':       torch.tensor([self.H, self.W]),
+                'sub_indices':  sub_idx_t,
                 'gt_params':    torch.zeros(1),
                 'label':        label,
             }
