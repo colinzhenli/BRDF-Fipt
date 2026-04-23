@@ -81,6 +81,36 @@ class Stage1Trainer_Bonn(pl.LightningModule):
     # ------------------------------------------------------------------
     # Optimiser
     # ------------------------------------------------------------------
+    def _attach_cosine_schedulers(self, opts):
+        """Wrap one or more optimizers with an epoch-based CosineAnnealingLR.
+
+        Gated by ``cfg.model.optimizer.use_cosine_decay`` (default False — opt-in).
+        Decay goes from the per-group peak LR down to ``eta_min`` over
+        ``cfg.model.trainer.max_epochs`` epochs.
+        """
+        use_decay = getattr(self.hparams.model.optimizer, 'use_cosine_decay', False)
+        if not use_decay:
+            return opts
+
+        max_epochs = self.hparams.model.trainer.max_epochs
+        eta_min = getattr(self.hparams.model.optimizer, 'eta_min', 1e-5)
+
+        is_list = isinstance(opts, list)
+        opt_list = opts if is_list else [opts]
+
+        result = []
+        for opt in opt_list:
+            sched = torch.optim.lr_scheduler.CosineAnnealingLR(
+                opt, T_max=max_epochs, eta_min=eta_min,
+            )
+            result.append({
+                "optimizer": opt,
+                "lr_scheduler": {"scheduler": sched, "interval": "epoch"},
+            })
+
+        print(f"  [+] CosineAnnealingLR attached: T_max={max_epochs} epochs, eta_min={eta_min}")
+        return result if is_list else result[0]
+
     def configure_optimizers(self):
         lr = self.hparams.model.optimizer.lr
         decoder_lr = getattr(self.hparams.model.optimizer, 'decoder_lr', lr)
@@ -107,10 +137,10 @@ class Stage1Trainer_Bonn(pl.LightningModule):
                     dense_params, lr=decoder_lr, betas=(0.9, 0.999), weight_decay=wd,
                 )
                 print(f"Using SparseAdam (embedding lr={lr}) + Adam (dense lr={decoder_lr})")
-                return [latent_opt, dense_opt]
+                return self._attach_cosine_schedulers([latent_opt, dense_opt])
             else:
                 print(f"Using SparseAdam (embedding only), lr={lr}")
-                return latent_opt
+                return self._attach_cosine_schedulers(latent_opt)
 
         elif opt_name == 'SparseAdam8bit':
             import bitsandbytes as bnb
@@ -122,10 +152,10 @@ class Stage1Trainer_Bonn(pl.LightningModule):
                     dense_params, lr=decoder_lr, betas=(0.9, 0.999), weight_decay=wd,
                 )
                 print(f"Using SparseAdam8bit (embedding lr={lr}) + Adam (dense lr={decoder_lr})")
-                return [latent_opt, dense_opt]
+                return self._attach_cosine_schedulers([latent_opt, dense_opt])
             else:
                 print(f"Using SparseAdam8bit (embedding only), lr={lr}")
-                return latent_opt
+                return self._attach_cosine_schedulers(latent_opt)
 
         elif opt_name == 'Adam':
             # NOTE: group order is [decoder, embedding] to match the
@@ -140,7 +170,7 @@ class Stage1Trainer_Bonn(pl.LightningModule):
             opt = torch.optim.Adam(opt_groups, betas=(0.9, 0.999), weight_decay=wd)
 
             print(f"Using Dense Adam (embedding lr={lr}, dense lr={decoder_lr})")
-            return opt
+            return self._attach_cosine_schedulers(opt)
 
         elif opt_name == 'Adam8bit':
             import bitsandbytes as bnb
@@ -152,7 +182,7 @@ class Stage1Trainer_Bonn(pl.LightningModule):
 
             opt = bnb.optim.Adam8bit(opt_groups, betas=(0.9, 0.999), weight_decay=wd)
             print(f"Using Adam8bit (embedding lr={lr}, dense lr={decoder_lr})")
-            return opt
+            return self._attach_cosine_schedulers(opt)
 
         elif opt_name == 'SGD':
             opt_groups = [{'params': embedding_params, 'lr': lr}]
@@ -163,7 +193,7 @@ class Stage1Trainer_Bonn(pl.LightningModule):
 
             opt = torch.optim.SGD(opt_groups, momentum=0.0, weight_decay=wd)
             print(f"Using SGD (embedding lr={lr}, dense lr={decoder_lr})")
-            return opt
+            return self._attach_cosine_schedulers(opt)
 
         else:
             raise ValueError(f"Unknown optimizer: {opt_name}")
