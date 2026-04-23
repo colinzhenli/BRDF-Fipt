@@ -3,7 +3,7 @@ data:
   val_num: 9
   test_num: 1
   num_workers: 0
-  rays_num: 131072
+  rays_num: 65535
   ccm:
   - - 3.6724617
     - -0.94800931
@@ -54,7 +54,7 @@ data:
   handeye_refiner: false
   use_pan: true
   use_lls: true
-  num_load_workers: 16
+  num_load_workers: 32
   debug_rotate: false
   debug_swap_channels: false
   points_per_material: 2000
@@ -290,7 +290,7 @@ material:
     intermediate_activation: leakyrelu
     output_channels: 3
     degree: 3
-experiment_name: Stage-1_Bonn_DDP2_debug_run_1
+experiment_name: Stage-1_Bonn_DDP2_debug_run_2
 dataset_folder: /media/raid/cloth/Bonn_train
 output_folder: /media/raid/cloth/output/BRDF
 exp_output_root_path: ${output_folder}/Bonn-Theia2/${experiment_name}

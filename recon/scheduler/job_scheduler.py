@@ -40,9 +40,9 @@ from quality_check import detect_quality_warnings  # noqa: E402
 
 class Config:
     """Scheduler configuration"""
-    GPU_IDS = [1, 2]
-    MAX_COLMAP_PER_GPU = 5  # Maximum COLMAP jobs per GPU
-    TOTAL_CPU_CORES = psutil.cpu_count(logical=True) or 32
+    GPU_IDS = [2, 3]
+    MAX_COLMAP_PER_GPU = 4  # Maximum COLMAP jobs per GPU
+    TOTAL_CPU_CORES = 128
     CPU_CORES_PER_COLMAP = 8  # CPU threads allocated per COLMAP job
     MIN_SHAPE_MATCHING_WORKERS = 16  # Minimum workers for shape matching
     MAX_CONCURRENT_SHAPE_MATCHING = 4  # Maximum concurrent shape matching jobs
@@ -56,7 +56,7 @@ class Config:
     # COLMAP writes tmp files to COLMAP_TMP_BASE (mirrors TMP_BASE in colmap.sh).
     # Require at least MIN_FREE_DISK_GB free before launching a new COLMAP job,
     # so disk-full failures can't take down the whole batch mid-flight.
-    COLMAP_TMP_BASE = "/data/colin/colmap_tmp"
+    COLMAP_TMP_BASE = "/mnt/colmap_tmp"
     MIN_FREE_DISK_GB = 20.0
 
     # Paths

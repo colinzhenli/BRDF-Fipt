@@ -4,11 +4,11 @@
 - data.use_lls=True
 - data.debug=False
 - data.debug_num=10
-- data.rays_num=131072
-- data.num_load_workers=16
+- data.rays_num=65535
+- data.num_load_workers=32
 - renderer=multiarea_emitter
 - material=bonn_latent
-- experiment_name=Stage-1_Bonn_DDP2_debug_run_1
+- experiment_name=Stage-1_Bonn_DDP2_debug_run_2
 - model.optimizer.reset_latent_momentum_on_chunk_switch=False
 - model.optimizer.name=Adam8bit
 - model.loss.recon_loss.name=logrel

@@ -120,11 +120,11 @@ hydra:
     - data.use_lls=True
     - data.debug=False
     - data.debug_num=10
-    - data.rays_num=131072
-    - data.num_load_workers=16
+    - data.rays_num=65535
+    - data.num_load_workers=32
     - renderer=multiarea_emitter
     - material=bonn_latent
-    - experiment_name=Stage-1_Bonn_DDP2_debug_run_1
+    - experiment_name=Stage-1_Bonn_DDP2_debug_run_2
     - model.optimizer.reset_latent_momentum_on_chunk_switch=False
     - model.optimizer.name=Adam8bit
     - model.loss.recon_loss.name=logrel
@@ -153,7 +153,7 @@ hydra:
   job:
     name: train_ddp_process_1
     chdir: null
-    override_dirname: data.debug=False,data.debug_num=10,data.filter_observations=False,data.num_load_workers=16,data.rays_num=131072,data.use_lls=True,data.use_pan=True,data=bonn,dataset_folder=/media/raid/cloth/Bonn_train,experiment_name=Stage-1_Bonn_DDP2_debug_run_1,material.decoder.degree=3,material.decoder.smooth_reg=False,material.decoder.use_color_decomp=False,material.decoder.use_film=False,material.decoder.use_skip_connection=True,material.different_decoder=False,material.latent_dim=24,material=bonn_latent,model.continue_training=False,model.lls_spp=4,model.loss.lls_weight=0.5,model.loss.pan_weight=0.5,model.loss.recon_loss.log_space.logrel_ref=0.05,model.loss.recon_loss.name=logrel,model.loss.reg_loss.weight=0.0,model.optimizer.decoder_lr=1e-4,model.optimizer.name=Adam8bit,model.optimizer.reset_latent_momentum_on_chunk_switch=False,model.stage=1,model.test=False,model.trainer.check_val_every_n_epoch=20,model.trainer.devices=2,model.trainer.limit_train_batches=512,model.trainer.max_epochs=3000,model.trainer.strategy=ddp_find_unused_parameters_true,renderer=multiarea_emitter
+    override_dirname: data.debug=False,data.debug_num=10,data.filter_observations=False,data.num_load_workers=32,data.rays_num=65535,data.use_lls=True,data.use_pan=True,data=bonn,dataset_folder=/media/raid/cloth/Bonn_train,experiment_name=Stage-1_Bonn_DDP2_debug_run_2,material.decoder.degree=3,material.decoder.smooth_reg=False,material.decoder.use_color_decomp=False,material.decoder.use_film=False,material.decoder.use_skip_connection=True,material.different_decoder=False,material.latent_dim=24,material=bonn_latent,model.continue_training=False,model.lls_spp=4,model.loss.lls_weight=0.5,model.loss.pan_weight=0.5,model.loss.recon_loss.log_space.logrel_ref=0.05,model.loss.recon_loss.name=logrel,model.loss.reg_loss.weight=0.0,model.optimizer.decoder_lr=1e-4,model.optimizer.name=Adam8bit,model.optimizer.reset_latent_momentum_on_chunk_switch=False,model.stage=1,model.test=False,model.trainer.check_val_every_n_epoch=20,model.trainer.devices=2,model.trainer.limit_train_batches=512,model.trainer.max_epochs=3000,model.trainer.strategy=ddp_find_unused_parameters_true,renderer=multiarea_emitter
     id: ???
     num: ???
     config_name: config
