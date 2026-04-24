@@ -560,12 +560,15 @@ def save_points_pixel_data(pcd_filtered, filtered_indices, images, points3D, hdr
     # 4. Pre-load ALL HDR images into memory
     print("\nPre-loading HDR images...")
     image_cache = {}
+    # Cache directory listing once — hdr_path is read-only during this loop
+    # (was being re-scanned per image, O(images × listdir) NFS calls).
+    all_hdr_files = os.listdir(hdr_path)
     for img_id, image in tqdm(images.items(), desc="Loading HDR images"):
         hdr_image_path = os.path.join(hdr_path, image.name)
         # Remove '_max' and everything after it, but keep .png extension
         # Find image file starting with 'scan-{img_id}'
         prefix = f'scan-{img_id}'
-        matching_files = [f for f in os.listdir(hdr_path) if f.startswith(prefix)]
+        matching_files = [f for f in all_hdr_files if f.startswith(prefix)]
         if matching_files:
             hdr_image_path = os.path.join(hdr_path, matching_files[0])
         hdr_img = cv2.imread(hdr_image_path, cv2.IMREAD_UNCHANGED)
@@ -699,15 +702,20 @@ def _process_camera_batch(args):
     import cv2
     img_ids, images, cameras, points_world, points_base, hdr_path = args
     batch_observations = []
-    
+
+    # hdr_path is populated once by debayer_mosaic_hdr before this worker runs,
+    # then read-only for the rest of shape_matching. Cache once to avoid
+    # O(batch × N) redundant NFS readdir calls (was the top throughput tax).
+    all_hdr_files = os.listdir(hdr_path)
+
     for img_id in img_ids:
         image = images[img_id]
         camera = cameras[image.camera_id]
-        
+
         # Load HDR image
         hdr_image_path = os.path.join(hdr_path, image.name)
         prefix = f'scan-{(img_id-1):04d}' # -1 because colmap indices start from 1
-        matching_files = [f for f in os.listdir(hdr_path) if f.startswith(prefix)]
+        matching_files = [f for f in all_hdr_files if f.startswith(prefix)]
         if matching_files:
             hdr_image_path = os.path.join(hdr_path, matching_files[0])
         else:
@@ -1075,43 +1083,62 @@ def _debayer_single_image(args):
 def debayer_mosaic_hdr(mosaic_hdr_path, hdr_path, num_workers=32):
     """
     Debayer all mosaic HDR images from mosaic_hdr_path folder and save to hdr_path folder.
-    
+
+    If /mnt/colmap_tmp exists (local loop-mount used by the COLMAP pipeline),
+    workers stage their debayered PNGs there first, then a single process moves
+    them to hdr_path. Writing ~500 parallel O_CREATs into an NFS directory was
+    previously serialized by the directory's i_rwsem, causing every worker to
+    pile up on rwsem_down_write_slowpath; staging locally avoids that.
+
     Args:
         mosaic_hdr_path: Path to folder containing original mosaic HDR images (16-bit PNG)
         hdr_path: Path to output folder for debayered images
         num_workers: Number of parallel workers for multiprocessing
     """
     import cv2
+    import shutil
     from multiprocessing import Pool
     from tqdm import tqdm
-    
+
     print(f"\n{'='*60}")
     print(f"Debayering Mosaic HDR Images")
     print(f"{'='*60}")
-    
+
     mosaic_folder = Path(mosaic_hdr_path)
     output_folder = Path(hdr_path)
-    
-    # Create output folder if it doesn't exist
-    output_folder.mkdir(parents=True, exist_ok=True)
-    
+
     # Get all PNG files from mosaic folder
     png_files = sorted(mosaic_folder.glob("*.png"))
-    
+
     if not png_files:
         print(f"No PNG files found in {mosaic_hdr_path}")
         return
-    
+
     print(f"Found {len(png_files)} mosaic images to debayer")
     print(f"Output folder: {hdr_path}")
     print(f"Using {num_workers} parallel workers")
-    
+
+    # Stage outputs on local scratch if available — avoids NFS directory
+    # rwsem contention from num_workers parallel file creates.
+    local_scratch_root = Path("/mnt/colmap_tmp")
+    use_local = local_scratch_root.is_dir()
+    if use_local:
+        staging_folder = local_scratch_root / f"debayer_{output_folder.parent.name}_{os.getpid()}"
+        if staging_folder.exists():
+            shutil.rmtree(staging_folder, ignore_errors=True)
+        staging_folder.mkdir(parents=True, exist_ok=True)
+        write_folder = staging_folder
+        print(f"Staging debayered outputs in local: {write_folder}")
+    else:
+        output_folder.mkdir(parents=True, exist_ok=True)
+        write_folder = output_folder
+
     # Prepare arguments for each image (source path, destination path with same filename)
     args_list = [
-        (src_path, output_folder / src_path.name)
+        (src_path, write_folder / src_path.name)
         for src_path in png_files
     ]
-    
+
     # Process images in parallel
     with Pool(processes=num_workers) as pool:
         results = list(tqdm(
@@ -1119,10 +1146,21 @@ def debayer_mosaic_hdr(mosaic_hdr_path, hdr_path, num_workers=32):
             total=len(args_list),
             desc="Debayering images"
         ))
-    
+
     # Count successful conversions
     successful = sum(1 for r in results if r is not None)
     print(f"\nSuccessfully debayered {successful}/{len(png_files)} images")
+
+    # If we staged locally, move results to the NFS output folder in a single
+    # process (sequential creates → no rwsem pile-up), then clean up.
+    if use_local:
+        output_folder.mkdir(parents=True, exist_ok=True)
+        staged_files = sorted(write_folder.glob("*.png"))
+        print(f"Moving {len(staged_files)} files from local staging → {output_folder}")
+        for f in tqdm(staged_files, desc="Moving to NFS"):
+            shutil.move(str(f), str(output_folder / f.name))
+        shutil.rmtree(write_folder, ignore_errors=True)
+
     print(f"{'='*60}\n")
 
 # -------------------- main --------------------

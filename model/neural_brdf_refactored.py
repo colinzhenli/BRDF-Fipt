@@ -1741,6 +1741,7 @@ class MultiMaterialLatentBRDF(LightningModule):
             # point_ids than the bank allocates here (wasted capacity, no crash).
             if self.point_subsample_ratio < 1.0:
                 num_points = max(1, int(num_points * self.point_subsample_ratio))
+                num_observations = int(num_observations * self.point_subsample_ratio)
 
             # Store material info
             materials.append({

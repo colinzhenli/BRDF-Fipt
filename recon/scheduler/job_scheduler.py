@@ -44,7 +44,7 @@ class Config:
     MAX_COLMAP_PER_GPU = 3  # Maximum COLMAP jobs per GPU
     TOTAL_CPU_CORES = 128
     CPU_CORES_PER_COLMAP = 8  # CPU threads allocated per COLMAP job
-    MIN_SHAPE_MATCHING_WORKERS = 16  # Minimum workers for shape matching
+    MIN_SHAPE_MATCHING_WORKERS = 8  # Minimum workers for shape matching
     MAX_CONCURRENT_SHAPE_MATCHING = 2  # Maximum concurrent shape matching jobs
     MIN_GPU_MEMORY_MB = 4096  # Minimum free GPU memory (MB) to launch COLMAP
     MAX_GPU_UTILIZATION = 80  # Maximum GPU utilization (%) to launch COLMAP
@@ -264,8 +264,11 @@ def calculate_shape_matching_workers(state: Dict, config: Config) -> int:
     workers_per_job = max(config.MIN_SHAPE_MATCHING_WORKERS, 
                           available_cores // (active_shape + 1))
     
-    # Cap at reasonable maximum
-    return min(workers_per_job, 48)
+    # Cap at 12: beyond this, shape_matching workers saturate NFS write
+    # throughput and the parent-directory i_rwsem, so extra workers slow
+    # the job down instead of speeding it up. Raising back to 48 brought
+    # the server to a halt.
+    return min(workers_per_job, 12)
 
 def get_available_cpu_cores(config: Config, threshold: float = 80.0) -> int:
     """
