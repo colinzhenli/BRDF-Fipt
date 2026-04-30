@@ -4,6 +4,7 @@ export CUDA_VISIBLE_DEVICES=1
 
 python main.py \
     dataset_folder=/media/raid/cloth/BTF \
+    output_folder=/media/raid/cloth/output/BRDF/BTF \
     data=ubo \
     data.btf_filename=fabric10_W400xH400_L151xV151.btf \
     data.rays_num=500000 \
