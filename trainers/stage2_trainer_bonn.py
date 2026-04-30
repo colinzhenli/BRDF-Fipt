@@ -286,7 +286,7 @@ class Stage2Trainer_Bonn(pl.LightningModule):
             gt_poly = rgbs_gt[poly_mask]
             mse = NF.mse_loss(poly_pred, gt_poly)
             max_val = gt_poly.max().clamp_min(1e-8)
-            psnr = 10.0 * torch.log10(max_val ** 2 / mse.clamp_min(1e-8))
+            psnr = 10.0 * torch.log10(max_val ** 2 / mse.clamp_min(1e-10))
 
         self.log_dict({
             'train/total_loss': total_loss,
@@ -315,7 +315,7 @@ class Stage2Trainer_Bonn(pl.LightningModule):
         loss = self._compute_loss(brdf, rgbs_gt)
         mse  = NF.mse_loss(brdf, rgbs_gt)
         max_val = rgbs_gt.max().clamp_min(1e-8)
-        psnr = 10.0 * torch.log10(max_val ** 2 / mse.clamp_min(1e-8))
+        psnr = 10.0 * torch.log10(max_val ** 2 / mse.clamp_min(1e-10))
 
         log_dict = {'val/loss': loss, 'val/psnr': psnr}
         if hasattr(self.material, 'factor'):

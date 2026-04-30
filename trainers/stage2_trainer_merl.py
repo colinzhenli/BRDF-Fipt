@@ -353,7 +353,7 @@ class Stage2Trainer_MERL(pl.LightningModule):
         loss = self.loss_function(rgbs, rgbs_gt, vis)
         MAX_VAL = 65535.0
         psnr_loss  = torch.nn.functional.mse_loss(rgbs[vis], rgbs_gt.squeeze(0)[vis], reduction='mean')
-        psnr       = 10.0 * torch.log10((MAX_VAL ** 2) / psnr_loss.clamp_min(1e-5))
+        psnr       = 10.0 * torch.log10((MAX_VAL ** 2) / psnr_loss.clamp_min(1e-10))
 
         # ------------------------------------------------------------------
         # 7.  Logging  (now includes diagnostics)
@@ -385,7 +385,7 @@ class Stage2Trainer_MERL(pl.LightningModule):
         MAX_VAL = 65535.0
         psnr_loss = torch.nn.functional.mse_loss(rgbs[vis], rgbs_gt.squeeze(0)[vis], reduction='mean')
         max_val = MAX_VAL
-        psnr = 10.0 * torch.log10((max_val ** 2) / psnr_loss.clamp_min(1e-5))
+        psnr = 10.0 * torch.log10((max_val ** 2) / psnr_loss.clamp_min(1e-10))
         
         loss = self.loss_function(rgbs, rgbs_gt, vis)
         emitter_radiance = self.emitter.light_radiance.detach().cpu().numpy()

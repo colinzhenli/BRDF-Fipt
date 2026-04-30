@@ -145,7 +145,7 @@ class Stage2Trainer_UBO(pl.LightningModule):
         # PSNR
         mse = NF.mse_loss(brdf, rgbs_gt)
         max_val = rgbs_gt.max().clamp_min(1e-8)
-        psnr = 10.0 * torch.log10(max_val ** 2 / mse.clamp_min(1e-8))
+        psnr = 10.0 * torch.log10(max_val ** 2 / mse.clamp_min(1e-10))
 
         log_dict = {
             'train/total_loss': total_loss,
@@ -176,7 +176,7 @@ class Stage2Trainer_UBO(pl.LightningModule):
         loss = self._compute_loss(brdf, rgbs_gt)
         mse  = NF.mse_loss(brdf, rgbs_gt)
         max_val = rgbs_gt.max().clamp_min(1e-8)
-        psnr = 10.0 * torch.log10(max_val ** 2 / mse.clamp_min(1e-8))
+        psnr = 10.0 * torch.log10(max_val ** 2 / mse.clamp_min(1e-10))
 
         log_dict = {'val/loss': loss, 'val/psnr': psnr}
         if hasattr(self.material, 'learnable_factor') and self.material.learnable_factor:

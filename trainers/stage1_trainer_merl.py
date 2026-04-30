@@ -17,6 +17,20 @@ import os
 from utils.pose_refiner import GlobalHandEyeRefiner
 from model.neural_brdf_refactored import MERLBRDF
 
+# bitsandbytes compat: unwrap newer __bnb_optimizer_quant_state__ format so
+# checkpoints saved with bnb >= 0.49 can be loaded by older bnb (e.g. 0.41.3).
+try:
+    import bitsandbytes as _bnb
+    class Adam8bitCompat(_bnb.optim.Adam8bit):
+        def load_state_dict(self, state_dict):
+            for st in state_dict.get('state', {}).values():
+                if isinstance(st, dict) and '__bnb_optimizer_quant_state__' in st:
+                    st.update(st.pop('__bnb_optimizer_quant_state__'))
+            return super().load_state_dict(state_dict)
+except ImportError:
+    Adam8bitCompat = None
+
+
 class Stage1Trainer_MERL(pl.LightningModule):
     def __init__(self, cfg, material, gt_material, roughness, metallic):
         super().__init__()
@@ -99,52 +113,52 @@ class Stage1Trainer_MERL(pl.LightningModule):
         # Simple Reinhard tone mapping: x / (1 + x)
         return x / (1 + x)
     
-    def configure_optimizers(self):  
-        # Check if we should freeze decoder and only optimize latents
-        
-        if self.freeze_decoder:
-            # Freeze decoder parameters
-            for param in self.material.decoder.parameters():
-                param.requires_grad = False
-            # Only optimize latent bank
-            params_to_optimize = [self.material.point_latent_bank.weight]
-            print("Decoder frozen! Only optimizing latent bank.")
-        else:
-            params_to_optimize = self.parameters()
-            print("Decoder not frozen! Optimizing all parameters.")
-        
-        if self.hparams.model.optimizer.name == "SGD":
-            optimizer = torch.optim.SGD(
-                params_to_optimize,
-                lr=self.hparams.model.optimizer.lr,
-                momentum=0.9,
-                weight_decay=1e-4,
-            )
-            scheduler = pl_bolts.optimizers.LinearWarmupCosineAnnealingLR(
-                optimizer,
-                warmup_epochs=int(self.hparams.model.optimizer.warmup_steps_ratio * self.hparams.model.trainer.max_steps),
-                max_epochs=self.hparams.model.trainer.max_steps,
-                eta_min=0,
-            )
-            return {
-                "optimizer": optimizer,
-                "lr_scheduler": {
-                    "scheduler": scheduler,
-                    "interval": "step"
-                }
-            }
+    def configure_optimizers(self):
+        lr = self.hparams.model.optimizer.lr
+        decoder_lr = getattr(self.hparams.model.optimizer, 'decoder_lr', lr)
+        wd = self.hparams.model.optimizer.weight_decay
+        opt_name = getattr(self.hparams.model.optimizer, 'name', 'Adam')
 
-        elif self.hparams.model.optimizer.name == 'Adam':
-            optimizer = torch.optim.Adam(
-                params_to_optimize,
-                lr=self.hparams.model.optimizer.lr,
-                betas=(0.9, 0.999),
-                weight_decay=self.hparams.model.optimizer.weight_decay,
-            )
+        embedding_params = list(self.material.point_latent_bank.parameters())
+        embedding_set = set(embedding_params)
+        decoder_params = [p for p in self.parameters() if p not in embedding_set]
+
+        if self.freeze_decoder:
+            for p in decoder_params:
+                p.requires_grad = False
+            print("Decoder frozen — optimising latent bank only.")
+
+        dense_params = decoder_params if not self.freeze_decoder else []
+
+        if opt_name == 'SGD':
+            opt_groups = [{'params': embedding_params, 'lr': lr}]
+            if len(dense_params) > 0:
+                opt_groups.append({'params': dense_params, 'lr': decoder_lr})
+            optimizer = torch.optim.SGD(opt_groups, momentum=0.9, weight_decay=wd)
+            print(f"Using SGD (embedding lr={lr}, decoder lr={decoder_lr})")
+            return optimizer
+
+        elif opt_name == 'Adam':
+            opt_groups = []
+            if len(dense_params) > 0:
+                opt_groups.append({'params': dense_params, 'lr': decoder_lr})
+            opt_groups.append({'params': embedding_params, 'lr': lr})
+            optimizer = torch.optim.Adam(opt_groups, betas=(0.9, 0.999), weight_decay=wd)
+            print(f"Using Adam (embedding lr={lr}, decoder lr={decoder_lr})")
+            return optimizer
+
+        elif opt_name == 'Adam8bit':
+            if Adam8bitCompat is None:
+                raise RuntimeError("bitsandbytes not installed; cannot use Adam8bit")
+            opt_groups = [{'params': embedding_params, 'lr': lr}]
+            if len(dense_params) > 0:
+                opt_groups.append({'params': dense_params, 'lr': decoder_lr})
+            optimizer = Adam8bitCompat(opt_groups, betas=(0.9, 0.999), weight_decay=wd)
+            print(f"Using Adam8bit (embedding lr={lr}, decoder lr={decoder_lr})")
             return optimizer
 
         else:
-            logging.error('Optimizer type not supported')
+            raise ValueError(f"Unknown optimizer: {opt_name}")
 
     def load_pbr_texture(self, pbr_texture_path):
         pbr_folder = '/localhome/zla247/theia2_data/theia2_data/BRDF-Fipt/fabric_pattern_07_4k/textures'
@@ -359,7 +373,7 @@ class Stage1Trainer_MERL(pl.LightningModule):
         if torch.isnan(psnr_loss).any():
             print("psnr_loss is nan")
         max_val = rgbs_gt.squeeze(0)[vis].max().clamp_min(1e-8)
-        psnr       = 10.0 * torch.log10((max_val ** 2) / psnr_loss.clamp_min(1e-5))
+        psnr       = 10.0 * torch.log10((max_val ** 2) / psnr_loss.clamp_min(1e-10))
         
         # ------------------------------------------------------------------
         # 7.  Logging  (now includes diagnostics)
@@ -401,7 +415,7 @@ class Stage1Trainer_MERL(pl.LightningModule):
         if torch.isnan(psnr_loss).any():
             print("psnr_loss is nan")
         max_val = rgbs_gt.squeeze(0)[vis].max().clamp_min(1e-8)
-        psnr       = 10.0 * torch.log10((max_val ** 2) / psnr_loss.clamp_min(1e-5))
+        psnr       = 10.0 * torch.log10((max_val ** 2) / psnr_loss.clamp_min(1e-10))
 
         # ------------------------------------------------------------------
         # 7.  Logging  (now includes diagnostics)
@@ -438,7 +452,7 @@ class Stage1Trainer_MERL(pl.LightningModule):
     #     rgbs = rgbs * self.camera_factor
     #     psnr_loss = torch.nn.functional.mse_loss(rgbs[vis], rgbs_gt.squeeze(0)[vis], reduction='mean')
     #     max_val = torch.max(torch.stack([rgbs.max(), rgbs_gt.squeeze(0).max()])).clamp_min(1e-8)
-    #     psnr = 10.0 * torch.log10((max_val ** 2) / psnr_loss.clamp_min(1e-5))
+    #     psnr = 10.0 * torch.log10((max_val ** 2) / psnr_loss.clamp_min(1e-10))
         
     #     loss = self.loss_function(rgbs, rgbs_gt, vis)
     #     emitter_radiance = self.emitter.light_radiance.detach().cpu().numpy()

@@ -12,6 +12,7 @@ Used by:
 """
 import json
 import os
+import struct
 import sys
 from pathlib import Path
 from typing import Optional, Tuple
@@ -33,12 +34,21 @@ REGISTRATION_THRESHOLD = 0.90
 
 
 def count_registered_images(material_dir) -> int:
-    """Return the number of images in sparse/0/images.bin, or -1 if unreadable."""
+    """Return the number of images in sparse/0/images.bin, or -1 if unreadable.
+
+    Reads only the 8-byte uint64 header (num_reg_images) — COLMAP's binary
+    format starts with that count. Avoids parsing the full file (~100-200 MB
+    over NFS) when callers only need the count.
+    """
     img_bin = Path(material_dir) / "sparse" / "0" / "images.bin"
     if not img_bin.exists():
         return -1
     try:
-        return len(read_images_binary(str(img_bin)))
+        with open(img_bin, "rb") as fid:
+            header = fid.read(8)
+            if len(header) < 8:
+                return -1
+            return struct.unpack("<Q", header)[0]
     except Exception:
         return -1
 

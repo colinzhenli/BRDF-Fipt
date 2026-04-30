@@ -1075,17 +1075,26 @@ def _debayer_single_image(args):
     np.clip(imgf, 0, 65535, out=imgf)
     img16 = imgf.astype(np.uint16)
     
-    # Save the debayered image
-    cv2.imwrite(str(dst_path), img16)
-    
+    # Save the debayered image. cv2.imwrite returns False on disk-full or
+    # other I/O failure; treat that as a failed write so the caller can detect
+    # partial output instead of silently producing an incomplete hdr/ folder.
+    ok = cv2.imwrite(str(dst_path), img16)
+    if not ok:
+        try:
+            Path(dst_path).unlink(missing_ok=True)
+        except Exception:
+            pass
+        return None
+
     return dst_path
 
 def debayer_mosaic_hdr(mosaic_hdr_path, hdr_path, num_workers=32):
     """
     Debayer all mosaic HDR images from mosaic_hdr_path folder and save to hdr_path folder.
 
-    If /mnt/colmap_tmp exists (local loop-mount used by the COLMAP pipeline),
-    workers stage their debayered PNGs there first, then a single process moves
+    Workers stage their debayered PNGs to /mnt/data/shape_matching_tmp first
+    (separate filesystem from the small /mnt/colmap_tmp loop device used by
+    COLMAP — avoids cross-pipeline contention), then a single process moves
     them to hdr_path. Writing ~500 parallel O_CREATs into an NFS directory was
     previously serialized by the directory's i_rwsem, causing every worker to
     pile up on rwsem_down_write_slowpath; staging locally avoids that.
@@ -1119,8 +1128,11 @@ def debayer_mosaic_hdr(mosaic_hdr_path, hdr_path, num_workers=32):
     print(f"Using {num_workers} parallel workers")
 
     # Stage outputs on local scratch if available — avoids NFS directory
-    # rwsem contention from num_workers parallel file creates.
-    local_scratch_root = Path("/mnt/colmap_tmp")
+    # rwsem contention from num_workers parallel file creates. Use a
+    # dedicated dir on /mnt/data (~3 TB) instead of /mnt/colmap_tmp (93 GB
+    # loop device shared with COLMAP) so debayer can't be starved when
+    # COLMAP is running.
+    local_scratch_root = Path("/mnt/data/shape_matching_tmp")
     use_local = local_scratch_root.is_dir()
     if use_local:
         staging_folder = local_scratch_root / f"debayer_{output_folder.parent.name}_{os.getpid()}"
@@ -1150,6 +1162,20 @@ def debayer_mosaic_hdr(mosaic_hdr_path, hdr_path, num_workers=32):
     # Count successful conversions
     successful = sum(1 for r in results if r is not None)
     print(f"\nSuccessfully debayered {successful}/{len(png_files)} images")
+
+    # Hard-fail on any partial debayer. Previously the moved-but-incomplete
+    # hdr/ folder would satisfy the existence check on retry and produce
+    # nondeterministic "No matching file found for scan-XXXX" errors
+    # downstream. Better to abort here and let the caller retry from a clean
+    # state.
+    if successful != len(png_files):
+        if use_local:
+            shutil.rmtree(write_folder, ignore_errors=True)
+        raise RuntimeError(
+            f"Debayer wrote only {successful}/{len(png_files)} images "
+            f"(staging dir: {write_folder}). Disk-full or worker crash; "
+            f"refusing to leave a partial hdr/ folder."
+        )
 
     # If we staged locally, move results to the NFS output folder in a single
     # process (sequential creates → no rwsem pile-up), then clean up.
@@ -1197,8 +1223,18 @@ def main_process(cfg, cameras, images, points3D=None, scan_log_path=None, mesh_p
     if mesh_path is not None:
         transform_mesh_to_base(mesh_path, T_BW, output_path=str(Path(mesh_path).with_name(Path(mesh_path).stem + "_transformed.ply")))
 
-    if mosaic_hdr_path is not None and Path(mosaic_hdr_path).is_dir() and not Path(hdr_path).exists():
-        debayer_mosaic_hdr(mosaic_hdr_path, hdr_path, num_workers=num_workers)
+    # Skip debayering only if hdr/ already has the same file count as
+    # hdr_raw/ — prior code only checked existence, which let an incomplete
+    # hdr/ from a crashed earlier run get reused (downstream then failed on
+    # the missing scans). Comparing counts is a cheap completeness gate.
+    if mosaic_hdr_path is not None and Path(mosaic_hdr_path).is_dir():
+        mosaic_count = sum(1 for _ in Path(mosaic_hdr_path).glob("*.png"))
+        hdr_complete = (
+            Path(hdr_path).is_dir()
+            and sum(1 for _ in Path(hdr_path).glob("*.png")) == mosaic_count
+        )
+        if not hdr_complete:
+            debayer_mosaic_hdr(mosaic_hdr_path, hdr_path, num_workers=num_workers)
     # Process pointcloud if path provided
     if pointcloud_path is not None:
         output_pcd_path = str(Path(pointcloud_path).with_name(Path(pointcloud_path).stem + "_transformed_filtered.ply"))

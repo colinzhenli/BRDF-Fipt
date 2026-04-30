@@ -35,6 +35,22 @@ def sample_quad_uniform(corners, spp):
 
 
 # ---------------------------------------------------------------------------
+# bitsandbytes compat: unwrap newer __bnb_optimizer_quant_state__ format so
+# checkpoints saved with bnb >= 0.49 can be loaded by older bnb (e.g. 0.41.3).
+# ---------------------------------------------------------------------------
+try:
+    import bitsandbytes as _bnb
+    class Adam8bitCompat(_bnb.optim.Adam8bit):
+        def load_state_dict(self, state_dict):
+            for st in state_dict.get('state', {}).values():
+                if isinstance(st, dict) and '__bnb_optimizer_quant_state__' in st:
+                    st.update(st.pop('__bnb_optimizer_quant_state__'))
+            return super().load_state_dict(state_dict)
+except ImportError:
+    Adam8bitCompat = None
+
+
+# ---------------------------------------------------------------------------
 # Trainer
 # ---------------------------------------------------------------------------
 
@@ -180,7 +196,7 @@ class Stage1Trainer_Bonn(pl.LightningModule):
             if len(dense_params) > 0:
                 opt_groups.append({'params': dense_params, 'lr': decoder_lr})
 
-            opt = bnb.optim.Adam8bit(opt_groups, betas=(0.9, 0.999), weight_decay=wd)
+            opt = Adam8bitCompat(opt_groups, betas=(0.9, 0.999), weight_decay=wd)
             print(f"Using Adam8bit (embedding lr={lr}, dense lr={decoder_lr})")
             return self._attach_cosine_schedulers(opt)
 
@@ -395,7 +411,7 @@ class Stage1Trainer_Bonn(pl.LightningModule):
             else:
                 mse = torch.tensor(1.0, device=xyz.device)
                 max_val = torch.tensor(1.0, device=xyz.device)
-            psnr = 10.0 * torch.log10(max_val ** 2 / mse.clamp_min(1e-8))
+            psnr = 10.0 * torch.log10(max_val ** 2 / mse.clamp_min(1e-10))
 
         self.log_dict({
             'train/total_loss': total_loss,
@@ -502,7 +518,7 @@ class Stage1Trainer_Bonn(pl.LightningModule):
         else:
             mse = torch.tensor(1.0, device=brdf.device)
             max_val = torch.tensor(1.0, device=brdf.device)
-        psnr = 10.0 * torch.log10(max_val ** 2 / mse.clamp_min(1e-8))
+        psnr = 10.0 * torch.log10(max_val ** 2 / mse.clamp_min(1e-10))
 
         self.log_dict({
             'val/loss': loss,

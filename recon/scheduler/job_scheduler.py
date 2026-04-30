@@ -45,7 +45,7 @@ class Config:
     TOTAL_CPU_CORES = 128
     CPU_CORES_PER_COLMAP = 8  # CPU threads allocated per COLMAP job
     MIN_SHAPE_MATCHING_WORKERS = 8  # Minimum workers for shape matching
-    MAX_CONCURRENT_SHAPE_MATCHING = 2  # Maximum concurrent shape matching jobs
+    MAX_CONCURRENT_SHAPE_MATCHING = 4  # Maximum concurrent shape matching jobs
     MIN_GPU_MEMORY_MB = 4096  # Minimum free GPU memory (MB) to launch COLMAP
     MAX_GPU_UTILIZATION = 80  # Maximum GPU utilization (%) to launch COLMAP
     MAX_MEMORY_UTILIZATION = 90  # Maximum memory utilization (%) to launch COLMAP

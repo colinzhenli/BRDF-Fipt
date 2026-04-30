@@ -153,29 +153,47 @@ def main(cfg):
                         else:
                             print(f"=> Stage 2: initialize_from_std=True but no latent bank weights found in checkpoint.")
             else:
-                # Stage 1: Only load material parameters
-                model_dict = model.state_dict()
-                pretrained_dict = {k: v for k, v in checkpoint['state_dict'].items() if k in model_dict and k.startswith('material.')}
+                # Stage 1
+                validate_on_stage1 = getattr(cfg.model, 'validate_on_stage1', False)
+                if validate_on_stage1 and not cfg.model.test:
+                    # Validate-on-stage1: only load decoder weights so latents
+                    # are optimised from scratch on the val split (mirrors
+                    # stage 2's non-test branch). Latent bank stays at the
+                    # current model's fresh initialisation.
+                    model_dict = model.state_dict()
+                    decoder_dict = {}
+                    for k, v in checkpoint['state_dict'].items():
+                        if 'material.decoder.' in k:
+                            if k in model_dict:
+                                decoder_dict[k] = v
+                    model_dict.update(decoder_dict)
+                    model.load_state_dict(model_dict)
+                    print(f"=> Stage 1 (validate_on_stage1): loaded decoder checkpoint successfully. {len(decoder_dict)}/{len([k for k in model_dict if 'material.decoder.' in k])} decoder parameters loaded.")
+                else:
+                    # Stage 1: Only load material parameters
+                    model_dict = model.state_dict()
+                    pretrained_dict = {k: v for k, v in checkpoint['state_dict'].items() if k in model_dict and k.startswith('material.')}
 
-                # Debug: inject latents for one hardcoded material only (offset-aware)
-                debug_load_material_id = 1
-                latent_bank_key = 'material.point_latent_bank.weight'
-                if cfg.data.debug and latent_bank_key in pretrained_dict:
-                    ckpt_latents = pretrained_dict.pop(latent_bank_key)   # [N_ckpt, D]
-                    if hasattr(model.material, 'material_offset_tensor'):
-                        offset = model.material.material_offset_tensor[debug_load_material_id].item()
-                    else:
-                        offset = 0  # single-material mode: no global offset
-                    n = ckpt_latents.shape[0]
-                    model_dict[latent_bank_key][offset:offset + n] = ckpt_latents
-                    print(f"[Debug] Injected latents for material {debug_load_material_id}: "
-                          f"ckpt rows 0:{n} → bank rows {offset}:{offset + n}")
+                    # Debug: inject latents for one hardcoded material only (offset-aware)
+                    debug_load_material_id = 1
+                    latent_bank_key = 'material.point_latent_bank.weight'
+                    if cfg.data.debug and latent_bank_key in pretrained_dict:
+                        ckpt_latents = pretrained_dict.pop(latent_bank_key)   # [N_ckpt, D]
+                        if hasattr(model.material, 'material_offset_tensor'):
+                            offset = model.material.material_offset_tensor[debug_load_material_id].item()
+                        else:
+                            offset = 0  # single-material mode: no global offset
+                        n = ckpt_latents.shape[0]
+                        model_dict[latent_bank_key][offset:offset + n] = ckpt_latents
+                        print(f"[Debug] Injected latents for material {debug_load_material_id}: "
+                              f"ckpt rows 0:{n} → bank rows {offset}:{offset + n}")
 
-                model_dict.update(pretrained_dict)
-                model.load_state_dict(model_dict)
-                print(f"=> loaded material checkpoint successfully. {len(pretrained_dict)}/{len([k for k in model_dict if k.startswith('material.')])} material parameters loaded.")
+                    model_dict.update(pretrained_dict)
+                    model.load_state_dict(model_dict)
+                    print(f"=> loaded material checkpoint successfully. {len(pretrained_dict)}/{len([k for k in model_dict if k.startswith('material.')])} material parameters loaded.")
     print("after trainer init")
-    print("==> initializing data ...")   
+    print("==> initializing data ...")
+    validate_on_stage1 = getattr(cfg.model, 'validate_on_stage1', False) and (cfg.model.stage == 1) and (not cfg.model.test)
     if cfg.data.dataset_name == "real":
         if not cfg.model.test:
             train_dataset = RealImageDataset(cfg, gt_folder=cfg.gt_folder, split="train")
@@ -187,11 +205,11 @@ def main(cfg):
                 val_dataset = RealValDataset(cfg, gt_folder=cfg.gt_folder)
     elif cfg.data.dataset_name == "merl":
         if cfg.model.stage == 1:
-            train_dataset = MERLBRDFIterableDataset(cfg,data_folder=cfg.dataset_folder,batch_size=1048576,split="train")
+            train_dataset = MERLBRDFIterableDataset(cfg,data_folder=cfg.dataset_folder,batch_size=cfg.data.rays_num,split="train")
             if cfg.data.debug & cfg.data.valid_on_train_set:
-                val_dataset = MERLBRDFIterableDataset(cfg,data_folder=cfg.dataset_folder,batch_size=1048576,split="val")
+                val_dataset = MERLBRDFIterableDataset(cfg,data_folder=cfg.dataset_folder,batch_size=cfg.data.rays_num,split="val")
             else:
-                val_dataset = MERLBRDFIterableDataset(cfg,data_folder=cfg.dataset_folder,batch_size=1048576,split="val")
+                val_dataset = MERLBRDFIterableDataset(cfg,data_folder=cfg.dataset_folder,batch_size=cfg.data.rays_num,split="val")
         else:
             train_dataset = MERLBRDFFixedDataset(cfg,data_folder=cfg.dataset_folder,batch_size=100,split="train")
             if cfg.data.debug & cfg.data.valid_on_train_set:
@@ -205,15 +223,30 @@ def main(cfg):
         else:
             val_dataset = MultiMaterialPointDataset(cfg, root_folder=cfg.dataset_folder, split="val")
     elif cfg.data.dataset_name == "points_dense":
-        train_dataset = MultiMaterialDenseDataset(cfg, root_folder=cfg.dataset_folder, split="train")
-        if cfg.data.debug & cfg.data.valid_on_train_set:
-            val_dataset = MultiMaterialDenseDataset(cfg, root_folder=cfg.dataset_folder, split="train", share_from=train_dataset)
+        if validate_on_stage1:
+            # Train on the held-out test materials using the iterable train
+            # loader (mirrors the Bonn flow which points dataset_folder at
+            # Bonn_val). Caller sets data.training_list_path to e.g.
+            # test_list_420.txt so MultiMaterialLatentBRDF and the dataloader
+            # both see the test materials.
+            train_dataset = MultiMaterialDenseDataset(cfg, root_folder=cfg.dataset_folder, split="train")
+            val_dataset = None
         else:
-            val_dataset = MultiMaterialDenseDataset(cfg, root_folder=cfg.dataset_folder, split="val", share_from=train_dataset)
+            train_dataset = MultiMaterialDenseDataset(cfg, root_folder=cfg.dataset_folder, split="train")
+            if cfg.data.debug & cfg.data.valid_on_train_set:
+                val_dataset = MultiMaterialDenseDataset(cfg, root_folder=cfg.dataset_folder, split="train", share_from=train_dataset)
+            else:
+                val_dataset = MultiMaterialDenseDataset(cfg, root_folder=cfg.dataset_folder, split="val", share_from=train_dataset)
     elif cfg.data.dataset_name == "bonn":
         if cfg.model.stage == 1:
             if cfg.model.test:
                 val_dataset = BonnValDataset(cfg, root_folder=cfg.dataset_folder)
+            elif validate_on_stage1:
+                # Train on the val-set materials (cfg.dataset_folder pointed at
+                # Bonn_val) using the iterable train loader. Skip BonnValDataset
+                # because it hardcodes mat_id=1, which only exists in Bonn_train.
+                train_dataset = BonnDataset(cfg, root_folder=cfg.dataset_folder, split="train")
+                val_dataset = None
             else:
                 train_dataset = BonnDataset(cfg, root_folder=cfg.dataset_folder, split="train")
                 val_dataset = BonnValDataset(cfg, root_folder=cfg.dataset_folder)
@@ -239,11 +272,14 @@ def main(cfg):
             num_workers=cfg.data.num_workers,
             pin_memory=False,
         )
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=1,
-        num_workers=cfg.data.num_workers,
-    )
+    if val_dataset is None:
+        val_loader = None
+    else:
+        val_loader = DataLoader(
+            val_dataset,
+            batch_size=1,
+            num_workers=cfg.data.num_workers,
+        )
     print("==> initializing logger ...")
     logger = hydra.utils.instantiate(cfg.model.logger, save_dir=cfg.exp_output_root_path)
 

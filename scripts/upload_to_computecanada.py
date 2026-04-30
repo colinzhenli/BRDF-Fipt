@@ -98,6 +98,15 @@ def main():
                              f"(default: {DEFAULT_STATE})")
     parser.add_argument("--force", action="store_true",
                         help="Re-upload materials even if listed in state file.")
+    parser.add_argument("--rescan", action="store_true",
+                        help="Ignore the state file and consider every eligible "
+                             "material. rsync still skips files that match the "
+                             "remote (size+mtime, or hash with --checksum).")
+    parser.add_argument("--checksum", action="store_true",
+                        help="Pass --checksum to rsync so files are compared by "
+                             "MD5 hash instead of size+mtime. Slower (must read "
+                             "every byte on both sides) but catches content "
+                             "changes when timestamps were rewritten.")
     args = parser.parse_args()
 
     if shutil.which("rsync") is None:
@@ -120,7 +129,7 @@ def main():
     state = load_state(state_path)
     already_uploaded = set(state["uploaded"])
 
-    if args.force:
+    if args.force or args.rescan:
         to_upload = list(valid)
         already_skipped = []
     else:
@@ -135,10 +144,6 @@ def main():
     print(f"To upload this run: {len(to_upload)}")
     if skipped:
         print(f"Skipped (missing required files): {len(skipped)}")
-        for name, missing in skipped[:10]:
-            print(f"  - {name}: missing {missing}")
-        if len(skipped) > 10:
-            print(f"  ... and {len(skipped) - 10} more")
 
     if not to_upload:
         print("Nothing to upload.")
@@ -206,6 +211,10 @@ def main():
             cmd = [
                 "rsync", "-a", "--info=progress2", "--human-readable",
                 "-e", rsh,
+            ]
+            if args.checksum:
+                cmd.append("--checksum")
+            cmd += [
                 *src_files,
                 f"{args.user_host}:{remote_dir}/",
             ]

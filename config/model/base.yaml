@@ -1,7 +1,8 @@
-ckpt_path: 
+ckpt_path:
 stage: 2
 freeze_decoder: False
 continue_training: False  # If True, resume full training state (optimizer, scheduler, epoch) from ckpt_path
+validate_on_stage1: False  # If True (with stage=1, test=False): load decoder-only weights and optimise latents on the validation split to probe decoder convergence
 
 test: False
 emitter_calibration: False # False
