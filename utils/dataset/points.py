@@ -17,7 +17,30 @@ from dataclasses import dataclass
 import random
 import struct
 import glob
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from utils.ops import rotate_to_canonical_frame
+
+
+def _dense_pool_load_worker(args):
+    """ProcessPoolExecutor worker: load one material in a subprocess.
+
+    Mirrors bonn.py's `_pool_load_worker`. Builds a stub
+    MultiMaterialDenseDataset (bypassing __init__) with only the attributes
+    `_load_single_material` reads, then delegates to it. Keeps the existing
+    loader logic as the single source of truth — no duplicated code.
+    """
+    (material_folder_str, material_id, is_val, val_ratio,
+     filter_observations, filter_center, filter_half_width,
+     filter_half_length, point_subsample_ratio) = args
+    stub = MultiMaterialDenseDataset.__new__(MultiMaterialDenseDataset)
+    stub.split = 'val' if is_val else 'train'
+    stub.val_ratio = val_ratio
+    stub.filter_observations = filter_observations
+    stub.filter_center = filter_center
+    stub.filter_half_width = filter_half_width
+    stub.filter_half_length = filter_half_length
+    stub.point_subsample_ratio = point_subsample_ratio
+    return stub._load_single_material(Path(material_folder_str), material_id)
 
 def build_4x4(R, t):
     T = np.eye(4, dtype=float)
@@ -218,6 +241,10 @@ class MultiMaterialDenseDataset(IterableDataset):
         # even when built independently (without share_from).
         self.point_subsample_ratio = float(getattr(cfg.data, 'point_subsample_ratio', 1.0))
 
+        # Parallel material loading. 0 = serial; >0 = ProcessPoolExecutor with
+        # this many workers (mirrors BonnDataset.num_load_workers).
+        self.num_load_workers = int(getattr(cfg.data, 'num_load_workers', 0))
+
         # Read training list
         self.training_list_path = cfg.data.training_list_path
         self.training_list = []
@@ -227,7 +254,37 @@ class MultiMaterialDenseDataset(IterableDataset):
                 if line:
                     self.training_list.append(int(line))
 
-        self.material_folders = [Path(root_folder) / str(mid) for mid in self.training_list]
+        # Optional: "pretend the bad↔backup material swap never happened" for
+        # continue-training from a pre-swap checkpoint. For each swapped slot,
+        # read data from the swap partner's folder (which physically holds this
+        # slot's pre-swap data) so num_points and per-material offsets stay
+        # identical to what the saved checkpoint expects.
+        self.legacy_swap_indexing = bool(getattr(cfg.data, 'legacy_swap_indexing', False))
+        self.swap_partner = {}
+        if self.legacy_swap_indexing:
+            import json as _json
+            rl_path = getattr(cfg.data, 'replace_list_path', None) or str(Path(root_folder) / 'replace_list.json')
+            if os.path.exists(rl_path):
+                with open(rl_path) as _rl_f:
+                    _rl = _json.load(_rl_f)
+                for _r in _rl.get('records', []):
+                    if _r.get('backup_id') is None or _r.get('replaces') is None:
+                        continue
+                    self.swap_partner[int(_r['backup_id'])] = int(_r['replaces'])
+                    self.swap_partner[int(_r['replaces'])] = int(_r['backup_id'])
+                _affected = sum(1 for m in self.training_list if m in self.swap_partner)
+                print(f"[legacy_swap_indexing] enabled: {_affected}/{len(self.training_list)} training-list slots remap to partner folder (replace_list={rl_path})")
+            else:
+                print(f"[legacy_swap_indexing] enabled but replace_list.json not found at {rl_path}; no remap applied")
+
+        # When a slot is swap-paired AND legacy mode is on, read data from the
+        # partner's folder. material_id (used for downstream indexing) stays as
+        # the training_list slot id — see _load_all_data which uses
+        # self.training_list[i] instead of folder.name.
+        self.material_folders = [
+            Path(root_folder) / str(self.swap_partner.get(mid, mid))
+            for mid in self.training_list
+        ]
 
         print(f"\n{'='*60}")
         print(f"Loading MultiMaterial Dense Dataset ({split})")
@@ -302,10 +359,144 @@ class MultiMaterialDenseDataset(IterableDataset):
             # Pathological: no valid observations at all in this split.
             self.mat_weights = np.ones(len(obs_arr)) / max(len(obs_arr), 1)
 
+    def _load_single_material(self, material_folder, material_id):
+        """Load one material's structured NPZ + metadata.
+
+        Returns a dict with all per-material arrays the aggregator needs, or
+        ``None`` if the material should be skipped (missing file, no valid
+        points/observations after filters). Pure read + numpy work so the
+        function is safe to invoke from a ProcessPoolExecutor worker.
+        """
+        is_val = (self.split == 'val')
+        structured_path = material_folder / 'observations_structured.npz'
+
+        if not structured_path.exists():
+            print(f"  Warning: {structured_path} not found, skipping material {material_id}")
+            return None
+
+        data = np.load(structured_path)
+        xyz = data['xyz']                  # (V, 3) float32
+        point_ids_np = data['point_ids']   # (V,) int32
+        rgbs_dense = data['rgbs']          # (K, V, 3) uint16
+
+        K, V, _ = rgbs_dense.shape
+
+        scan_log_path = str(material_folder / "scan_log.json")
+        camera_json_path = str(material_folder / "rotated_camera.json")
+
+        metadata_list, _, _ = load_camera_turntable_light_metadata(scan_log_path)
+        camera_metadata = load_camera_metadata(camera_json_path)
+
+        sorted_metadata = sorted(metadata_list, key=lambda x: int(x['overall_id']))
+        emitter_lookup = np.array(
+            [int(entry['emitter_id']) for entry in sorted_metadata], dtype=np.int32)
+
+        cam_pos_array = np.zeros((K, 3), dtype=np.float32)
+        for cam_id_str, cam_info in camera_metadata.items():
+            cam_id = int(cam_id_str)
+            if cam_id < K:
+                position = np.array(cam_info['position'], dtype=np.float32)
+                rotation_matrix = np.array(cam_info['rotation_matrix'])
+                c2w = build_4x4(rotation_matrix, position)
+                cam_pos_array[cam_id] = c2w[:3, 3]
+
+        if self.filter_observations:
+            point_mask = ((np.abs(xyz[:, 0] - self.filter_center[0]) <= self.filter_half_width) &
+                          (np.abs(xyz[:, 1] - self.filter_center[1]) <= self.filter_half_length))
+            valid_v = np.where(point_mask)[0]
+        else:
+            valid_v = np.arange(V)
+
+        if len(valid_v) == 0:
+            return None
+
+        if self.point_subsample_ratio < 1.0:
+            N_sub = max(1, int(len(valid_v) * self.point_subsample_ratio))
+            rng = np.random.default_rng(material_id)
+            sel = np.sort(rng.choice(len(valid_v), size=N_sub, replace=False))
+            valid_v = valid_v[sel]
+
+            rgbs_dense = rgbs_dense[:, valid_v, :]
+            xyz = xyz[valid_v]
+            point_ids_np = np.arange(len(valid_v), dtype=np.int32)
+            valid_v = np.arange(len(valid_v))
+
+        split_idx = int(K * (1 - self.val_ratio))
+        if is_val:
+            valid_k = np.arange(split_idx, K)
+        else:
+            valid_k = np.arange(K)
+
+        rgbs_sub = rgbs_dense[np.ix_(valid_k, valid_v)]
+        valid_mask = rgbs_sub.sum(axis=2) > 0
+        N_obs = int(valid_mask.sum())
+
+        if N_obs == 0:
+            return None
+
+        density = float(valid_mask.mean())
+
+        print(f"  Material {material_id}: {N_obs:,} valid obs "
+              f"(K={len(valid_k)}, V_filtered={len(valid_v)}, "
+              f"density={density*100:.1f}%, "
+              f"rgbs={rgbs_dense.nbytes/1e9:.2f} GB)")
+
+        return {
+            'material_id': material_id,
+            'rgbs_dense': rgbs_dense,
+            'xyz': xyz,
+            'point_ids_np': point_ids_np,
+            'emitter_lookup': emitter_lookup,
+            'valid_v': valid_v,
+            'valid_k': valid_k,
+            'N_obs': N_obs,
+            'cam_pos_array': cam_pos_array,
+            'K': K,
+        }
+
+    def _load_materials_parallel(self, tasks):
+        """Load materials in parallel using ProcessPoolExecutor.
+
+        Returns results in the same order as ``tasks`` (matching the serial
+        loader). Failed loads (worker raised) are dropped with a warning;
+        worker-returned ``None`` results are also dropped.
+        """
+        n_workers = min(self.num_load_workers, len(tasks))
+        print(f"[{self.split}] Parallel load: {len(tasks)} materials, "
+              f"{n_workers} workers (ProcessPoolExecutor)")
+
+        is_val = (self.split == 'val')
+        worker_args = [
+            (str(material_folder), material_id, is_val, self.val_ratio,
+             self.filter_observations, self.filter_center,
+             self.filter_half_width, self.filter_half_length,
+             self.point_subsample_ratio)
+            for material_folder, material_id in tasks
+        ]
+
+        results = {}
+        with ProcessPoolExecutor(max_workers=n_workers) as ex:
+            future_to_mid = {
+                ex.submit(_dense_pool_load_worker, wa): wa[1]
+                for wa in worker_args
+            }
+            for fut in tqdm(as_completed(future_to_mid),
+                            total=len(future_to_mid),
+                            desc=f"Loading {self.split} (parallel)"):
+                mid = future_to_mid[fut]
+                try:
+                    res = fut.result()
+                except Exception as exc:
+                    print(f"  [Warning] material {mid} worker raised: {exc}")
+                    res = None
+                if res is not None:
+                    results[mid] = res
+
+        # Preserve task order
+        return [results[mid] for _, mid in tasks if mid in results]
+
     def _load_all_data(self):
         """Load structured NPZ data. Keeps rgbs in dense numpy uint16 format."""
-        is_val = (self.split == 'val')
-
         # Per-material dense storage (kept as numpy for memory efficiency)
         self.mat_rgbs = []       # list of (K, V, 3) numpy uint16
         self.mat_xyz = []        # list of (V, 3) numpy float32
@@ -319,106 +510,33 @@ class MultiMaterialDenseDataset(IterableDataset):
         cam_pos_list = []  # list of (K, 3) numpy float32
         max_K = 0
 
-        for material_folder in tqdm(self.material_folders, desc=f"Loading {self.split} data"):
-            material_id = int(material_folder.name)
-            structured_path = material_folder / 'observations_structured.npz'
+        # (folder, material_id) tasks; material_id uses training_list slot id so
+        # legacy_swap_indexing remapping doesn't change ids seen downstream.
+        tasks = [
+            (folder, self.training_list[i])
+            for i, folder in enumerate(self.material_folders)
+        ]
 
-            if not structured_path.exists():
-                print(f"  Warning: {structured_path} not found, skipping material {material_id}")
-                continue
+        if self.num_load_workers > 0 and len(tasks) > 1:
+            mat_results = self._load_materials_parallel(tasks)
+        else:
+            mat_results = []
+            for folder, mid in tqdm(tasks, desc=f"Loading {self.split} data"):
+                res = self._load_single_material(folder, mid)
+                if res is not None:
+                    mat_results.append(res)
 
-            data = np.load(structured_path)
-            xyz = data['xyz']              # (V, 3) float32
-            point_ids_np = data['point_ids']  # (V,) int32
-            rgbs_dense = data['rgbs']      # (K, V, 3) uint16
-
-            K, V, _ = rgbs_dense.shape
-
-            # Load metadata (same as existing MultiMaterialPointDataset)
-            scan_log_path = str(material_folder / "scan_log.json")
-            camera_json_path = str(material_folder / "rotated_camera.json")
-
-            metadata_list, _, _ = load_camera_turntable_light_metadata(scan_log_path)
-            camera_metadata = load_camera_metadata(camera_json_path)
-
-            # Emitter lookup: overall_id (0-based) -> emitter_id
-            sorted_metadata = sorted(metadata_list, key=lambda x: int(x['overall_id']))
-            emitter_lookup = np.array(
-                [int(entry['emitter_id']) for entry in sorted_metadata], dtype=np.int32)
-
-            # Camera positions from c2w (same as existing loader)
-            cam_pos_array = np.zeros((K, 3), dtype=np.float32)
-            for cam_id_str, cam_info in camera_metadata.items():
-                cam_id = int(cam_id_str)
-                if cam_id < K:
-                    position = np.array(cam_info['position'], dtype=np.float32)
-                    rotation_matrix = np.array(cam_info['rotation_matrix'])
-                    c2w = build_4x4(rotation_matrix, position)
-                    cam_pos_array[cam_id] = c2w[:3, 3]
-
-            # XY filter on points
-            if self.filter_observations:
-                point_mask = ((np.abs(xyz[:, 0] - self.filter_center[0]) <= self.filter_half_width) &
-                              (np.abs(xyz[:, 1] - self.filter_center[1]) <= self.filter_half_length))
-                valid_v = np.where(point_mask)[0]
-            else:
-                valid_v = np.arange(V)
-
-            if len(valid_v) == 0:
-                continue
-
-            # Point subsampling: keep a random fraction of the XY-filtered points.
-            # Seeded per material so the same subset is selected across runs and
-            # across independent train/val instances. Dense arrays are compacted
-            # on the V axis so the latent bank and RAM footprint shrink
-            # proportionally; point_ids become dense 0..N_sub-1. The XY-filter-
-            # only path is untouched (compaction would break the model's
-            # num_points assumption that reads from point_metadata.json).
-            if self.point_subsample_ratio < 1.0:
-                N_sub = max(1, int(len(valid_v) * self.point_subsample_ratio))
-                rng = np.random.default_rng(material_id)
-                sel = np.sort(rng.choice(len(valid_v), size=N_sub, replace=False))
-                valid_v = valid_v[sel]
-
-                rgbs_dense = rgbs_dense[:, valid_v, :]
-                xyz = xyz[valid_v]
-                point_ids_np = np.arange(len(valid_v), dtype=np.int32)
-                valid_v = np.arange(len(valid_v))
-
-            # Train/val split at image level
-            split_idx = int(K * (1 - self.val_ratio))
-            if is_val:
-                valid_k = np.arange(split_idx, K)
-            else:
-                valid_k = np.arange(K)
-
-            # Count valid observations for density estimate
-            rgbs_sub = rgbs_dense[np.ix_(valid_k, valid_v)]
-            valid_mask = rgbs_sub.sum(axis=2) > 0
-            N_obs = int(valid_mask.sum())
-
-            if N_obs == 0:
-                continue
-
-            density = valid_mask.mean()
-
-            # Store per-material data
-            self.mat_rgbs.append(rgbs_dense)      # keep full (K, V, 3) for indexing
-            self.mat_xyz.append(xyz)               # (V, 3) float32
-            self.mat_point_ids.append(point_ids_np)  # (V,) int32
-            self.mat_emitter_lookup.append(emitter_lookup)
-            self.mat_material_ids.append(material_id)
-            self.mat_valid_v.append(valid_v)
-            self.mat_valid_k.append(valid_k)
-            self.mat_num_valid_obs.append(N_obs)
-
-            cam_pos_list.append(cam_pos_array)
-            max_K = max(max_K, K)
-
-            print(f"  Material {material_id}: {N_obs:,} valid obs "
-                  f"(K={len(valid_k)}, V_filtered={len(valid_v)}, "
-                  f"density={density*100:.1f}%, "
-                  f"rgbs={rgbs_dense.nbytes/1e9:.2f} GB)")
+        for res in mat_results:
+            self.mat_rgbs.append(res['rgbs_dense'])
+            self.mat_xyz.append(res['xyz'])
+            self.mat_point_ids.append(res['point_ids_np'])
+            self.mat_emitter_lookup.append(res['emitter_lookup'])
+            self.mat_material_ids.append(res['material_id'])
+            self.mat_valid_v.append(res['valid_v'])
+            self.mat_valid_k.append(res['valid_k'])
+            self.mat_num_valid_obs.append(res['N_obs'])
+            cam_pos_list.append(res['cam_pos_array'])
+            max_K = max(max_K, res['K'])
 
         # Precompute material sampling weights (proportional to valid obs count)
         total_valid = sum(self.mat_num_valid_obs)

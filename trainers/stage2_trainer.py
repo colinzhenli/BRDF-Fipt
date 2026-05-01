@@ -31,7 +31,37 @@ class Stage2Trainer(pl.LightningModule):
         self.freeze_decoder = cfg.model.freeze_decoder
         self.gt_material = gt_material
         self.gt_folder = cfg.gt_folder
-        self.camera_factor = cfg.renderer.camera.linear_factor
+        # Per-material camera-factor lookup (single material per stage2 run).
+        # Stage2 batches don't carry material_ids — the entire run is one material —
+        # so we resolve the id ONCE here from cfg.dataset_folder's basename and
+        # look it up in the same camera_factor.json that stage1 uses. Falls back
+        # to the legacy single linear_factor for non-Dataset_Nov11 runs (UBO BTF,
+        # Bonn, etc.) or if the basename isn't a numeric material id.
+        _ds_basename = os.path.basename(os.path.normpath(cfg.dataset_folder))
+        try:
+            _mid = int(_ds_basename)
+            _cf_json_path = '/media/raid/cloth/capture_data/Dataset_Nov11/camera_factor.json'
+            with open(_cf_json_path) as _cf_f:
+                _cf_obj = json.load(_cf_f)
+            _f1 = getattr(cfg.renderer.camera, 'linear_factor1', None)
+            _f2 = getattr(cfg.renderer.camera, 'linear_factor2', None)
+            if _f1 is None or _f2 is None:
+                raise AttributeError('renderer.camera.linear_factor1/linear_factor2 not in config')
+            _f3 = _f2 * (8000.0 / 20000.0)
+            _factors = (_f1, _f2, _f3)
+            _factor_idx = None
+            for _seg in _cf_obj['camera_factor_segments']:
+                if _seg['id_start'] <= _mid <= _seg['id_end']:
+                    _factor_idx = _seg['factor']
+                    break
+            if _factor_idx is None:
+                raise KeyError(f"material_id {_mid} not covered by camera_factor.json")
+            self.camera_factor = _factors[_factor_idx - 1]
+            print(f"[camera_factor] stage2 material_id={_mid} → factor{_factor_idx}={self.camera_factor}")
+        except (ValueError, FileNotFoundError, AttributeError, KeyError) as _e:
+            # Non-numeric basename (UBO BTF / Bonn) or missing keys — legacy single factor
+            self.camera_factor = cfg.renderer.camera.linear_factor
+            print(f"[camera_factor] stage2 fallback to cfg.renderer.camera.linear_factor={self.camera_factor} ({_e})")
         print("Initializing stage2 trainer")
         
         #self.latent_dim = cfg.material.latent_dim

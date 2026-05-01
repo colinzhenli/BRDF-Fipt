@@ -1,0 +1,259 @@
+{
+  "title": "Hugging Face upload plan — Cloth BRDF dataset for NeurIPS 2026 D&B",
+  "version": "1.0",
+  "exported_from": "auto-memory: project_hf_upload_plan.md",
+  "exported_on": "2026-05-01",
+
+  "target_scale": {
+    "materials": 500,
+    "per_material_size_gb": 7.2,
+    "total_size_tb": 3.5,
+    "current_built_materials": 71,
+    "training_list_count": 382,
+    "test_list_count": 52
+  },
+
+  "source_layout": {
+    "root": "/media/raid/cloth/Dataset_submission/",
+    "per_material_files": [
+      "hdr/                              (~5.5 GB, 575 cropped 16-bit PNGs)",
+      "observations_structured.npz       (~1.7 GB)",
+      "point_positions.npz               (~9.5 MB)",
+      "scan_log.json",
+      "rotated_camera.json",
+      "point_metadata.json",
+      "bbox.json",
+      "hdr_crop_bboxes.json",
+      "unmatched_scan_ids.json"
+    ],
+    "global_files": [
+      "emitter_calibration.json",
+      "sample_size.json",
+      "_intrinsics.json",
+      "_pipeline_spec.json",
+      "training_list.txt",
+      "test_list.txt"
+    ],
+    "build_scripts": "scripts/dataset_submission/{build_submission.py, crop_hdr_by_mask.py, process_all_materials.py}"
+  },
+
+  "neurips_2026_requirements": {
+    "submission_deadline": "Dataset must be hosted and reviewer-accessible at submission",
+    "public_release": "Public by camera-ready",
+    "metadata": "Croissant core + Responsible AI metadata, validated",
+    "large_dataset_rule": "Provide ≤4 GB sample subset (3.5 TB > 4 GB threshold)",
+    "code": "Strongly encouraged",
+    "anonymity": "Double-blind — use anon HF account at submission",
+    "desk_reject_risks": [
+      "Dataset URL inaccessible",
+      "Missing/invalid Croissant metadata",
+      "No sample for >4 GB dataset"
+    ]
+  },
+
+  "hosting_decision": {
+    "platform": "Hugging Face",
+    "plan": "Pro (10 TB public / 1 TB private + pay-as-you-go)",
+    "visibility": "public (HF doesn't credit private-preview for NeurIPS per spec)",
+    "fits_in_pro_public_quota": true,
+    "anonymous_account_required_at_submission": true
+  },
+
+  "repo_layout": {
+    "format": "tar-per-material (WebDataset-compatible)",
+    "file_count": "~5,000 (well under HF 100k limit)",
+    "tree": {
+      "README.md": "dataset card with YAML frontmatter + prose",
+      "LICENSE": "CC-BY-4.0 by default (decision pending — see license_options)",
+      "croissant.json": "core + RAI (validated against mlcommons spec)",
+      "globals/": "emitter_calibration.json, sample_size.json, _intrinsics.json, _pipeline_spec.json, training_list.txt, test_list.txt",
+      "sample/": "≤4 GB representative subset (NeurIPS rule). Single material with downsampled HDR (e.g. ~50 PNGs + npz subset).",
+      "materials/{id}/": [
+        "hdr.tar            (575 PNGs bundled, ~5.5 GB)",
+        "observations_structured.npz",
+        "point_positions.npz",
+        "scan_log.json",
+        "rotated_camera.json",
+        "point_metadata.json",
+        "bbox.json",
+        "hdr_crop_bboxes.json",
+        "unmatched_scan_ids.json"
+      ],
+      "docs/": "extended data card",
+      "examples/": "load_material.py, inspect_subset.ipynb (no in-repo dataset loader script — HF discourages)"
+    }
+  },
+
+  "hf_limits_to_obey": {
+    "files_per_repo": 100000,
+    "files_per_folder": 10000,
+    "max_file_size_gb": 200,
+    "hard_file_cap_gb": 500,
+    "files_per_commit": "50-100"
+  },
+
+  "tar_strategy": {
+    "rationale": "Raw PNG layout is 500*575=287,500 files, exceeds HF's 100k/repo cap. Tar-per-material drops to ~5k files.",
+    "tar_options_evaluated": {
+      "A_BytesIO_RAM": {
+        "description": "tarfile.open(fileobj=BytesIO()) → upload_file(buf) — zero disk write",
+        "ram_per_worker_gb": 5.5,
+        "notes": "Best for current setup. With 1 TB host RAM, 4-8 workers fit easily."
+      },
+      "B_dev_shm_staging": {
+        "description": "Stage tars in /dev/shm in batches (504 GB tmpfs free), run upload_large_folder, wipe, repeat",
+        "batch_size_materials": 50,
+        "batch_size_gb": 275,
+        "notes": "Keeps upload_large_folder's resumable machinery; more bookkeeping."
+      },
+      "C_streaming_pipe": {
+        "description": "Truly streaming tar to upload",
+        "viable": false,
+        "reason": "HF/LFS/Xet pre-computes SHA256 — needs seekable buffer."
+      }
+    },
+    "recommended": "A_BytesIO_RAM with custom uploader (per-material loop, done-log for resume)",
+    "if_running_on_8tb_hdd_directly": {
+      "tar_to_tmpfs_per_material_seconds": "40-60 (HDD sequential read of 575 PNGs at 100-150 MB/s)",
+      "no_nfs_bottleneck": true,
+      "single_hdd_head_limits_parallelism": "1.5-2x speedup from parallel workers"
+    }
+  },
+
+  "upload_strategy": {
+    "library": "huggingface_hub (>= 0.32 for hf_xet bundled)",
+    "primary_api": "HfApi.upload_file with BytesIO (custom loop) OR upload_large_folder for staged trees",
+    "env_vars": {
+      "HF_XET_HIGH_PERFORMANCE": "1",
+      "HF_XET_CACHE": "/dev/shm/.xet  (or local SSD path — NOT NFS)",
+      "HF_TOKEN": "set from anon account write token"
+    },
+    "num_workers": 8,
+    "auth": "hf auth login (one-time) or HF_TOKEN env",
+    "resume_strategy": "Maintain done-log JSON: list of {material_id, file, sha256, uploaded_at}. Skip on restart.",
+    "xet_dedup_expected_savings_pct": "20-40 (black-mask regions across cropped HDR)"
+  },
+
+  "wall_time_estimates_no_nfs": {
+    "assumptions": {
+      "hdd_sequential_read_mb_s": 150,
+      "tar_per_material_sec": 50,
+      "per_file_metadata_overhead_ms": 150,
+      "tar_files_total": 5000,
+      "pipelined_tar_and_upload": true,
+      "xet_dedup_pct": 30
+    },
+    "scenarios": {
+      "upload_50_mb_s_no_dedup":  {"bytes_h": 19.4, "tar_h": 7, "wall_h": 20},
+      "upload_100_mb_s_30pct_dedup": {"bytes_h": 6.8, "tar_h": 7, "wall_h": 7,  "bottleneck": "HDD"},
+      "upload_200_mb_s_30pct_dedup": {"bytes_h": 3.4, "tar_h": 7, "wall_h": 7,  "bottleneck": "HDD"},
+      "upload_400_mb_s_30pct_dedup": {"bytes_h": 1.7, "tar_h": 7, "wall_h": 7,  "bottleneck": "HDD"}
+    },
+    "recommended_pre_run": "Benchmark single material end-to-end before full run."
+  },
+
+  "license_options": {
+    "default_recommendation": "CC-BY-4.0",
+    "rationale": "Modal choice across NeurIPS D&B (OpenIllumination, MVP-N, OmniObject3D). Permissive, max community uptake.",
+    "alternatives": {
+      "CC-BY-NC-4.0": "Use if concerned about commercial reuse of cloth captures (e.g. third-party fabric designs).",
+      "other_custom": "Use if specific clauses needed (SSS-GS pattern). Higher friction.",
+      "CC0": "Maximum permissive, less common at NeurIPS."
+    },
+    "decision_pending": true
+  },
+
+  "croissant_metadata": {
+    "auto_core": "HF generates from dataset card automatically",
+    "manual_rai_fields_required": [
+      "dataCollection",
+      "dataAnnotationProtocol",
+      "dataReleaseMaintenancePlan",
+      "personalSensitiveInformation",
+      "inTheLoop",
+      "useCases"
+    ],
+    "validation": "mlcommons/croissant validator before submission",
+    "failure_mode": "Invalid metadata = NeurIPS desk reject"
+  },
+
+  "dataset_card_yaml_template": {
+    "license": "cc-by-4.0",
+    "pretty_name": "Cloth BRDF Dataset (Multi-View Multi-Light HDR)",
+    "tags": [
+      "brdf",
+      "material-capture",
+      "multi-view",
+      "multi-light",
+      "hdr",
+      "inverse-rendering",
+      "photometric-stereo",
+      "webdataset"
+    ],
+    "task_categories": ["image-to-3d", "other"],
+    "size_categories": ["n>1T"],
+    "language": ["en"]
+  },
+
+  "maintenance": {
+    "tags": [
+      "v1.0-neurips-submission  (frozen at submission)",
+      "v1.1-camera-ready        (post-review fixes)"
+    ],
+    "adding_materials": "Re-run upload pipeline; Xet skips already-uploaded chunks.",
+    "patching_metadata": "Edit JSONs locally → upload_file each. Inline (non-LFS), so no quota concern.",
+    "history_squash": "super_squash_history once before camera-ready if commit history > few thousand."
+  },
+
+  "operational_constraints": {
+    "do_not_modify_running_scripts": "Per project rule — write build_hf_tree.py + upload_to_hf.py as new files, don't touch build_submission.py.",
+    "avoid_concurrent_with_stage1_2_training": "NFS contention on /media/raid (memory: project_nfs_contention).",
+    "nfs_rpc_slot_bump_if_using_nfs_source": "sysctl sunrpc.tcp_slot_table_entries=256 (memory: project_nfs_rpc_slots)",
+    "if_uploading_from_8tb_hdd_local": "No NFS concerns — single-head HDD limits parallel tar speed-up to ~1.5-2x"
+  },
+
+  "minimal_python_skeleton": {
+    "create_repo": "from huggingface_hub import create_repo; create_repo('anon/cloth-brdf-2026', repo_type='dataset', private=False)",
+    "rename_repo": "from huggingface_hub import move_repo; move_repo(from_id, to_id, repo_type='dataset')",
+    "tag_release": "from huggingface_hub import create_tag; create_tag(repo_id, tag='v1.0-neurips-submission', repo_type='dataset')",
+    "upload_file_with_bytesio": [
+      "import io, tarfile",
+      "from huggingface_hub import HfApi",
+      "api = HfApi()",
+      "buf = io.BytesIO()",
+      "with tarfile.open(fileobj=buf, mode='w') as tf:",
+      "    tf.add(f'{src}/{mid}/hdr', arcname='hdr')",
+      "buf.seek(0)",
+      "api.upload_file(path_or_fileobj=buf, path_in_repo=f'materials/{mid}/hdr.tar', repo_id=repo, repo_type='dataset')"
+    ],
+    "upload_large_folder": "api.upload_large_folder(repo_id=repo, repo_type='dataset', folder_path='/staging/', num_workers=8)"
+  },
+
+  "open_decisions": [
+    "License (default: CC-BY-4.0)",
+    "Final HF account name (anon for double-blind)",
+    "Sample subset contents (1 material downsampled to <4 GB — which material, how many PNGs)",
+    "Upload host (8 TB HDD direct vs file server with NFS source)",
+    "Tar approach (BytesIO vs /dev/shm staging)"
+  ],
+
+  "next_actions": [
+    "Benchmark single-material end-to-end (tar + upload) → confirms wall-time band",
+    "Draft scripts/dataset_submission/build_hf_tree.py (tar generator)",
+    "Draft scripts/dataset_submission/upload_to_hf.py (BytesIO + done-log + workers)",
+    "Draft README.md dataset card with YAML frontmatter",
+    "Draft croissant.json skeleton with RAI placeholders",
+    "Create anon HF account + dataset repo"
+  ],
+
+  "sources": {
+    "hf_storage_limits": "https://huggingface.co/docs/hub/en/storage-limits",
+    "hf_upload_guide": "https://huggingface.co/docs/huggingface_hub/main/en/guides/upload",
+    "hf_repo_management": "https://huggingface.co/docs/huggingface_hub/main/en/guides/repository",
+    "hf_dataset_cards": "https://huggingface.co/docs/hub/en/datasets-cards",
+    "neurips_hosting_guidelines": "https://neurips.cc/Conferences/2026/EvaluationsDatasetsHosting",
+    "croissant_spec": "https://github.com/mlcommons/croissant",
+    "openillumination_dataset_template": "https://huggingface.co/datasets/OpenIllumination/OpenIllumination",
+    "sss_gs_dataset_template": "https://huggingface.co/datasets/CGTuebingen/SSS-GS"
+  }
+}

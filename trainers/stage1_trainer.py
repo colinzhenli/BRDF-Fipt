@@ -25,7 +25,7 @@ class Stage1Trainer(pl.LightningModule):
 
         self.material = material
         self.freeze_decoder = cfg.model.freeze_decoder
-        self.more_visualizations = True
+        self.more_visualizations = False
         self._opt_name = getattr(cfg.model.optimizer, 'name', 'Adam')
         self.reset_latent_momentum = getattr(cfg.model.optimizer, 'reset_latent_momentum_on_chunk_switch', False)
         self.gt_material = gt_material
@@ -34,6 +34,24 @@ class Stage1Trainer(pl.LightningModule):
         self.camera_factor2 = cfg.renderer.camera.linear_factor2
         # Materials >= 352 captured at exposure 8000 instead of 20000; camera response is linear in exposure.
         self.camera_factor3 = self.camera_factor2 * (8000.0 / 20000.0)
+
+        # Per-material camera-factor lookup table. The legacy hardcoded segments
+        # (id<100→f1, id<352→f2, else→f3) are wrong for IDs 501-530 (which used
+        # exposure 20000, not 8000) and don't reflect the bad↔backup material
+        # swap. We load camera_factor.json from the dataset folder, expand to a
+        # per-id float tensor, and index with material_ids in training_step.101
+        cf_json_path = os.path.join(cfg.dataset_folder, 'camera_factor.json')
+        with open(cf_json_path) as _cf_f:
+            _cf_obj = json.load(_cf_f)
+        _factors = (self.camera_factor1, self.camera_factor2, self.camera_factor3)
+        _max_id = max(seg['id_end'] for seg in _cf_obj['camera_factor_segments'])
+        _table = torch.full((_max_id + 1,), float('nan'), dtype=torch.float32)
+        for seg in _cf_obj['camera_factor_segments']:
+            _table[seg['id_start']:seg['id_end'] + 1] = _factors[seg['factor'] - 1]
+        assert not torch.isnan(_table).any(), "camera_factor.json has gaps in ID coverage"
+        self.register_buffer('camera_factor_by_id', _table)
+        print(f"[camera_factor] loaded {len(_cf_obj['camera_factor_segments'])} segments "
+              f"from {cf_json_path}; covers ids 0..{_max_id}")
         #self.latent_dim = cfg.material.latent_dim
         # Create a mapping from roughness-metallic pairs to train latent indices
         self.radiance_rgb_pairs = {}
@@ -452,11 +470,8 @@ class Stage1Trainer(pl.LightningModule):
             rays, prior = self.handeye_refiner.apply_handeye_delta_to_rays(rays, camera_ids)
         # forward renders
         rgbs, vis, ray_params, _, smooth_loss = self.renderer.stage1_render(self.emitter, rays, xyz, emitter_ids, material_ids, point_ids, self.cfg.renderer.spp.train, None, None, validation=False)
-        # Apply different camera factors based on material_ids
-        camera_factor = torch.where(
-            material_ids < 100, self.camera_factor1,
-            torch.where(material_ids < 352, self.camera_factor2, self.camera_factor3),
-        )
+        # Per-material camera factor (lookup table — see __init__ for source).
+        camera_factor = self.camera_factor_by_id[material_ids]
         rgbs = rgbs * camera_factor.squeeze(0).unsqueeze(-1)
         loss = self.loss_function(rgbs, rgbs_gt, vis, camera_factor=camera_factor)
 
@@ -516,10 +531,8 @@ class Stage1Trainer(pl.LightningModule):
             rays, prior = self.handeye_refiner.apply_handeye_delta_to_rays(rays, camera_ids)
         # forward renders
         rgbs, vis, ray_params, _, smooth_loss = self.renderer.stage1_render(self.emitter, rays, xyz, emitter_ids, material_ids, point_ids, self.cfg.renderer.spp.train, None, None, validation=False)
-        camera_factor = torch.where(
-            material_ids < 100, self.camera_factor1,
-            torch.where(material_ids < 352, self.camera_factor2, self.camera_factor3),
-        )
+        # Per-material camera factor (lookup table — see __init__ for source).
+        camera_factor = self.camera_factor_by_id[material_ids]
         rgbs = rgbs * camera_factor.squeeze(0).unsqueeze(-1)
         loss = self.loss_function(rgbs, rgbs_gt, vis, camera_factor=camera_factor)
 

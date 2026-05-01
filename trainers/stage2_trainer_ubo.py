@@ -22,6 +22,7 @@ import cv2
 import numpy as np
 import os
 import math
+import json
 
 
 class Stage2Trainer_UBO(pl.LightningModule):
@@ -108,6 +109,22 @@ class Stage2Trainer_UBO(pl.LightningModule):
         return brdf, smooth_loss
 
     # ------------------------------------------------------------------
+    # PSNR  (stable, comparable across batches when global_psnr=True)
+    # ------------------------------------------------------------------
+    def _compute_psnr(self, pred, gt):
+        psnr_cfg = getattr(self.hparams.model, 'psnr', None)
+        use_global = bool(getattr(psnr_cfg, 'global_psnr', False)) if psnr_cfg is not None else False
+        peak       = float(getattr(psnr_cfg, 'peak', 1.0))         if psnr_cfg is not None else 1.0
+
+        if use_global:
+            max_val = torch.as_tensor(peak, dtype=pred.dtype, device=pred.device)
+        else:
+            max_val = gt.max().clamp_min(1e-8)
+
+        mse = NF.mse_loss(pred, gt)
+        return 10.0 * torch.log10(max_val ** 2 / mse.clamp_min(1e-10))
+
+    # ------------------------------------------------------------------
     # Loss
     # ------------------------------------------------------------------
     def _compute_loss(self, pred, gt):
@@ -142,10 +159,7 @@ class Stage2Trainer_UBO(pl.LightningModule):
         recon_loss = self._compute_loss(brdf, rgbs_gt)
         total_loss = recon_loss + self.smooth_reg_weight * smooth_loss
 
-        # PSNR
-        mse = NF.mse_loss(brdf, rgbs_gt)
-        max_val = rgbs_gt.max().clamp_min(1e-8)
-        psnr = 10.0 * torch.log10(max_val ** 2 / mse.clamp_min(1e-10))
+        psnr = self._compute_psnr(brdf, rgbs_gt)
 
         log_dict = {
             'train/total_loss': total_loss,
@@ -174,9 +188,7 @@ class Stage2Trainer_UBO(pl.LightningModule):
         brdf, _ = self._eval_brdf(wi, wo, point_ids)
 
         loss = self._compute_loss(brdf, rgbs_gt)
-        mse  = NF.mse_loss(brdf, rgbs_gt)
-        max_val = rgbs_gt.max().clamp_min(1e-8)
-        psnr = 10.0 * torch.log10(max_val ** 2 / mse.clamp_min(1e-10))
+        psnr = self._compute_psnr(brdf, rgbs_gt)
 
         log_dict = {'val/loss': loss, 'val/psnr': psnr}
         if hasattr(self.material, 'learnable_factor') and self.material.learnable_factor:
@@ -196,16 +208,37 @@ class Stage2Trainer_UBO(pl.LightningModule):
         os.makedirs(output_dir, exist_ok=True)
 
         psnr_str = f'{psnr.item():.2f}'
+        suffix   = f'epoch{self.current_epoch:04d}_step{self.global_step:08d}'
 
         gt_png   = (gt_img.clamp(0.0, 1.0) * 255).byte().cpu().numpy()
         pred_png = (pred_img.clamp(0.0, 1.0) * 255).byte().cpu().numpy()
         cv2.imwrite(
-            os.path.join(output_dir, f'gt_view{batch_idx}.png'),
+            os.path.join(output_dir, f'gt_view{batch_idx}_{suffix}.png'),
             cv2.cvtColor(gt_png, cv2.COLOR_RGB2BGR))
         cv2.imwrite(
             os.path.join(output_dir,
-                         f'pred_view{batch_idx}_psnr{psnr_str}.png'),
+                         f'pred_view{batch_idx}_{suffix}_psnr{psnr_str}.png'),
             cv2.cvtColor(pred_png, cv2.COLOR_RGB2BGR))
+
+        # ---- save per-view metrics JSON (recompute PSNR for any peak via mse) ----
+        psnr_cfg = getattr(self.hparams.model, 'psnr', None)
+        metrics = {
+            'view_idx':    int(batch_idx),
+            'epoch':       int(self.current_epoch),
+            'global_step': int(self.global_step),
+            'H': int(H), 'W': int(W),
+            'psnr':     float(psnr.item()),
+            'mse':      float(NF.mse_loss(brdf, rgbs_gt).item()),
+            'gt_max':   float(rgbs_gt.max().item()),
+            'pred_max': float(brdf.max().item()),
+            'psnr_global_psnr': bool(getattr(psnr_cfg, 'global_psnr', False)) if psnr_cfg is not None else False,
+            'psnr_peak':        float(getattr(psnr_cfg, 'peak', 1.0))         if psnr_cfg is not None else 1.0,
+        }
+        metrics_dir = os.path.join(output_dir, 'metrics')
+        os.makedirs(metrics_dir, exist_ok=True)
+        metrics_filename = f'view{batch_idx}_epoch{self.current_epoch:04d}_step{self.global_step:08d}.json'
+        with open(os.path.join(metrics_dir, metrics_filename), 'w') as f:
+            json.dump(metrics, f, indent=2)
 
         # ---- save normal / tangent maps and BRDF lobes (first val step) ----
         if batch_idx == 0:
@@ -219,10 +252,10 @@ class Stage2Trainer_UBO(pl.LightningModule):
                 normal_png  = ((normal_img.clamp(-1.0, 1.0) * 0.5 + 0.5) * 255).byte().cpu().numpy()
                 tangent_png = ((tangent_img.clamp(-1.0, 1.0) * 0.5 + 0.5) * 255).byte().cpu().numpy()
                 cv2.imwrite(
-                    os.path.join(output_dir, 'normal.png'),
+                    os.path.join(output_dir, f'normal_{suffix}.png'),
                     cv2.cvtColor(normal_png, cv2.COLOR_RGB2BGR))
                 cv2.imwrite(
-                    os.path.join(output_dir, 'tangent.png'),
+                    os.path.join(output_dir, f'tangent_{suffix}.png'),
                     cv2.cvtColor(tangent_png, cv2.COLOR_RGB2BGR))
 
             if self.more_visualizations:
@@ -257,6 +290,7 @@ class Stage2Trainer_UBO(pl.LightningModule):
         local_normal  = torch.tensor([[0.0, 0.0, 1.0]], device=device)
         brdf_lobe_dir = os.path.join(output_dir, 'brdf_lobes')
         os.makedirs(brdf_lobe_dir, exist_ok=True)
+        suffix = f'epoch{self.current_epoch:04d}_step{self.global_step:08d}'
 
         # ---- Fix wi, vary wo ------------------------------------------------
         theta_i_values = [15.0, 30.0, 45.0, 60.0, 75.0]
@@ -301,7 +335,7 @@ class Stage2Trainer_UBO(pl.LightningModule):
                          f'(Fixed wi, vary wo; 0°=normal, dashed=specular direction)')
             plt.tight_layout()
             plt.savefig(os.path.join(brdf_lobe_dir,
-                                     f'polar_brdf_vary_wo_pt_{point_indices[latent_idx].item()}.png'), dpi=150)
+                                     f'polar_brdf_vary_wo_pt_{point_indices[latent_idx].item()}_{suffix}.png'), dpi=150)
             plt.close()
 
         # ---- Fix wo, vary wi  (BRDF × cos_theta_i) --------------------------
@@ -349,7 +383,7 @@ class Stage2Trainer_UBO(pl.LightningModule):
                          f'(Fixed wo, vary wi; 0°=normal, dashed=specular direction)')
             plt.tight_layout()
             plt.savefig(os.path.join(brdf_lobe_dir,
-                                     f'polar_brdf_vary_wi_pt_{point_indices[latent_idx].item()}.png'), dpi=150)
+                                     f'polar_brdf_vary_wi_pt_{point_indices[latent_idx].item()}_{suffix}.png'), dpi=150)
             plt.close()
 
         print(f"[BRDF Lobe Visualization] Saved {num_latents * 2} figures to {brdf_lobe_dir}")

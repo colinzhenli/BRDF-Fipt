@@ -1694,8 +1694,9 @@ class MultiMaterialLatentBRDF(LightningModule):
                 - material_point_offsets: dict mapping material_id -> global point offset
         """
         import json
+        import os
         from pathlib import Path
-        
+
         root = Path(data_folder)
         
         # Build material folders from training list
@@ -1705,16 +1706,44 @@ class MultiMaterialLatentBRDF(LightningModule):
                 line = line.strip()
                 if line:  # Skip empty lines
                     training_list.append(int(line))
-        material_folders = [root / str(mid) for mid in training_list]
+
+        # Optional: "pretend the bad↔backup material swap never happened" — for
+        # each swapped slot in training_list, read num_points from the swap
+        # partner's folder (which physically holds this slot's pre-swap data).
+        # Keeps latent_bank shape and per-material offsets identical to a saved
+        # pre-swap checkpoint. Mirror of MultiMaterialDenseDataset's flag.
+        swap_partner = {}
+        legacy_swap_indexing = bool(getattr(self.cfg, 'legacy_swap_indexing', False))
+        if legacy_swap_indexing:
+            rl_path = getattr(self.cfg, 'replace_list_path', None) or str(root / 'replace_list.json')
+            if os.path.exists(rl_path):
+                with open(rl_path) as _rl_f:
+                    _rl = json.load(_rl_f)
+                for _r in _rl.get('records', []):
+                    if _r.get('backup_id') is None or _r.get('replaces') is None:
+                        continue
+                    swap_partner[int(_r['backup_id'])] = int(_r['replaces'])
+                    swap_partner[int(_r['replaces'])] = int(_r['backup_id'])
+                _affected = sum(1 for m in training_list if m in swap_partner)
+                print(f"[legacy_swap_indexing] enabled: {_affected}/{len(training_list)} training-list slots remap to partner folder ({rl_path})")
+            else:
+                print(f"[legacy_swap_indexing] enabled but replace_list.json not found at {rl_path}; no remap applied")
+
+        # When a slot is swap-paired AND legacy mode is on, read metadata from
+        # the partner's folder. material_id (used for latent indexing) stays as
+        # the training_list slot id — see the loop below.
+        material_folders = [root / str(swap_partner.get(mid, mid)) for mid in training_list]
         materials = []
         material_point_offsets = {}
         global_point_offset = 0
-        
+
         print(f"Training list path: {self.training_list_path}")
         print(f"Loaded {len(training_list)} materials from training list: {training_list}")
-        
-        for mat_folder in material_folders:
-            material_id = int(mat_folder.name)
+
+        for _i_mat, mat_folder in enumerate(material_folders):
+            # Use training_list slot id (NOT folder.name) so swap remapping
+            # doesn't change the material_id used by point_latent_bank.
+            material_id = training_list[_i_mat]
             metadata_path = mat_folder / "point_metadata.json"
             
             # Skip if metadata file doesn't exist or isn't readable

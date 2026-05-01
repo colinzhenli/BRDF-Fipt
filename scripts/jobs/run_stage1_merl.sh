@@ -1,6 +1,6 @@
 #!/bin/bash
 
-export CUDA_VISIBLE_DEVICES=3
+export CUDA_VISIBLE_DEVICES=0
 
 python main.py \
     dataset_folder=/media/raid/cloth/BRDFDatabase/brdfs \
@@ -13,14 +13,14 @@ python main.py \
     model.optimizer.lr=2e-3 \
     model.optimizer.decoder_lr=2e-4 \
     model.loss.recon_loss.name=logrel \
-    model.loss.recon_loss.log_space.logrel_ref=0.05 \
+    model.loss.recon_loss.log_space.logrel_ref=0.035 \
     model.loss.reg_loss.weight=0.0 \
     model.stage=1 \
     model.test=False \
-    model.trainer.max_epochs=300 \
-    model.trainer.check_val_every_n_epoch=20 \
+    model.trainer.max_epochs=100 \
+    model.trainer.check_val_every_n_epoch=5 \
     model.trainer.log_every_n_steps=10 \
-    model.trainer.limit_train_batches=300 \
+    model.trainer.limit_train_batches=292 \
     material.decoder.use_skip_connection=True \
     material.decoder.use_film=False \
     material.decoder.use_color_decomp=False \

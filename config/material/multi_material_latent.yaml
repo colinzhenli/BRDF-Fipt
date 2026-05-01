@@ -11,6 +11,11 @@ init_std: 0.1
 # to a dense 0..N_sub-1 range and the latent bank must be sized accordingly.
 point_subsample_ratio: ${data.point_subsample_ratio}
 
+# Inherit the swap-aware indexing flag + path from the data config so the model
+# builds its latent_bank with the same per-material offsets the dataset uses.
+legacy_swap_indexing: ${data.legacy_swap_indexing}
+replace_list_path: ${data.replace_list_path}
+
 optimizer:
   name: ${model.optimizer.name}
 
