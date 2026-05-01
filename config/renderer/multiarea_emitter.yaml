@@ -94,6 +94,8 @@ emitter:
   # direction_json: False
   training_list_path: ${data.training_list_path}
   folder_path: ${dataset_folder}
+  legacy_swap_indexing: ${data.legacy_swap_indexing}
+  replace_list_path: ${data.replace_list_path}
   type: "realarea"
   num_lights: 120
   dist: 4.0

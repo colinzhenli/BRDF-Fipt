@@ -49,7 +49,10 @@ class Stage1Trainer(pl.LightningModule):
         for seg in _cf_obj['camera_factor_segments']:
             _table[seg['id_start']:seg['id_end'] + 1] = _factors[seg['factor'] - 1]
         assert not torch.isnan(_table).any(), "camera_factor.json has gaps in ID coverage"
-        self.register_buffer('camera_factor_by_id', _table)
+        # persistent=False: rebuilt from camera_factor.json at __init__, never
+        # saved/loaded via checkpoint state_dict — keeps old checkpoints (saved
+        # before this buffer existed) loadable under strict load.
+        self.register_buffer('camera_factor_by_id', _table, persistent=False)
         print(f"[camera_factor] loaded {len(_cf_obj['camera_factor_segments'])} segments "
               f"from {cf_json_path}; covers ids 0..{_max_id}")
         #self.latent_dim = cfg.material.latent_dim

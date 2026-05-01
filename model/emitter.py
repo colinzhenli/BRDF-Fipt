@@ -693,8 +693,33 @@ class MultiAreaEmitter(nn.Module):
                 line = line.strip()
                 if line:  # Skip empty lines
                     training_list.append(int(line))
-        
-        material_folders = [root / str(mid) for mid in training_list]
+
+        # Mirror MultiMaterialDenseDataset / _load_point_metadata: when continue-
+        # training from a pre-swap checkpoint, read scan_log.json from the swap
+        # partner's folder so emitter buffer shapes line up with the dataset and
+        # latent_bank for any swapped slot that lands in the training list.
+        # Driven by data.legacy_swap_indexing via the renderer/multiarea_emitter
+        # yaml interpolation (cfg.legacy_swap_indexing = ${data.legacy_swap_indexing}).
+        swap_partner = {}
+        legacy_swap_indexing = bool(cfg.get('legacy_swap_indexing', False))
+        if legacy_swap_indexing:
+            rl_path = cfg.get('replace_list_path', None) or str(root / 'replace_list.json')
+            if os.path.exists(rl_path):
+                with open(rl_path) as _rl_f:
+                    _rl = json.load(_rl_f)
+                for _r in _rl.get('records', []):
+                    if _r.get('backup_id') is None or _r.get('replaces') is None:
+                        continue
+                    swap_partner[int(_r['backup_id'])] = int(_r['replaces'])
+                    swap_partner[int(_r['replaces'])] = int(_r['backup_id'])
+                _affected = sum(1 for m in training_list if m in swap_partner)
+                print(f"MultiAreaEmitter [legacy_swap_indexing] enabled: {_affected}/{len(training_list)} training-list slots remap to partner folder ({rl_path})")
+            else:
+                print(f"MultiAreaEmitter [legacy_swap_indexing] enabled but replace_list.json not found at {rl_path}; no remap applied")
+
+        # mat_ids stays as the training_list slot ids (used by mat_id_to_idx for
+        # downstream lookup); only the folder we read scan_log.json from changes.
+        material_folders = [root / str(swap_partner.get(mid, mid)) for mid in training_list]
         mat_ids = training_list
         print(f"MultiAreaEmitter: Training list path: {training_list_path}")
         print(f"MultiAreaEmitter: Loaded {len(training_list)} materials: {training_list}")
