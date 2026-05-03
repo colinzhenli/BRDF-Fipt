@@ -3,6 +3,7 @@ stage: 2
 freeze_decoder: False
 continue_training: False  # If True, resume full training state (optimizer, scheduler, epoch) from ckpt_path
 validate_on_stage1: False  # If True (with stage=1, test=False): load decoder-only weights and optimise latents on the validation split to probe decoder convergence
+factor_init:               # If set (stage 2, learnable_factor=True), overrides material.factor init after decoder load
 
 test: False
 emitter_calibration: False # False
@@ -19,7 +20,7 @@ trainer:
   num_nodes: 1
   strategy: auto            # 'auto' for single-GPU; set to 'ddp_find_unused_parameters_true' for DDP
   max_epochs: 1000          # ← will be respected
-  check_val_every_n_epoch: 1
+  check_val_every_n_epoch: 5
   limit_train_batches: 512 # 200 iterations per epoch
   num_sanity_val_steps: 2    # ← number of validation batches before training starts (default is 2)
   enable_checkpointing: True  # set to False to skip checkpoint saving
@@ -29,7 +30,9 @@ trainer:
 checkpoint_monitor:
   _target_: pytorch_lightning.callbacks.ModelCheckpoint
   save_top_k: -1
-  every_n_epochs: 1
+  every_n_epochs: ${model.trainer.check_val_every_n_epoch}
+  save_on_train_epoch_end: False
+  save_last: True
   filename: "{epoch}"
   dirpath: ${exp_output_root_path}/training
 

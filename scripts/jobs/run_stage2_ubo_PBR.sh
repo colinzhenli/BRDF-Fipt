@@ -2,21 +2,24 @@
 
 export CUDA_VISIBLE_DEVICES=2
 
+BTF_FILE=felt09_W400xH400_L151xV151.btf
+BTF_NAME=${BTF_FILE%%_*}
+
 python main.py \
     dataset_folder=/media/raid/cloth/BTF \
     output_folder=/media/raid/cloth/output/BRDF/BTF \
     data=ubo \
-    data.btf_filename=felt05_W400xH400_L151xV151.btf \
+    data.btf_filename=${BTF_FILE} \
     data.rays_num=500000 \
     data.valid_num=20 \
     renderer=multiarea_emitter \
     material=ubo_pbr_latent \
     material.learnable_factor=True \
+    material.predict_frame=True \
     material.disney=True \
     material.anisotropic=True \
     material.soft_constraint=True \
-    material.predict_frame=False \
-    experiment_name=Stage-2_PBR-Disney_UBO_felt05_run_1 \
+    experiment_name=Stage-2_PBR-Disney_UBO_${BTF_NAME}_run_1 \
     model.optimizer.name=Adam \
     model.optimizer.lr=0.002 \
     model.optimizer.decoder_lr=2e-4 \
@@ -26,7 +29,7 @@ python main.py \
     model.stage=2 \
     model.test=False \
     model.continue_training=False \
-    model.trainer.max_epochs=100 \
-    model.trainer.check_val_every_n_epoch=1 \
     model.freeze_decoder=False \
+    model.trainer.max_epochs=100 \
+    model.trainer.check_val_every_n_epoch=5 \
     model.trainer.limit_train_batches=5838

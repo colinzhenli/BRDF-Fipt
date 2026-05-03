@@ -109,7 +109,15 @@ def main(cfg):
                     model_dict.update(decoder_dict)
                     model.load_state_dict(model_dict)
                     print(f"=> Stage 2: loaded decoder checkpoint successfully. {len(decoder_dict)}/{len([k for k in model_dict if 'material.decoder.' in k])} decoder parameters loaded.")
-                    
+
+                    # Optionally override learnable_factor init (e.g. compensate for a
+                    # decoder whose output range is far from the GT range).
+                    factor_init = getattr(cfg.model, 'factor_init', None)
+                    if factor_init is not None and getattr(model.material, 'learnable_factor', False):
+                        with torch.no_grad():
+                            model.material.factor.data.fill_(float(factor_init))
+                        print(f"=> Stage 2: initialized learnable_factor to {float(factor_init)}")
+
                     # If use_latent_bank is enabled, also load the latent bank from checkpoint
                     use_latent_bank = getattr(cfg.material, 'use_latent_bank', False)
                     if use_latent_bank:
@@ -291,10 +299,10 @@ def main(cfg):
         checkpoint_callback = ModelCheckpoint(
             dirpath=os.path.join(cfg.model.checkpoint_monitor.dirpath, f'model_{roughness:.2f}_{metallic:.2f}'),
             filename=cfg.model.checkpoint_monitor.filename,
-            save_top_k=cfg.model.checkpoint_monitor.save_top_k, 
+            save_top_k=cfg.model.checkpoint_monitor.save_top_k,
             every_n_epochs=cfg.model.checkpoint_monitor.every_n_epochs,
-            monitor='val/loss',
-            save_last=True
+            save_on_train_epoch_end=cfg.model.checkpoint_monitor.save_on_train_epoch_end,
+            save_last=cfg.model.checkpoint_monitor.save_last,
         )
         callbacks = [checkpoint_callback, lr_monitor]
     else:

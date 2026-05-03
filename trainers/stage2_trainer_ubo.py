@@ -35,7 +35,7 @@ class Stage2Trainer_UBO(pl.LightningModule):
 
         self.material = material
         self.freeze_decoder = cfg.model.freeze_decoder
-        self.more_visualizations = False
+        self.more_visualizations = True
 
         # Loss
         self.latent_reg_weight = getattr(cfg.model, 'latent_reg_weight', 1e-4)
