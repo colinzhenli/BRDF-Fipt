@@ -171,8 +171,12 @@ class UBOBTFTrainDataset(IterableDataset):
 class UBOBTFValDataset(Dataset):
     """Validation dataset for UBO2014 BTF single-material overfitting.
 
-    Uses the held-out angle combos from the same fixed-seed split.
-    Each ``__getitem__`` returns **all pixels** (H*W) for one angle combo,
+    Returns **all** held-out angle combos so val metrics (loss / PSNR) are
+    computed on the full validation set. ``valid_num`` is exposed for the
+    trainer to gate per-view image / JSON saving — it does NOT subset the
+    metric computation.
+
+    Each ``__getitem__`` returns all pixels (H*W) for one angle combo,
     together with ``img_hw`` for 2-D image reconstruction.
     """
 
@@ -193,61 +197,75 @@ class UBOBTFValDataset(Dataset):
         self.H, self.W, _ = btf.img_shape
         self.n_pixels = self.H * self.W
 
-        # Reproduce the held-out angle split
+        # Reproduce the held-out angle split — keep ALL val angles
         all_angles = sorted(btf.angles_set)
         n_total = len(all_angles)
         rng = np.random.RandomState(self.val_seed)
         perm = rng.permutation(n_total)
         n_val = max(1, int(n_total * self.val_ratio))
-        val_indices = np.sort(perm[:n_val])
+        val_indices = perm[:n_val]   # keep random permutation order so the
+                                     # first valid_num items (used for image
+                                     # saving) are representative across angle
+                                     # space, not clustered at low indices
 
-        # Limit to valid_num
-        if 0 < self.valid_num < len(val_indices):
-            val_indices = val_indices[:self.valid_num]
+        self.angles = [all_angles[i] for i in val_indices]
+        self.n_angles = len(self.angles)
+        n_save = min(self.valid_num, self.n_angles) if self.valid_num > 0 else self.n_angles
+        print(f"  {self.n_angles} val angle combos for metrics; "
+              f"saving images/JSON for first {n_save}")
+        print(f"  ({self.n_pixels:,} pixels each, {self.H}×{self.W})")
 
-        print(f"  {len(val_indices)} val angle combos  "
-              f"({self.n_pixels:,} pixels each)")
+        # Per-angle direction vectors (small, kept in RAM)
+        theta_l = np.array([a[0] for a in self.angles], dtype=np.float64)
+        phi_l   = np.array([a[1] for a in self.angles], dtype=np.float64)
+        theta_v = np.array([a[2] for a in self.angles], dtype=np.float64)
+        phi_v   = np.array([a[3] for a in self.angles], dtype=np.float64)
+        self.wi_vecs = _sph2cart(theta_l, phi_l)  # (n_angles, 3)
+        self.wo_vecs = _sph2cart(theta_v, phi_v)  # (n_angles, 3)
 
-        # Pre-decode all val images and build items
-        point_ids = np.arange(self.n_pixels, dtype=np.int64)
-
-        self._items = []
-        for idx in val_indices:
-            angle = all_angles[idx]
-            img = btf.angles_to_image(*angle)  # returns BGR (OpenCV convention)
-            img = img[:, :, ::-1].copy()         # BGR → RGB
+        # Preload all val images flat (n_angles, n_pixels, 3) — like train dataset
+        print(f"Loading {self.n_angles} val images into memory...")
+        self.rgbs_all = np.empty((self.n_angles, self.n_pixels, 3), dtype=np.float32)
+        for i, a in enumerate(tqdm(self.angles, desc="Loading val BTF angles")):
+            img = btf.angles_to_image(*a)  # BGR
+            img = img[:, :, ::-1].copy()    # BGR → RGB
             np.clip(img, 0.0, None, out=img)
-            img_flat = img.reshape(-1, 3)  # (H*W, 3)
+            self.rgbs_all[i] = img.reshape(self.n_pixels, 3)
 
-            wi_vec = _sph2cart(angle[0], angle[1])  # (3,)
-            wo_vec = _sph2cart(angle[2], angle[3])  # (3,)
+        # Shared per-pixel arrays — built once, cloned per __getitem__ call
+        self._point_ids_template = np.arange(self.n_pixels, dtype=np.int64)
+        normal_template = np.zeros((self.n_pixels, 3), dtype=np.float32)
+        normal_template[:, 2] = 1.0
+        self._gt_normals_template = normal_template
 
-            # Broadcast to all pixels (same direction for entire image)
-            wi = np.broadcast_to(wi_vec[None, :], (self.n_pixels, 3)).copy()
-            wo = np.broadcast_to(wo_vec[None, :], (self.n_pixels, 3)).copy()
+        # Pre-format labels
+        self.labels = [
+            f"tl{a[0]:.0f}_pl{a[1]:.0f}_tv{a[2]:.0f}_pv{a[3]:.0f}"
+            for a in self.angles
+        ]
 
-            normal = np.zeros((self.n_pixels, 3), dtype=np.float32)
-            normal[:, 2] = 1.0
-
-            label = f"tl{angle[0]:.0f}_pl{angle[1]:.0f}_tv{angle[2]:.0f}_pv{angle[3]:.0f}"
-
-            self._items.append({
-                'wi':         torch.from_numpy(wi).float(),
-                'wo':         torch.from_numpy(wo).float(),
-                'rgbs':       torch.from_numpy(img_flat.copy()).float(),
-                'point_ids':  torch.from_numpy(point_ids.copy()).long(),
-                'gt_normals': torch.from_numpy(normal).float(),
-                'img_hw':     torch.tensor([self.H, self.W]),
-                'label':      label,
-            })
-
-        del btf  # free memory
-        print(f"UBOBTFValDataset ready  ({len(self._items)} images)\n"
-              f"{'='*60}\n")
+        del btf  # free decoder
+        print(f"UBOBTFValDataset ready  ({self.n_angles} images, "
+              f"{self.rgbs_all.nbytes / 1e9:.2f} GB)\n{'='*60}\n")
 
     # ------------------------------------------------------------------
     def __len__(self):
-        return len(self._items)
+        return self.n_angles
 
     def __getitem__(self, idx):
-        return self._items[idx]
+        wi_vec = self.wi_vecs[idx]   # (3,)
+        wo_vec = self.wo_vecs[idx]
+        rgbs   = self.rgbs_all[idx]  # (n_pixels, 3)
+
+        wi = np.broadcast_to(wi_vec[None, :], (self.n_pixels, 3)).copy()
+        wo = np.broadcast_to(wo_vec[None, :], (self.n_pixels, 3)).copy()
+
+        return {
+            'wi':         torch.from_numpy(wi).float(),
+            'wo':         torch.from_numpy(wo).float(),
+            'rgbs':       torch.from_numpy(rgbs.copy()).float(),
+            'point_ids':  torch.from_numpy(self._point_ids_template.copy()).long(),
+            'gt_normals': torch.from_numpy(self._gt_normals_template.copy()).float(),
+            'img_hw':     torch.tensor([self.H, self.W]),
+            'label':      self.labels[idx],
+        }

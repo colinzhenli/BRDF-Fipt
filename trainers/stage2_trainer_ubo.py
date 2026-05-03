@@ -35,7 +35,7 @@ class Stage2Trainer_UBO(pl.LightningModule):
 
         self.material = material
         self.freeze_decoder = cfg.model.freeze_decoder
-        self.more_visualizations = True
+        self.more_visualizations = False
 
         # Loss
         self.latent_reg_weight = getattr(cfg.model, 'latent_reg_weight', 1e-4)
@@ -198,68 +198,71 @@ class Stage2Trainer_UBO(pl.LightningModule):
             log_dict['val/learnable_factor_b'] = factor_val[2]
         self.log_dict(log_dict, prog_bar=True, batch_size=wi.shape[0])
 
-        # ---- reconstruct 2-D images and save ----------------------------
+        # ---- reconstruct 2-D images and save (only first valid_num views) ----
         H, W = img_hw[0].item(), img_hw[1].item()
+        valid_num = getattr(self.cfg.data, 'valid_num', 10)
+        save_visuals = (valid_num <= 0) or (batch_idx < valid_num)
 
-        gt_img   = rgbs_gt.reshape(H, W, 3)
-        pred_img = brdf.reshape(H, W, 3)
+        if save_visuals:
+            gt_img   = rgbs_gt.reshape(H, W, 3)
+            pred_img = brdf.reshape(H, W, 3)
 
-        output_dir = os.path.join(self.cfg.exp_output_root_path, 'images')
-        os.makedirs(output_dir, exist_ok=True)
+            output_dir = os.path.join(self.cfg.exp_output_root_path, 'images')
+            os.makedirs(output_dir, exist_ok=True)
 
-        psnr_str = f'{psnr.item():.2f}'
-        suffix   = f'epoch{self.current_epoch:04d}_step{self.global_step:08d}'
+            psnr_str = f'{psnr.item():.2f}'
+            suffix   = f'epoch{self.current_epoch:04d}_step{self.global_step:08d}'
 
-        gt_png   = (gt_img.clamp(0.0, 1.0) * 255).byte().cpu().numpy()
-        pred_png = (pred_img.clamp(0.0, 1.0) * 255).byte().cpu().numpy()
-        cv2.imwrite(
-            os.path.join(output_dir, f'gt_view{batch_idx}_{suffix}.png'),
-            cv2.cvtColor(gt_png, cv2.COLOR_RGB2BGR))
-        cv2.imwrite(
-            os.path.join(output_dir,
-                         f'pred_view{batch_idx}_{suffix}_psnr{psnr_str}.png'),
-            cv2.cvtColor(pred_png, cv2.COLOR_RGB2BGR))
+            gt_png   = (gt_img.clamp(0.0, 1.0) * 255).byte().cpu().numpy()
+            pred_png = (pred_img.clamp(0.0, 1.0) * 255).byte().cpu().numpy()
+            cv2.imwrite(
+                os.path.join(output_dir, f'gt_view{batch_idx}_{suffix}.png'),
+                cv2.cvtColor(gt_png, cv2.COLOR_RGB2BGR))
+            cv2.imwrite(
+                os.path.join(output_dir,
+                             f'pred_view{batch_idx}_{suffix}_psnr{psnr_str}.png'),
+                cv2.cvtColor(pred_png, cv2.COLOR_RGB2BGR))
 
-        # ---- save per-view metrics JSON (recompute PSNR for any peak via mse) ----
-        psnr_cfg = getattr(self.hparams.model, 'psnr', None)
-        metrics = {
-            'view_idx':    int(batch_idx),
-            'epoch':       int(self.current_epoch),
-            'global_step': int(self.global_step),
-            'H': int(H), 'W': int(W),
-            'psnr':     float(psnr.item()),
-            'mse':      float(NF.mse_loss(brdf, rgbs_gt).item()),
-            'gt_max':   float(rgbs_gt.max().item()),
-            'pred_max': float(brdf.max().item()),
-            'psnr_global_psnr': bool(getattr(psnr_cfg, 'global_psnr', False)) if psnr_cfg is not None else False,
-            'psnr_peak':        float(getattr(psnr_cfg, 'peak', 1.0))         if psnr_cfg is not None else 1.0,
-        }
-        metrics_dir = os.path.join(output_dir, 'metrics')
-        os.makedirs(metrics_dir, exist_ok=True)
-        metrics_filename = f'view{batch_idx}_epoch{self.current_epoch:04d}_step{self.global_step:08d}.json'
-        with open(os.path.join(metrics_dir, metrics_filename), 'w') as f:
-            json.dump(metrics, f, indent=2)
+            # ---- save per-view metrics JSON ----
+            psnr_cfg = getattr(self.hparams.model, 'psnr', None)
+            metrics = {
+                'view_idx':    int(batch_idx),
+                'epoch':       int(self.current_epoch),
+                'global_step': int(self.global_step),
+                'H': int(H), 'W': int(W),
+                'psnr':     float(psnr.item()),
+                'mse':      float(NF.mse_loss(brdf, rgbs_gt).item()),
+                'gt_max':   float(rgbs_gt.max().item()),
+                'pred_max': float(brdf.max().item()),
+                'psnr_global_psnr': bool(getattr(psnr_cfg, 'global_psnr', False)) if psnr_cfg is not None else False,
+                'psnr_peak':        float(getattr(psnr_cfg, 'peak', 1.0))         if psnr_cfg is not None else 1.0,
+            }
+            metrics_dir = os.path.join(output_dir, 'metrics')
+            os.makedirs(metrics_dir, exist_ok=True)
+            metrics_filename = f'view{batch_idx}_epoch{self.current_epoch:04d}_step{self.global_step:08d}.json'
+            with open(os.path.join(metrics_dir, metrics_filename), 'w') as f:
+                json.dump(metrics, f, indent=2)
 
-        # ---- save normal / tangent maps and BRDF lobes (first val step) ----
-        if batch_idx == 0:
-            if self.material.predict_frame:
-                with torch.no_grad():
-                    latent = self.material.point_latent_bank(point_ids)
-                    pred_normal, pred_tangent = self.material.extract_frame_from_latent(latent)
+            # ---- save normal / tangent maps and BRDF lobes (first val step) ----
+            if batch_idx == 0:
+                if self.material.predict_frame:
+                    with torch.no_grad():
+                        latent = self.material.point_latent_bank(point_ids)
+                        pred_normal, pred_tangent = self.material.extract_frame_from_latent(latent)
 
-                normal_img  = pred_normal.reshape(H, W, 3)
-                tangent_img = pred_tangent.reshape(H, W, 3)
-                normal_png  = ((normal_img.clamp(-1.0, 1.0) * 0.5 + 0.5) * 255).byte().cpu().numpy()
-                tangent_png = ((tangent_img.clamp(-1.0, 1.0) * 0.5 + 0.5) * 255).byte().cpu().numpy()
-                cv2.imwrite(
-                    os.path.join(output_dir, f'normal_{suffix}.png'),
-                    cv2.cvtColor(normal_png, cv2.COLOR_RGB2BGR))
-                cv2.imwrite(
-                    os.path.join(output_dir, f'tangent_{suffix}.png'),
-                    cv2.cvtColor(tangent_png, cv2.COLOR_RGB2BGR))
+                    normal_img  = pred_normal.reshape(H, W, 3)
+                    tangent_img = pred_tangent.reshape(H, W, 3)
+                    normal_png  = ((normal_img.clamp(-1.0, 1.0) * 0.5 + 0.5) * 255).byte().cpu().numpy()
+                    tangent_png = ((tangent_img.clamp(-1.0, 1.0) * 0.5 + 0.5) * 255).byte().cpu().numpy()
+                    cv2.imwrite(
+                        os.path.join(output_dir, f'normal_{suffix}.png'),
+                        cv2.cvtColor(normal_png, cv2.COLOR_RGB2BGR))
+                    cv2.imwrite(
+                        os.path.join(output_dir, f'tangent_{suffix}.png'),
+                        cv2.cvtColor(tangent_png, cv2.COLOR_RGB2BGR))
 
-            if self.more_visualizations:
-                self.visualize_brdf_lobe(output_dir=output_dir, num_latents=10, resolution=64)
+                if self.more_visualizations:
+                    self.visualize_brdf_lobe(output_dir=output_dir, num_latents=10, resolution=64)
 
         return loss
 

@@ -19,8 +19,8 @@ python main.py \
     model.test=False \
     model.trainer.max_epochs=100 \
     model.trainer.check_val_every_n_epoch=5 \
-    model.trainer.log_every_n_steps=10 \
-    model.trainer.limit_train_batches=292 \
+    model.trainer.log_every_n_steps=5 \
+    model.trainer.limit_train_batches=8000 \
     material.decoder.use_skip_connection=True \
     material.decoder.use_film=False \
     material.decoder.use_color_decomp=False \

@@ -24,8 +24,3 @@ python main.py \
     data.chunk_size=100 \
     data.debug=False \
     model.ckpt_path=/media/raid/cloth/output/BRDF/real/Visualizations/Real/real/Stage-2_Fir_From-MERL_Material-227_run_1/training/model_0.20_0.20/last-v1.ckpt
-
-
-    131.800003,
-      229.84227,
-      132.09996

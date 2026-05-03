@@ -54,4 +54,10 @@ start_idx: 0
 valid_num: 100 # Actual validation number during training
 use_fixed_val: False
 hold_out_val_num: 240 # The first hold_out_val_num images are used for validation
+legacy_swap_indexing: False # whether to swap the indexing of the first two dimensions of the data (for compatibility with older datasets)
+# Path to replace_list.json (used only when legacy_swap_indexing=True). Stored
+# here so renderer/emitter and material configs can interpolate it without
+# crashing; the file itself only needs to exist for Dataset_Nov11 continue-
+# training runs (other datasets ignore it).
+replace_list_path: ${dataset_folder}/replace_list.json
 

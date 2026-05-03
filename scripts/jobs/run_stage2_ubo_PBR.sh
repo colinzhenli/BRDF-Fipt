@@ -1,12 +1,12 @@
 #!/bin/bash
 
-export CUDA_VISIBLE_DEVICES=1
+export CUDA_VISIBLE_DEVICES=2
 
 python main.py \
-    dataset_folder=/mnt/data/colin/colin/Bonn_BTF \
+    dataset_folder=/media/raid/cloth/BTF \
     output_folder=/media/raid/cloth/output/BRDF/BTF \
     data=ubo \
-    data.btf_filename=fabric11_W400xH400_L151xV151.btf \
+    data.btf_filename=felt05_W400xH400_L151xV151.btf \
     data.rays_num=500000 \
     data.valid_num=20 \
     renderer=multiarea_emitter \
@@ -16,7 +16,7 @@ python main.py \
     material.anisotropic=True \
     material.soft_constraint=True \
     material.predict_frame=False \
-    experiment_name=Stage-2_PBR-Disney_UBO_fabric11_run_1 \
+    experiment_name=Stage-2_PBR-Disney_UBO_felt05_run_1 \
     model.optimizer.name=Adam \
     model.optimizer.lr=0.002 \
     model.optimizer.decoder_lr=2e-4 \
@@ -27,6 +27,6 @@ python main.py \
     model.test=False \
     model.continue_training=False \
     model.trainer.max_epochs=100 \
-    model.trainer.check_val_every_n_epoch=5 \
+    model.trainer.check_val_every_n_epoch=1 \
     model.freeze_decoder=False \
     model.trainer.limit_train_batches=5838
