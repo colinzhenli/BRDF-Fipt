@@ -674,6 +674,120 @@ class RealImageDataset(IterableDataset):
         camera_ids = camera_ids[perm_indices]
         return (rays, rgbs, camera_ids, emitter_ids, pdf)
 
+
+class RealImageDenseDataset(IterableDataset):
+    """Dense version of RealImageDataset: preloads ALL images for the material into RAM
+    once, then samples uniformly each iteration. No chunk swapping, no background thread.
+
+    Per-pixel transforms (CCM clip, luminance>1e-7 mask, ray construction) are reused
+    verbatim from RealImageDataset._preload_given_metadata, so the (rays, rgbs,
+    camera_ids, emitter_ids) multiset is bit-identical to a single chunk that covers
+    all metadata.
+
+    Caveats:
+    - Multi-resolution (downsample_iter) is not supported (data preloaded once at
+      full res); a warning is printed if downsample_iter != [-1, -1].
+    - importance_sampling=True uses a global PDF instead of per-chunk PDF — this
+      diverges from the chunk loader's behavior. Default importance_sampling=False
+      is unaffected.
+    """
+
+    def __init__(self, cfg, gt_folder, split):
+        self.cfg = cfg
+        self.pixel = True
+        self.rays_num = cfg.data.rays_num
+        self.num_view_batch = cfg.renderer.camera.views_per_batch
+        self.importance_sampling = cfg.data.importance_sampling
+        self.use_single_chunk_sampling = cfg.data.use_single_chunk_sampling
+        self.multi_resolution = cfg.data.multi_resolution
+        self.downsample_iter = cfg.data.downsample_iter
+        self.gt_folder = gt_folder
+        self.debug = cfg.data.debug
+        self.debug_num = cfg.data.debug_num
+        self.intrinsics = cfg.renderer.camera.intrinsics
+        self.cx = self.intrinsics['cx']
+        self.cy = self.intrinsics['cy']
+        self.distortion = self.intrinsics['distortion']
+        self.focal = self.intrinsics['focal_length']
+        self.img_hw = (self.intrinsics['height'], self.intrinsics['width'])
+        self.ccm = np.array(cfg.data.ccm)
+        self.R_c2g = cfg.renderer.camera.R_c2g
+        self.t_c2g = cfg.renderer.camera.t_c2g
+        self.turntable_center = cfg.renderer.emitter.turntable.center
+        self.turntable_axis = cfg.renderer.emitter.turntable.axis
+        self.colmap_camera = cfg.renderer.camera.colmap_camera
+        self.start_idx = cfg.data.start_idx
+        self.use_fixed_val = cfg.data.use_fixed_val
+        self.hold_out_val_num = cfg.data.hold_out_val_num
+
+        metadata_path = cfg.data.metadata_path
+        camera_metadata_path = cfg.data.camera_metadata_path
+        self.all_metadata, self.camera_metadata = load_metadata(
+            self.colmap_camera,
+            metadata_path,
+            camera_metadata_path,
+            gt_folder,
+            cfg,
+            self.debug,
+            self.debug_num,
+            split,
+            self.turntable_center,
+            self.turntable_axis,
+            self.R_c2g,
+            self.t_c2g,
+            self.start_idx,
+            self.use_fixed_val,
+            self.hold_out_val_num,
+        )
+
+        if list(self.downsample_iter) != [-1, -1]:
+            print(f"[RealImageDenseDataset] WARNING: downsample_iter={list(self.downsample_iter)} "
+                  f"is ignored — data is preloaded once at full resolution.")
+
+        directions = get_ray_directions(
+            self.img_hw[0], self.img_hw[1], self.focal, self.cx, self.cy, self.distortion
+        )
+
+        # Reuse the thread-safe preloader (defined on RealImageDataset). Pass our
+        # instance via __get__ so it can read self.gt_folder / camera_metadata / etc.
+        # which we mirror above with identical semantics.
+        print(f"[RealImageDenseDataset] Preloading {len(self.all_metadata)} images into RAM...")
+        self.rays, self.rgbs, self.camera_ids, self.emitter_ids, self.pdf = (
+            RealImageDataset._preload_given_metadata(self, self.all_metadata, directions, downsample_scale=1)
+        )
+        gb = lambda t: t.element_size() * t.numel() / 1e9
+        print(f"[RealImageDenseDataset] Loaded {self.rays.shape[0]:,} rays "
+              f"(rays={gb(self.rays):.2f} GB, rgbs={gb(self.rgbs):.2f} GB, "
+              f"cam_ids={gb(self.camera_ids):.2f} GB, emit_ids={gb(self.emitter_ids):.2f} GB, "
+              f"pdf={gb(self.pdf):.2f} GB)")
+
+        self.step = 0
+
+    def set_step(self, step: int):
+        # No-op: preloaded data is fixed. Kept for trainer-loop compatibility.
+        self.step = step
+
+    def __iter__(self):
+        while True:
+            N_total = self.rays.shape[0]
+            if self.importance_sampling and self.pdf.numel() > 0:
+                sample_idx = torch.multinomial(self.pdf, self.rays_num, replacement=True)
+                pdf_vals = self.pdf[sample_idx] * N_total
+            else:
+                N = min(self.rays_num, N_total)
+                sample_idx = torch.randint(0, N_total, (N,), dtype=torch.long)
+                pdf_vals = torch.ones(N)
+
+            yield {
+                'rays':        self.rays[sample_idx],
+                'rgbs':        self.rgbs[sample_idx],
+                'emitter_ids': self.emitter_ids[sample_idx],
+                'camera_ids':  self.camera_ids[sample_idx],
+                'pdf':         pdf_vals,
+                'gt_params':   torch.zeros(1),
+            }
+
+
 class RealValDataset(Dataset):
     """ validation dataset that loads images from metadata, returns complete images """
     def __init__(self, cfg, gt_folder):

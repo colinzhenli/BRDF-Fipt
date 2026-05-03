@@ -10,12 +10,12 @@ python main.py \
     output_folder=/media/raid/cloth/output/BRDF/BTF \
     data=ubo \
     data.btf_filename=${BTF_FILE} \
-    data.rays_num=100000 \
+    data.rays_num=500000 \
     data.valid_num=20 \
     renderer=multiarea_emitter \
     material=ubo_latent \
     material.learnable_factor=True \
-    model.factor_init=0.01 \
+    model.factor_init=0.1 \
     material.predict_frame=True \
     material.latent_dim=24 \
     material.different_decoder=False \
@@ -26,7 +26,7 @@ python main.py \
     material.decoder.smooth_reg=False \
     experiment_name=Stage-2_UBO_${BTF_NAME}_from-MERL_run_1 \
     model.optimizer.name=Adam \
-    model.optimizer.lr=0.0002 \
+    model.optimizer.lr=0.002 \
     model.optimizer.decoder_lr=2e-4 \
     model.loss.recon_loss.name=logrel \
     model.loss.recon_loss.log_space.logrel_ref=0.05 \
@@ -36,6 +36,6 @@ python main.py \
     model.continue_training=False \
     model.freeze_decoder=True \
     model.trainer.max_epochs=100 \
-    model.trainer.check_val_every_n_epoch=5 \
+    model.trainer.check_val_every_n_epoch=2 \
     model.trainer.limit_train_batches=5838 \
     model.ckpt_path='/media/raid/cloth/output/BRDF/Stage-1-Finals/MERL_480K.ckpt'

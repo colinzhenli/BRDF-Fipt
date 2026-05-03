@@ -11,7 +11,7 @@ from renderer import ForwardRenderer
 from trainers import get_trainer_class
 from model.brdf import SvPBRBRDF
 from torch.utils.data import DataLoader
-from utils.dataset import RealImageDataset, RealValDataset, MultiMaterialPointDataset, MultiMaterialDenseDataset, MERLBRDFIterableDataset,MERLBRDFIterableDataset_hd,MERLBRDFFixedDataset_hd,MERLBRDFFixedDataset, RealNovelViewDataset, BonnDataset, BonnValDataset, BonnSingleMaterialDataset, BonnSingleMaterialValDataset, UBOBTFTrainDataset, UBOBTFValDataset
+from utils.dataset import RealImageDataset, RealImageDenseDataset, RealValDataset, MultiMaterialPointDataset, MultiMaterialDenseDataset, MERLBRDFIterableDataset,MERLBRDFIterableDataset_hd,MERLBRDFFixedDataset_hd,MERLBRDFFixedDataset, RealNovelViewDataset, BonnDataset, BonnValDataset, BonnSingleMaterialDataset, BonnSingleMaterialValDataset, UBOBTFTrainDataset, UBOBTFValDataset
 import hydra
 from omegaconf import DictConfig
 from pytorch_lightning.strategies import DDPStrategy
@@ -205,6 +205,15 @@ def main(cfg):
     if cfg.data.dataset_name == "real":
         if not cfg.model.test:
             train_dataset = RealImageDataset(cfg, gt_folder=cfg.gt_folder, split="train")
+            val_dataset = RealValDataset(cfg, gt_folder=cfg.gt_folder)
+        else:
+            if cfg.model.test_novel_view:
+                val_dataset = RealNovelViewDataset(cfg, gt_folder=cfg.gt_folder)
+            else:
+                val_dataset = RealValDataset(cfg, gt_folder=cfg.gt_folder)
+    elif cfg.data.dataset_name == "real_dense":
+        if not cfg.model.test:
+            train_dataset = RealImageDenseDataset(cfg, gt_folder=cfg.gt_folder, split="train")
             val_dataset = RealValDataset(cfg, gt_folder=cfg.gt_folder)
         else:
             if cfg.model.test_novel_view:
