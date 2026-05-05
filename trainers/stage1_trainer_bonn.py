@@ -325,6 +325,41 @@ class Stage1Trainer_Bonn(pl.LightningModule):
         return numerator / denominator
 
     # ------------------------------------------------------------------
+    # PSNR / MSE  (stable, comparable across batches when global_psnr=True)
+    # ------------------------------------------------------------------
+    def _compute_psnr_mse(self, pred, gt, valid=None):
+        """Compute (psnr, mse) over valid (non-occluded) pixels.
+
+        When ``cfg.model.psnr.global_psnr`` is True the PSNR uses a fixed
+        ``peak`` (stable across batches/runs); otherwise it falls back to the
+        legacy per-batch ``gt[valid].max()``. MSE is always over valid pixels
+        only, never clamped or tone-mapped (HDR BRDF data).
+        """
+        psnr_cfg = getattr(self.hparams.model, 'psnr', None)
+        use_global = bool(getattr(psnr_cfg, 'global_psnr', True)) if psnr_cfg is not None else True
+        peak       = float(getattr(psnr_cfg, 'peak', 1.0))        if psnr_cfg is not None else 1.0
+
+        if valid is not None:
+            if not valid.any():
+                mse = torch.tensor(1.0, device=pred.device)
+                max_val = torch.tensor(1.0, device=pred.device)
+                psnr = 10.0 * torch.log10(max_val ** 2 / mse.clamp_min(1e-10))
+                return psnr, mse
+            pred_v = pred[valid]
+            gt_v   = gt[valid]
+        else:
+            pred_v = pred
+            gt_v   = gt
+
+        mse = ((pred_v - gt_v) ** 2).mean()
+        if use_global:
+            max_val = torch.as_tensor(peak, dtype=pred.dtype, device=pred.device)
+        else:
+            max_val = gt_v.max().clamp_min(1e-8)
+        psnr = 10.0 * torch.log10(max_val ** 2 / mse.clamp_min(1e-10))
+        return psnr, mse
+
+    # ------------------------------------------------------------------
     # Loss
     # ------------------------------------------------------------------
     def _compute_loss(self, pred, gt, confidence=None):
@@ -442,15 +477,8 @@ class Stage1Trainer_Bonn(pl.LightningModule):
         # PSNR — computed on poly RGB only
         psnr = torch.tensor(0.0, device=xyz.device)
         if poly_pred is not None and poly_pred.numel() > 0:
-            gt_poly = rgbs_gt[poly_mask]
-            valid = confidence[poly_mask] > 0
-            if valid.any():
-                mse = ((poly_pred[valid] - gt_poly[valid]) ** 2).mean()
-                max_val = gt_poly[valid].max().clamp_min(1e-8)
-            else:
-                mse = torch.tensor(1.0, device=xyz.device)
-                max_val = torch.tensor(1.0, device=xyz.device)
-            psnr = 10.0 * torch.log10(max_val ** 2 / mse.clamp_min(1e-10))
+            psnr, _ = self._compute_psnr_mse(
+                poly_pred, rgbs_gt[poly_mask], valid=confidence[poly_mask] > 0)
 
         self.log_dict({
             'train/total_loss': total_loss,
@@ -556,19 +584,14 @@ class Stage1Trainer_Bonn(pl.LightningModule):
 
         loss = self._compute_loss(brdf, rgbs_gt, confidence)
 
-        # PSNR over valid (non-occluded) pixels only
-        valid = confidence > 0
-        if valid.any():
-            mse = ((brdf[valid] - rgbs_gt[valid]) ** 2).mean()
-            max_val = rgbs_gt[valid].max().clamp_min(1e-8)
-        else:
-            mse = torch.tensor(1.0, device=brdf.device)
-            max_val = torch.tensor(1.0, device=brdf.device)
-        psnr = 10.0 * torch.log10(max_val ** 2 / mse.clamp_min(1e-10))
+        # PSNR / MSE over valid (non-occluded) pixels only.
+        # PL averages logged metrics across validation batches automatically.
+        psnr, mse = self._compute_psnr_mse(brdf, rgbs_gt, valid=confidence > 0)
 
         self.log_dict({
             'val/loss': loss,
             'val/psnr': psnr,
+            'val/mse':  mse,
         }, prog_bar=True, batch_size=xyz.shape[0])
 
         if hasattr(self.material, 'learnable_factor') and self.material.learnable_factor:

@@ -1,0 +1,21 @@
+type: "UBOSGBRDF"
+module: "model.basis_brdf"
+btf_path: ${dataset_folder}/${data.btf_filename}
+latent_dim: 32
+predict_frame: False
+learnable_factor: False
+init_std: 0.01
+
+optimizer:
+  name: ${model.optimizer.name}
+
+decoder:
+  direct_coefficients: False
+  use_diffuse: True
+  q_source: "halfvec"        # halfvec | wi | wo
+  smooth_reg: False
+  smooth_reg_eps: 0.01
+
+  # SG-specific
+  K: 32
+  init_lambda: 5.0

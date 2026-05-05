@@ -4307,6 +4307,7 @@ class BonnPBRLatentBRDF(LightningModule):
         latent=None,
         point_ids=None,
         material_ids=None,
+        return_wi_local=False,
     ):
         if point_ids is None or material_ids is None:
             raise ValueError("point_ids and material_ids must be provided")
@@ -4341,6 +4342,8 @@ class BonnPBRLatentBRDF(LightningModule):
         if torch.isnan(predicted_normal).any():
             print("normal is nan")
 
+        if return_wi_local:
+            return brdf, predicted_normal, pdf, smooth_loss, wi_local
         return brdf, predicted_normal, pdf, smooth_loss
 
     # ------------------------------------------------------------------

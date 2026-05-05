@@ -1,15 +1,15 @@
 #!/bin/bash
 
-export CUDA_VISIBLE_DEVICES=2
+export CUDA_VISIBLE_DEVICES=1
 
 DATASET_FOLDER=/media/raid/cloth/Bonn_val
-MAT_ID=3
+MAT_ID=318
 
 python main.py \
     dataset_folder=${DATASET_FOLDER} \
     data=bonn \
     data.overfit_mat_id=${MAT_ID} \
-    data.rays_num=400000 \
+    data.rays_num=500000 \
     renderer=multiarea_emitter \
     material=bonn_latent \
     material.learnable_factor=True \
@@ -33,6 +33,6 @@ python main.py \
     model.loss.recon_loss.log_space.logrel_ref=0.05 \
     model.loss.reg_loss.weight=0.0 \
     model.trainer.max_epochs=100 \
-    model.trainer.check_val_every_n_epoch=1 \
+    model.trainer.check_val_every_n_epoch=4 \
     model.trainer.limit_train_batches=8000 \
-    model.ckpt_path=/media/raid/cloth/output/BRDF/Stage-1-Finals/Ours-442_480K.ckpt
+    model.ckpt_path=/media/raid/cloth/output/BRDF/Stage-1-Finals/Ours_480K.ckpt

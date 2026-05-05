@@ -50,7 +50,7 @@ optimizer:
   warmup_steps_ratio: 0.5
 
 psnr:
-  global_psnr: False  # if True, use fixed `peak` for PSNR (stable, comparable across batches/runs); if False, use per-batch rgbs_gt.max() (legacy)
+  global_psnr: True   # default: use fixed `peak` for PSNR (stable, comparable across batches/runs); set False for legacy per-batch rgbs_gt.max()
   peak: 1.0           # reference peak value when global_psnr=True
 
 loss:
