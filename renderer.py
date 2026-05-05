@@ -30,9 +30,11 @@ class ForwardRenderer:
                 bbox_data = json.load(f)
             center = bbox_data['bbox_center']
             bbox_size = bbox_data['bbox_size']
-            width = bbox_size[0]
-            length = bbox_size[1]
-            print(f"Loading rectangle scene from bbox.json: center={center}, width={width}, length={length}")
+            # Shrink the sample rectangle by 1 cm on each axis to avoid
+            # boundary artifacts from cameras/lights grazing the edge.
+            width = bbox_size[0] - 0.01
+            length = bbox_size[1] - 0.01
+            print(f"Loading rectangle scene from bbox.json: center={center}, width={width} (raw {bbox_size[0]}), length={length} (raw {bbox_size[1]})")
         else:
             center = cfg.renderer.mesh.rectangle.center
             width = cfg.renderer.mesh.rectangle.width

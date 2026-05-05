@@ -20,6 +20,7 @@ python main.py \
     model.loss.recon_loss.name=l2 \
     model.loss.reg_loss.weight=0.0 \
     model.stage=1 \
+    model.apply_cosine_weight=False \
     model.test=False \
     model.trainer.max_epochs=3000 \
     model.optimizer.decoder_lr=0.001 \

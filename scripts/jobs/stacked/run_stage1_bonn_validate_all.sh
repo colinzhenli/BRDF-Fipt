@@ -72,6 +72,7 @@ run_one() {
         model.loss.lls_weight=1.0 \
         model.lls_spp=4 \
         model.stage=1 \
+    model.apply_cosine_weight=False \
         model.test=False \
         model.continue_training=False \
         model.validate_on_stage1=True \

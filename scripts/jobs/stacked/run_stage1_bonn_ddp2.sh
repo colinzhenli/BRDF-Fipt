@@ -36,6 +36,7 @@ python main.py \
     model.loss.lls_weight=0.5 \
     model.lls_spp=4 \
     model.stage=1 \
+    model.apply_cosine_weight=False \
     model.test=False \
     model.continue_training=False \
     model.trainer.max_epochs=3000 \

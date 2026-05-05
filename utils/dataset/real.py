@@ -823,8 +823,14 @@ class RealValDataset(Dataset):
         else:
             split = 'val'
         self.metadata, self.camera_metadata = load_metadata(self.colmap_camera, metadata_path, camera_metadata_path, gt_folder, cfg, self.debug, self.debug_num, split, self.turntable_center, self.turntable_axis, self.R_c2g, self.t_c2g, self.start_idx, self.use_fixed_val, self.hold_out_val_num)
-        if self.valid_num > 0:
-            self.metadata = self.metadata[:self.valid_num]
+        # Keep ALL val images so val metrics are computed on the full held-out
+        # set; ``valid_num`` is consumed by the trainer to gate per-view image
+        # saving (the first ``valid_num`` items, which are random because
+        # load_metadata returns either a torch.randperm-ordered slice or a
+        # post-permutation set when use_fixed_val=True).
+        n_save = min(self.valid_num, len(self.metadata)) if self.valid_num > 0 else len(self.metadata)
+        print(f"RealValDataset: {len(self.metadata)} val images for metrics; "
+              f"saving images for first {n_save}")
         self.directions = get_ray_directions(self.img_hw[0], self.img_hw[1], self.focal, self.cx, self.cy, self.distortion)
 
     def __len__(self):

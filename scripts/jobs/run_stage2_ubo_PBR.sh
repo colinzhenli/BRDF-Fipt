@@ -1,6 +1,6 @@
 #!/bin/bash
 
-export CUDA_VISIBLE_DEVICES=2
+export CUDA_VISIBLE_DEVICES=1
 
 BTF_FILE=felt09_W400xH400_L151xV151.btf
 BTF_NAME=${BTF_FILE%%_*}
@@ -19,7 +19,7 @@ python main.py \
     material.disney=True \
     material.anisotropic=True \
     material.soft_constraint=True \
-    experiment_name=Stage-2_PBR-Disney_UBO_${BTF_NAME}_run_1 \
+    experiment_name=Stage-2_PBR-Disney_UBO_${BTF_NAME}_Cosine_run_1 \
     model.optimizer.name=Adam \
     model.optimizer.lr=0.002 \
     model.optimizer.decoder_lr=2e-4 \
@@ -30,6 +30,7 @@ python main.py \
     model.test=False \
     model.continue_training=False \
     model.freeze_decoder=False \
+    model.apply_cosine_weight=True \
     model.trainer.max_epochs=100 \
-    model.trainer.check_val_every_n_epoch=5 \
+    model.trainer.check_val_every_n_epoch=2 \
     model.trainer.limit_train_batches=5838

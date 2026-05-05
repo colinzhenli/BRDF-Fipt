@@ -35,6 +35,22 @@ def sample_quad_uniform(corners, spp):
 
 
 # ---------------------------------------------------------------------------
+# bitsandbytes compat: unwrap newer __bnb_optimizer_quant_state__ format so
+# checkpoints saved with bnb >= 0.49 can be loaded by older bnb (e.g. 0.41.3).
+# ---------------------------------------------------------------------------
+try:
+    import bitsandbytes as _bnb
+    class Adam8bitCompat(_bnb.optim.Adam8bit):
+        def load_state_dict(self, state_dict):
+            for st in state_dict.get('state', {}).values():
+                if isinstance(st, dict) and '__bnb_optimizer_quant_state__' in st:
+                    st.update(st.pop('__bnb_optimizer_quant_state__'))
+            return super().load_state_dict(state_dict)
+except ImportError:
+    Adam8bitCompat = None
+
+
+# ---------------------------------------------------------------------------
 # Trainer
 # ---------------------------------------------------------------------------
 
@@ -118,6 +134,18 @@ class Stage2Trainer_Bonn(pl.LightningModule):
                 betas=(0.9, 0.999),
                 weight_decay=self.hparams.model.optimizer.weight_decay,
             )
+            return optimizer
+
+        elif self.hparams.model.optimizer.name == 'Adam8bit':
+            if Adam8bitCompat is None:
+                raise RuntimeError("Adam8bit requested but bitsandbytes is not installed.")
+            optimizer = Adam8bitCompat(
+                params_to_optimize,
+                lr=self.hparams.model.optimizer.lr,
+                betas=(0.9, 0.999),
+                weight_decay=self.hparams.model.optimizer.weight_decay,
+            )
+            print(f"Using Adam8bit (lr={self.hparams.model.optimizer.lr})")
             return optimizer
 
         else:
@@ -213,6 +241,23 @@ class Stage2Trainer_Bonn(pl.LightningModule):
         return per_pix.mean()
 
     # ------------------------------------------------------------------
+    # PSNR (mirrors UBO trainer: global_psnr=True uses fixed `peak` for
+    # cross-batch / cross-run comparability on HDR data)
+    # ------------------------------------------------------------------
+    def _compute_psnr(self, pred, gt):
+        psnr_cfg   = getattr(self.hparams.model, 'psnr', None)
+        use_global = bool(getattr(psnr_cfg, 'global_psnr', False)) if psnr_cfg is not None else False
+        peak       = float(getattr(psnr_cfg, 'peak', 1.0))         if psnr_cfg is not None else 1.0
+
+        if use_global:
+            max_val = torch.as_tensor(peak, dtype=pred.dtype, device=pred.device)
+        else:
+            max_val = gt.max().clamp_min(1e-8)
+
+        mse = NF.mse_loss(pred, gt)
+        return 10.0 * torch.log10(max_val ** 2 / mse.clamp_min(1e-10))
+
+    # ------------------------------------------------------------------
     # Training
     # ------------------------------------------------------------------
     def training_step(self, batch, batch_idx):
@@ -283,10 +328,7 @@ class Stage2Trainer_Bonn(pl.LightningModule):
         # PSNR — computed on poly RGB only
         psnr = torch.tensor(0.0, device=xyz.device)
         if poly_pred is not None and poly_pred.numel() > 0:
-            gt_poly = rgbs_gt[poly_mask]
-            mse = NF.mse_loss(poly_pred, gt_poly)
-            max_val = gt_poly.max().clamp_min(1e-8)
-            psnr = 10.0 * torch.log10(max_val ** 2 / mse.clamp_min(1e-10))
+            psnr = self._compute_psnr(poly_pred, rgbs_gt[poly_mask])
 
         self.log_dict({
             'train/total_loss': total_loss,
@@ -313,48 +355,36 @@ class Stage2Trainer_Bonn(pl.LightningModule):
         brdf, _, _ = self._eval_brdf(xyz, wi, wo, point_ids, material_ids)
 
         loss = self._compute_loss(brdf, rgbs_gt)
-        mse  = NF.mse_loss(brdf, rgbs_gt)
-        max_val = rgbs_gt.max().clamp_min(1e-8)
-        psnr = 10.0 * torch.log10(max_val ** 2 / mse.clamp_min(1e-10))
+        psnr = self._compute_psnr(brdf, rgbs_gt)
 
         log_dict = {'val/loss': loss, 'val/psnr': psnr}
         if hasattr(self.material, 'factor'):
             log_dict['val/factor'] = self.material.factor
         self.log_dict(log_dict, prog_bar=True, batch_size=xyz.shape[0])
 
-        # ---- reconstruct 2-D images and save ----------------------------
+        # ---- reconstruct 2-D images and save (only first valid_num views) ----
         H, W = img_hw[0].item(), img_hw[1].item()
+        valid_num = getattr(self.cfg.data, 'valid_num', -1)
+        save_visuals = (valid_num <= 0) or (batch_idx < valid_num)
 
-        gt_img   = rgbs_gt.reshape(H, W, 3)
-        pred_img = brdf.reshape(H, W, 3)
+        if save_visuals:
+            gt_img   = rgbs_gt.reshape(H, W, 3)
+            pred_img = brdf.reshape(H, W, 3)
 
-        output_dir = os.path.join(self.cfg.exp_output_root_path, 'images')
-        os.makedirs(output_dir, exist_ok=True)
+            output_dir = os.path.join(self.cfg.exp_output_root_path, 'images')
+            os.makedirs(output_dir, exist_ok=True)
 
-        psnr_str = f'{psnr.item():.2f}'
-        mat_id   = material_ids[0].item()
+            mat_id = material_ids[0].item()
 
-        # # Save EXR (full HDR precision)
-        # gt_exr   = gt_img.cpu().numpy().astype(np.float32)
-        # pred_exr = pred_img.cpu().numpy().astype(np.float32)
-        # cv2.imwrite(
-        #     os.path.join(output_dir, f'gt_mat{mat_id:04d}_view{batch_idx}.exr'),
-        #     cv2.cvtColor(gt_exr, cv2.COLOR_RGB2BGR))
-        # cv2.imwrite(
-        #     os.path.join(output_dir,
-        #                  f'pred_mat{mat_id:04d}_view{batch_idx}_psnr{psnr_str}.exr'),
-        #     cv2.cvtColor(pred_exr, cv2.COLOR_RGB2BGR))
-
-        # Save 8-bit PNG (tone-mapped + gamma for quick inspection)
-        gt_png   = self._tonemap_for_display(gt_img)
-        pred_png = self._tonemap_for_display(pred_img)
-        cv2.imwrite(
-            os.path.join(output_dir, f'gt_mat{mat_id:04d}_view{batch_idx}.png'),
-            cv2.cvtColor(gt_png, cv2.COLOR_RGB2BGR))
-        cv2.imwrite(
-            os.path.join(output_dir,
-                         f'pred_mat{mat_id:04d}_view{batch_idx}.png'),
-            cv2.cvtColor(pred_png, cv2.COLOR_RGB2BGR))
+            gt_png   = self._tonemap_for_display(gt_img)
+            pred_png = self._tonemap_for_display(pred_img)
+            cv2.imwrite(
+                os.path.join(output_dir, f'gt_mat{mat_id:04d}_view{batch_idx}.png'),
+                cv2.cvtColor(gt_png, cv2.COLOR_RGB2BGR))
+            cv2.imwrite(
+                os.path.join(output_dir,
+                             f'pred_mat{mat_id:04d}_view{batch_idx}.png'),
+                cv2.cvtColor(pred_png, cv2.COLOR_RGB2BGR))
 
         return loss
 

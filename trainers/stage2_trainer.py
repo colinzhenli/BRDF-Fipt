@@ -16,6 +16,20 @@ from model.brdf import GreyPatchBRDF
 import os
 from utils.pose_refiner import GlobalHandEyeRefiner
 
+# bitsandbytes compat: unwrap newer __bnb_optimizer_quant_state__ format so
+# checkpoints saved with bnb >= 0.49 can be loaded by older bnb (e.g. 0.41.3).
+try:
+    import bitsandbytes as _bnb
+    class Adam8bitCompat(_bnb.optim.Adam8bit):
+        def load_state_dict(self, state_dict):
+            for st in state_dict.get('state', {}).values():
+                if isinstance(st, dict) and '__bnb_optimizer_quant_state__' in st:
+                    st.update(st.pop('__bnb_optimizer_quant_state__'))
+            return super().load_state_dict(state_dict)
+except ImportError:
+    Adam8bitCompat = None
+
+
 class Stage2Trainer(pl.LightningModule):
     def __init__(self, cfg, material, gt_material, roughness, metallic):
         super().__init__()
@@ -198,6 +212,18 @@ class Stage2Trainer(pl.LightningModule):
                 betas=(0.9, 0.999),
                 weight_decay=self.hparams.model.optimizer.weight_decay,
             )
+            return optimizer
+
+        elif self.hparams.model.optimizer.name == 'Adam8bit':
+            if Adam8bitCompat is None:
+                raise RuntimeError("Adam8bit requested but bitsandbytes is not installed.")
+            optimizer = Adam8bitCompat(
+                params_to_optimize,
+                lr=self.hparams.model.optimizer.lr,
+                betas=(0.9, 0.999),
+                weight_decay=self.hparams.model.optimizer.weight_decay,
+            )
+            print(f"Using Adam8bit (lr={self.hparams.model.optimizer.lr})")
             return optimizer
 
         else:
@@ -910,16 +936,21 @@ class Stage2Trainer(pl.LightningModule):
         batch_size = 1
         batched_rgbs = rgbs.reshape(batch_size, *self.img_hw, -1)
         batched_rgbs_gt = rgbs_gt.reshape(batch_size, *self.img_hw, -1)
-        
+
+        # Gate per-view file writes to the first valid_num val items so that
+        # metrics still get computed on the full val set.
+        valid_num   = getattr(self.cfg.data, 'valid_num', -1)
+        save_visuals = (valid_num <= 0) or (batch_idx < valid_num)
+
         # Reshape uv_offset for visualization if not graypatch
         if not self.is_graypatch and self.visualize_uv:
             batched_uv_offset = uv_offset.reshape(batch_size, *self.img_hw, 2)
-        
+
         for b in range(batch_size):
             # Reshape individual sample in batch
             sample_rgbs = batched_rgbs[b]
             sample_rgbs_gt = batched_rgbs_gt[b]
-            
+
             # Create output directory for each sample
             output_dir = os.path.join(
                 self.cfg.exp_output_root_path,
@@ -930,6 +961,8 @@ class Stage2Trainer(pl.LightningModule):
             psnr_str = f'{psnr.item():.2f}'
             metric_suffix = f'_psnr{psnr_str}'
 
+            # Color-shift metric accumulation runs every val item — these lists
+            # feed the on_validation_epoch_end summary across the full set.
             if self.compute_color_shift:
                 cm = self.compute_color_shift_metrics(sample_rgbs_gt, sample_rgbs)
                 self.val_delta_e_list.append(cm['mean_delta_e'])
@@ -937,6 +970,9 @@ class Stage2Trainer(pl.LightningModule):
                 de_str = f'{cm["mean_delta_e"]:.2f}'
                 cdiff_str = f'{cm["avg_rgb_diff"]:.4f}'
                 metric_suffix += f'_dE{de_str}_cd{cdiff_str}'
+
+            if not save_visuals:
+                continue
 
             if self.more_visualization:
                 # Save original images as 32-bit EXR without clipping
@@ -1044,8 +1080,9 @@ class Stage2Trainer(pl.LightningModule):
                 )          
             # )
             
-        os.makedirs(os.path.join(self.cfg.exp_output_root_path, f'pbr_map_images'), exist_ok=True)
-        self.save_pbr_texture(os.path.join(self.cfg.exp_output_root_path, f'pbr_map_images'), batch_idx, b)
+        if save_visuals:
+            os.makedirs(os.path.join(self.cfg.exp_output_root_path, f'pbr_map_images'), exist_ok=True)
+            self.save_pbr_texture(os.path.join(self.cfg.exp_output_root_path, f'pbr_map_images'), batch_idx, b)
         
         # Visualize BRDF lobes (only on first batch to avoid redundant visualizations)
         if self.visualize_lobe and batch_idx == 0:

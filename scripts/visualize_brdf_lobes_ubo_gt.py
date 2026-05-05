@@ -36,7 +36,7 @@ import matplotlib.pyplot as plt
 # ======================================================================
 # Defaults
 # ======================================================================
-DEFAULT_BTF_PATH = "/mnt/data/colin/colin/Bonn_BTF/carpet07_W400xH400_L151xV151.btf"
+DEFAULT_BTF_PATH = "/media/raid/cloth/BTF/carpet07_W400xH400_L151xV151.btf"
 DEFAULT_PRED_LOBE_DIR = (
     "/media/raid/cloth/output/BRDF/Bonn-Theia2/"
     "Stage-2_UBO_carpet07_from-Bonn_Logrel-Learnable-factor_run_2/images/brdf_lobes"
@@ -244,11 +244,12 @@ def plot_vary_wo_gt(btf, point_id, H, W, all_light_dirs, all_view_dirs, output_d
     plt.close()
 
 
-def plot_vary_wi_gt(btf, point_id, H, W, all_light_dirs, all_view_dirs, output_dir):
+def plot_vary_wi_gt(btf, point_id, H, W, all_light_dirs, all_view_dirs, output_dir,
+                    apply_cos_wi=True):
     """Fix wo, vary wi in the incidence plane only — GT polar plot.
 
     Uses the same θ_o values as the prediction: [15°, 30°, 45°, 60°].
-    Plots BRDF × cos(θ_i).
+    Plots BRDF × cos(θ_i) when ``apply_cos_wi`` is True; raw BRDF otherwise.
     """
     row, col = point_id // W, point_id % W
     theta_o_values = [15.0, 30.0, 45.0, 60.0]
@@ -263,9 +264,11 @@ def plot_vary_wi_gt(btf, point_id, H, W, all_light_dirs, all_view_dirs, output_d
         x_vals, y_vals = [], []
         for signed_theta, tl, pl in inplane:
             rgb = get_pixel_brdf(btf, tl, pl, tv, pv, row, col)
-            cos_theta_i = max(0.0, np.cos(abs(signed_theta)))
+            val = rgb.mean()
+            if apply_cos_wi:
+                val *= max(0.0, np.cos(abs(signed_theta)))
             x_vals.append(signed_theta)
-            y_vals.append(rgb.mean() * cos_theta_i)
+            y_vals.append(val)
 
         ax.plot(x_vals, y_vals, 'o-', markersize=4, color=PRED_COLORS[ci],
                 label=f'θ_o={theta_o_deg}°')
@@ -277,7 +280,8 @@ def plot_vary_wi_gt(btf, point_id, H, W, all_light_dirs, all_view_dirs, output_d
     ax.set_thetamin(-90)
     ax.set_thetamax(90)
     ax.legend(loc='upper right', bbox_to_anchor=(1.3, 1.0))
-    ax.set_title(f'GT BRDF × cos(θ_i) Polar Plot - Point {point_id}\n'
+    title_lhs = 'GT BRDF × cos(θ_i)' if apply_cos_wi else 'GT BRDF'
+    ax.set_title(f'{title_lhs} Polar Plot - Point {point_id}\n'
                  f'(Fixed wo, vary wi; 0°=normal, dashed=specular direction)')
     plt.tight_layout()
     plt.savefig(os.path.join(output_dir,
@@ -299,6 +303,10 @@ def main():
                         help='Output directory for GT lobe plots')
     parser.add_argument('--point_ids', type=int, nargs='*', default=None,
                         help='Explicit point IDs (overrides --pred_lobe_dir parsing)')
+    parser.add_argument('--apply_cos_wi', action=argparse.BooleanOptionalAction,
+                        default=True,
+                        help='Multiply vary-wi GT lobe by cos(θ_i). '
+                             'Pass --no-apply_cos_wi to plot raw BRDF.')
     args = parser.parse_args()
 
     # ---- Resolve point IDs ----
@@ -342,7 +350,8 @@ def main():
         print(f"\n[{i+1}/{len(point_ids)}] Point {pid}  (row={row}, col={col})")
 
         plot_vary_wo_gt(btf, pid, H, W, all_light_dirs, all_view_dirs, args.output_dir)
-        plot_vary_wi_gt(btf, pid, H, W, all_light_dirs, all_view_dirs, args.output_dir)
+        plot_vary_wi_gt(btf, pid, H, W, all_light_dirs, all_view_dirs, args.output_dir,
+                        apply_cos_wi=args.apply_cos_wi)
 
     print(f"\nDone. GT lobe plots saved to {args.output_dir}")
     print(f"Compare with prediction lobes in: {args.pred_lobe_dir}")

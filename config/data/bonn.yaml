@@ -21,9 +21,9 @@ metadata_path: ${dataset_folder}/scan_log.json
 camera_metadata_path: ${dataset_folder}/rotated_camera.json
 handeye_refiner: False # whether to learn the refiner
 
-use_pan: False
-use_lls: False
-num_load_workers: 0   # 0 = serial; >0 = ProcessPoolExecutor with this many workers (e.g. 16)
+use_pan: True
+use_lls: True
+num_load_workers: 4   # 0 = serial; >0 = ProcessPoolExecutor with this many workers (e.g. 16)
 debug: True
 debug_num: 1
 debug_rotate: False

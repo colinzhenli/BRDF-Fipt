@@ -1095,10 +1095,10 @@ class AnisotropicLatentTexturedModel(LightningModule):
         # 1. Create LatentTexture
         self.texture_resolution = getattr(cfg, 'texture_resolution', 256)
         blur_config = {
-            'blur_sigma0': 2.0,
-            'blur_half_life': 3333
+            'blur_sigma0': getattr(cfg, 'blur_sigma0', 2.0),
+            'blur_half_life': getattr(cfg, 'blur_half_life', 3333)
         } if self.Gaussian_blur else None
-        
+
         self.latent_texture = LatentTexture(
             resolution=self.texture_resolution,
             latent_dim=total_latent_dim,
@@ -2384,6 +2384,7 @@ class BonnLatentBRDF(LightningModule):
         latent=None,
         point_ids=None,
         material_ids=None,
+        return_wi_local=False,
     ):
         if point_ids is None or material_ids is None:
             raise ValueError("point_ids and material_ids must be provided")
@@ -2430,6 +2431,8 @@ class BonnLatentBRDF(LightningModule):
             print("brdf is nan")
         if torch.isnan(predicted_normal).any():
             print("normal is nan")
+        if return_wi_local:
+            return brdf, predicted_normal, pdf, smooth_loss, wi_local
         return brdf, predicted_normal, pdf, smooth_loss
 
     # ------------------------------------------------------------------
@@ -4021,17 +4024,21 @@ class UBOLatentBRDF(LightningModule):
     # ------------------------------------------------------------------
     # BRDF evaluation
     # ------------------------------------------------------------------
-    def eval_brdf(self, wi, wo, point_ids=None):
+    def eval_brdf(self, wi, wo, point_ids=None, return_wi_local=False):
         """Evaluate BRDF for given directions and point IDs.
 
         Args:
             wi: [B, 3] light directions (local frame for flat BTF sample)
             wo: [B, 3] view directions (local frame for flat BTF sample)
             point_ids: [B] texel indices
+            return_wi_local: if True, also return wi after rotation into the
+                predicted local frame (needed if the caller wants to multiply
+                by NoL = wi_local.z against the predicted shading normal)
 
         Returns:
             brdf: [B, 3] BRDF values
             smooth_loss: scalar smoothness regularisation loss
+            wi_local: [B, 3] (only if return_wi_local=True)
         """
         if point_ids is None:
             raise ValueError("point_ids must be provided")
@@ -4075,6 +4082,8 @@ class UBOLatentBRDF(LightningModule):
         if self.learnable_factor:
             brdf = brdf * self.factor
 
+        if return_wi_local:
+            return brdf, smooth_loss, wi_local
         return brdf, smooth_loss
 
 
@@ -4474,17 +4483,20 @@ class UBOPBRLatentBRDF(LightningModule):
     # ------------------------------------------------------------------
     # BRDF evaluation
     # ------------------------------------------------------------------
-    def eval_brdf(self, wi, wo, point_ids=None):
+    def eval_brdf(self, wi, wo, point_ids=None, return_wi_local=False):
         """Evaluate PBR BRDF for given directions and point IDs.
 
         Args:
             wi: [B, 3] light directions (local frame for flat BTF sample)
             wo: [B, 3] view directions (local frame for flat BTF sample)
             point_ids: [B] texel indices
+            return_wi_local: if True, also return wi after rotation into the
+                predicted local frame (for NoL = wi_local.z weighting).
 
         Returns:
             brdf: [B, 3] BRDF values
             smooth_loss: scalar (always 0 for PBR — no learned function)
+            wi_local: [B, 3] (only if return_wi_local=True)
         """
         if point_ids is None:
             raise ValueError("point_ids must be provided")
@@ -4509,4 +4521,6 @@ class UBOPBRLatentBRDF(LightningModule):
 
         smooth_loss = torch.tensor(0.0, device=wi.device)
 
+        if return_wi_local:
+            return brdf, smooth_loss, wi_local
         return brdf, smooth_loss

@@ -41,6 +41,11 @@ class Stage2Trainer_UBO(pl.LightningModule):
         self.latent_reg_weight = getattr(cfg.model, 'latent_reg_weight', 1e-4)
         self.smooth_reg_weight = getattr(cfg.model, 'smooth_reg_weight', 1e-3)
 
+        # Multiply BRDF output by max(cos θ_i, 0) before comparing to GT.
+        # Use when GT data (e.g. BTF) bakes in the foreshortening term but the
+        # decoder predicts a pure BRDF.
+        self.apply_cosine_weight = bool(getattr(cfg.model, 'apply_cosine_weight', False))
+
     # ------------------------------------------------------------------
     # Optimizer  (dense Adam, same pattern as other stage-2 trainers)
     # ------------------------------------------------------------------
@@ -102,11 +107,34 @@ class Stage2Trainer_UBO(pl.LightningModule):
     def _eval_brdf(self, wi, wo, point_ids):
         """Thin wrapper around material.eval_brdf.
 
-        Returns (brdf [B,3], smooth_loss scalar).
+        When apply_cosine_weight is on we also need wi_local (rotated into
+        the predicted shading frame) so the cosine is taken against the
+        predicted normal, not the geometric one.
+
+        Returns (brdf [B,3], smooth_loss scalar, wi_local [B,3]).
+        wi_local equals wi when the model does not predict a frame.
         """
-        brdf, smooth_loss = self.material.eval_brdf(
-            wi, wo, point_ids=point_ids)
-        return brdf, smooth_loss
+        if self.apply_cosine_weight:
+            brdf, smooth_loss, wi_local = self.material.eval_brdf(
+                wi, wo, point_ids=point_ids, return_wi_local=True)
+        else:
+            brdf, smooth_loss = self.material.eval_brdf(
+                wi, wo, point_ids=point_ids)
+            wi_local = wi
+        return brdf, smooth_loss, wi_local
+
+    def _apply_cosine(self, brdf, wi_local):
+        """Multiply BRDF by max(cos θ_i, 0).
+
+        wi_local is wi rotated into the (predicted) shading frame, so its
+        z-component is NoL = wi · predicted_normal. When predict_frame is
+        off, wi_local == wi and z is the geometric cosine, which is also
+        the right thing to use.
+        """
+        if not self.apply_cosine_weight:
+            return brdf
+        cos_theta_i = wi_local[..., 2:3].clamp(min=0)
+        return brdf * cos_theta_i
 
     # ------------------------------------------------------------------
     # PSNR  (stable, comparable across batches when global_psnr=True)
@@ -154,7 +182,8 @@ class Stage2Trainer_UBO(pl.LightningModule):
         rgbs_gt   = batch['rgbs'].squeeze(0)
         point_ids = batch['point_ids'].squeeze(0)
 
-        brdf, smooth_loss = self._eval_brdf(wi, wo, point_ids)
+        brdf, smooth_loss, wi_local = self._eval_brdf(wi, wo, point_ids)
+        brdf = self._apply_cosine(brdf, wi_local)
 
         recon_loss = self._compute_loss(brdf, rgbs_gt)
         total_loss = recon_loss + self.smooth_reg_weight * smooth_loss
@@ -185,18 +214,31 @@ class Stage2Trainer_UBO(pl.LightningModule):
         point_ids = batch['point_ids'].squeeze(0)
         img_hw    = batch['img_hw'].squeeze(0)
 
-        brdf, _ = self._eval_brdf(wi, wo, point_ids)
+        brdf, _, wi_local = self._eval_brdf(wi, wo, point_ids)
+        brdf = self._apply_cosine(brdf, wi_local)
 
         loss = self._compute_loss(brdf, rgbs_gt)
         psnr = self._compute_psnr(brdf, rgbs_gt)
+        pred_mean = brdf.mean()
+        gt_mean   = rgbs_gt.mean()
 
-        log_dict = {'val/loss': loss, 'val/psnr': psnr}
+        log_dict = {
+            'val/loss':      loss,
+            'val/psnr':      psnr,
+            'val/pred_mean': pred_mean,
+            'val/gt_mean':   gt_mean,
+        }
         if hasattr(self.material, 'learnable_factor') and self.material.learnable_factor:
             factor_val = self.material.factor.detach()
             log_dict['val/learnable_factor_r'] = factor_val[0]
             log_dict['val/learnable_factor_g'] = factor_val[1]
             log_dict['val/learnable_factor_b'] = factor_val[2]
         self.log_dict(log_dict, prog_bar=True, batch_size=wi.shape[0])
+
+        if self.cfg.model.get('test', False):
+            print(f"[test] view {batch_idx:03d}  psnr={psnr.item():.4f}  "
+                  f"loss={loss.item():.6f}  "
+                  f"pred_mean={pred_mean.item():.6f}  gt_mean={gt_mean.item():.6f}")
 
         # ---- reconstruct 2-D images and save (only first valid_num views) ----
         H, W = img_hw[0].item(), img_hw[1].item()
@@ -230,10 +272,13 @@ class Stage2Trainer_UBO(pl.LightningModule):
                 'epoch':       int(self.current_epoch),
                 'global_step': int(self.global_step),
                 'H': int(H), 'W': int(W),
-                'psnr':     float(psnr.item()),
-                'mse':      float(NF.mse_loss(brdf, rgbs_gt).item()),
-                'gt_max':   float(rgbs_gt.max().item()),
-                'pred_max': float(brdf.max().item()),
+                'psnr':       float(psnr.item()),
+                'loss':       float(loss.item()),
+                'mse':        float(NF.mse_loss(brdf, rgbs_gt).item()),
+                'pred_mean':  float(pred_mean.item()),
+                'gt_mean':    float(gt_mean.item()),
+                'gt_max':     float(rgbs_gt.max().item()),
+                'pred_max':   float(brdf.max().item()),
                 'psnr_global_psnr': bool(getattr(psnr_cfg, 'global_psnr', False)) if psnr_cfg is not None else False,
                 'psnr_peak':        float(getattr(psnr_cfg, 'peak', 1.0))         if psnr_cfg is not None else 1.0,
             }

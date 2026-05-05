@@ -94,6 +94,13 @@ class Stage1Trainer_Bonn(pl.LightningModule):
         else:
             self.register_buffer('pan_weights', init_pan_weights)
 
+        # Multiply BRDF output by max(predicted_normal · wi, 0) before comparing
+        # to GT on the poly and pan branches. Use when GT bakes in the
+        # foreshortening (e.g. fine-tuning on real captured measurements) but
+        # the decoder predicts a pure BRDF. The LLS branch already integrates
+        # the cosine internally inside _lls_monte_carlo, so it is unaffected.
+        self.apply_cosine_weight = bool(getattr(cfg.model, 'apply_cosine_weight', False))
+
     # ------------------------------------------------------------------
     # Optimiser
     # ------------------------------------------------------------------
@@ -217,18 +224,36 @@ class Stage1Trainer_Bonn(pl.LightningModule):
     # ------------------------------------------------------------------
     # BRDF helpers
     # ------------------------------------------------------------------
-    def _eval_brdf(self, xyz, wi, wo, point_ids, material_ids, normals=None):
+    def _eval_brdf(self, xyz, wi, wo, point_ids, material_ids, normals=None,
+                   return_wi_local=False):
         """Thin wrapper around material.eval_brdf.
 
-        Returns (brdf [B,3], predicted_normal [B,3], smooth_loss scalar).
+        When return_wi_local is True the returned tuple includes wi rotated
+        into the (predicted) shading frame, so the caller can compute
+        NoL = wi_local.z (= wi · predicted_normal) for cosine weighting.
+
+        Returns (brdf, predicted_normal, smooth_loss[, wi_local]).
         """
         if normals is None:
             normals = torch.zeros_like(wi)
             normals[..., 2] = 1.0
+        if return_wi_local:
+            brdf, pred_normal, _pdf, smooth_loss, wi_local = self.material.eval_brdf(
+                xyz, wi, wo, normals,
+                point_ids=point_ids, material_ids=material_ids,
+                return_wi_local=True)
+            return brdf, pred_normal, smooth_loss, wi_local
         brdf, pred_normal, _pdf, smooth_loss = self.material.eval_brdf(
             xyz, wi, wo, normals,
             point_ids=point_ids, material_ids=material_ids)
         return brdf, pred_normal, smooth_loss
+
+    def _apply_cosine(self, brdf, wi_local):
+        """Multiply BRDF by max(wi_local.z, 0) = max(wi · predicted_normal, 0)."""
+        if not self.apply_cosine_weight:
+            return brdf
+        cos_theta_i = wi_local[..., 2:3].clamp(min=0)
+        return brdf * cos_theta_i
 
     def _lls_monte_carlo(self, xyz, wo, lls_corners, point_ids, material_ids, spp, normals=None):
         """Monte-Carlo integration over LLS quad (white-frame calibrated).
@@ -360,10 +385,17 @@ class Stage1Trainer_Bonn(pl.LightningModule):
         # --- polychromatic (RGB) loss ---
         if poly_mask.any():
             poly_normals = gt_normals[poly_mask] if gt_normals is not None else None
-            brdf, _, sm = self._eval_brdf(
-                xyz[poly_mask], wi[poly_mask], wo[poly_mask],
-                point_ids[poly_mask], material_ids[poly_mask],
-                normals=poly_normals)
+            if self.apply_cosine_weight:
+                brdf, _, sm, wi_local_poly = self._eval_brdf(
+                    xyz[poly_mask], wi[poly_mask], wo[poly_mask],
+                    point_ids[poly_mask], material_ids[poly_mask],
+                    normals=poly_normals, return_wi_local=True)
+                brdf = self._apply_cosine(brdf, wi_local_poly)
+            else:
+                brdf, _, sm = self._eval_brdf(
+                    xyz[poly_mask], wi[poly_mask], wo[poly_mask],
+                    point_ids[poly_mask], material_ids[poly_mask],
+                    normals=poly_normals)
             poly_loss_raw = self._compute_loss(brdf, rgbs_gt[poly_mask],
                                                confidence[poly_mask])
             total_loss = total_loss + poly_loss_raw
@@ -373,10 +405,17 @@ class Stage1Trainer_Bonn(pl.LightningModule):
         # --- panchromatic (grayscale) loss ---
         if pan_mask.any():
             pan_normals = gt_normals[pan_mask] if gt_normals is not None else None
-            brdf_pan, _, sm = self._eval_brdf(
-                xyz[pan_mask], wi[pan_mask], wo[pan_mask],
-                point_ids[pan_mask], material_ids[pan_mask],
-                normals=pan_normals)
+            if self.apply_cosine_weight:
+                brdf_pan, _, sm, wi_local_pan = self._eval_brdf(
+                    xyz[pan_mask], wi[pan_mask], wo[pan_mask],
+                    point_ids[pan_mask], material_ids[pan_mask],
+                    normals=pan_normals, return_wi_local=True)
+                brdf_pan = self._apply_cosine(brdf_pan, wi_local_pan)
+            else:
+                brdf_pan, _, sm = self._eval_brdf(
+                    xyz[pan_mask], wi[pan_mask], wo[pan_mask],
+                    point_ids[pan_mask], material_ids[pan_mask],
+                    normals=pan_normals)
             pred_gray = (brdf_pan * ray_pan_w[pan_mask]).sum(-1, keepdim=True)
             gt_gray   = rgbs_gt[pan_mask][:, :1]
             pan_loss_raw = self._compute_loss(
@@ -503,7 +542,14 @@ class Stage1Trainer_Bonn(pl.LightningModule):
         if gt_normals is not None:
             gt_normals = gt_normals.squeeze(0)
 
-        brdf, _, _ = self._eval_brdf(xyz, wi, wo, point_ids, material_ids, normals=gt_normals)
+        if self.apply_cosine_weight:
+            brdf, _, _, wi_local = self._eval_brdf(
+                xyz, wi, wo, point_ids, material_ids,
+                normals=gt_normals, return_wi_local=True)
+            brdf = self._apply_cosine(brdf, wi_local)
+        else:
+            brdf, _, _ = self._eval_brdf(
+                xyz, wi, wo, point_ids, material_ids, normals=gt_normals)
 
         # Zero out brdf at occluded pixels
         brdf = brdf * confidence.unsqueeze(-1)
@@ -608,7 +654,7 @@ class Stage1Trainer_Bonn(pl.LightningModule):
 
         return loss
 
-    # ------------------------------------------------------------------
+    # -----------------------------------------------------------------
     # Tone mapping for display
     # ------------------------------------------------------------------
     @staticmethod

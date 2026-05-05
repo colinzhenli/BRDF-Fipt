@@ -1492,14 +1492,14 @@ class BonnSingleMaterialDataset(IterableDataset):
         if mat_data is None:
             raise RuntimeError(f"Failed to load mat{self.mat_id:04d}")
 
-        # Split images 80/20 with fixed seed
+        # Split images 80/20 with fixed seed (no sort: keeps random order so the
+        # first valid_num val items used for image saving are representative)
         n_images = mat_data['n_images']
         rng = np.random.RandomState(self.val_seed)
         perm = rng.permutation(n_images)
         n_val = max(1, int(n_images * self.val_view_ratio))
-        val_indices = np.sort(perm[:n_val])
-        # train_indices = np.sort(perm[n_val:])
-        train_indices = np.arange(n_images) # all images for training
+        val_indices   = perm[:n_val]
+        train_indices = perm[n_val:]
         if split == 'train':
             indices = train_indices
         else:
@@ -1641,17 +1641,19 @@ class BonnSingleMaterialValDataset(Dataset):
         self.n_pixels = mat_data['n_pixels']
         self.gt_normals = mat_data['gt_normals']  # (V, 3) or None
 
-        # Reproduce the same split as training
+        # Reproduce the same split as training. Keep ALL val images so val
+        # metrics are computed on the full 20% held out; ``valid_num`` is
+        # exposed for the trainer to gate per-view image saving (the first
+        # ``valid_num`` items, which are random thanks to the unsorted perm).
         n_images = mat_data['n_images']
         rng = np.random.RandomState(self.val_seed)
         perm = rng.permutation(n_images)
         n_val = max(1, int(n_images * self.val_view_ratio))
-        val_indices = np.sort(perm[:n_val])
+        val_indices = perm[:n_val]
 
-        if self.valid_num > 0:
-            val_indices = val_indices[:self.valid_num]
-
-        print(f"  {len(val_indices)} val images  ({self.n_pixels:,} pixels each)")
+        n_save = min(self.valid_num, len(val_indices)) if self.valid_num > 0 else len(val_indices)
+        print(f"  {len(val_indices)} val images for metrics; "
+              f"saving images for first {n_save}  ({self.n_pixels:,} pixels each)")
 
         # Precompute one item per val image (all pixels)
         xyz_flat = mat_data['xyz']      # (V, 3)
@@ -1705,6 +1707,7 @@ class BonnSingleMaterialValDataset(Dataset):
                     np.broadcast_to(pan_w, (self.n_pixels, 3)).copy()).float(),
                 'confidence':   torch.from_numpy(confidence),
                 'img_hw':       torch.tensor([self.H, self.W]),
+                'sub_indices':  torch.arange(self.n_pixels, dtype=torch.long),
                 'gt_params':    torch.zeros(1),
                 'label':        label,
             }

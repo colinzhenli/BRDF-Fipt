@@ -13,6 +13,7 @@ Usage:
     python scripts/visualize_brdf_lobes_bonn.py
 """
 
+import argparse
 import os
 import sys
 import re
@@ -27,12 +28,17 @@ from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 
 # ── Add project root to path so we can reuse bonn helpers ──────────────
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-from utils.dataset.bonn import _read_exr, _read_xyz_map, _parse_poly_channels
+from utils.dataset.bonn import (
+    _read_exr, _read_xyz_map, _parse_poly_channels, _read_gt_normal_map,
+    _parse_pan_channels, _parse_lls_channels, _parse_poly2pan_weights,
+    _pan_weights_for_image, _LLS_EMPIRICAL_SCALE,
+)
 
 # ======================================================================
 # Hard-coded parameters  (edit these)
 # ======================================================================
 ROOT_FOLDER  = "/media/raid/cloth/Bonn_train"
+SVFRESNEL_DIR = "/media/raid/cloth/Bonn_train/Bonn_svfresnel"
 OUTPUT_DIR   = "/media/raid/cloth/output/BRDF/visualizations_debug/lobes_2"
 MATERIAL_IDS = [100]        # which material(s) to visualise
 NUM_POINTS   = 20         # number of surface points (uniform grid from H×W)
@@ -65,12 +71,13 @@ def load_calibration(root_folder, mat_id):
     return calib
 
 
-def load_material(root_folder, mat_id):
-    """Load one material's xyz map, poly images, and calibration.
+def load_material(root_folder, mat_id, svfresnel_dir=None):
+    """Load one material's xyz map, poly images, calibration, and (if
+    available) the per-pixel GT surface normals from the svfresnel pack.
 
     Returns dict with keys:
-        H, W, xyz_map (H,W,3), rgbs (K,V,3) float32,
-        light_pos (K,3), cam_pos (K,3)
+        H, W, xyz_map (H,W,3), normals (H*W,3) or None,
+        rgbs (K,V,3) float32, light_pos (K,3), cam_pos (K,3)
     """
     prefix = Path(root_folder) / f'mat{mat_id:04d}'
     calib = load_calibration(root_folder, mat_id)
@@ -78,6 +85,11 @@ def load_material(root_folder, mat_id):
     # xyz
     xyz_map, H, W = _read_xyz_map(f'{prefix}_xyz_rot000.exr')
     n_pixels = H * W
+
+    # GT surface normals (per-pixel) — None if file missing
+    normals_flat = None
+    if svfresnel_dir is not None:
+        normals_flat = _read_gt_normal_map(svfresnel_dir, mat_id, H, W)
 
     # poly EXR
     poly_data, poly_ch_names, pH, pW = _read_exr(f'{prefix}_poly.exr')
@@ -111,12 +123,114 @@ def load_material(root_folder, mat_id):
     return {
         'H': H, 'W': W,
         'xyz_map':   xyz_map,                            # (H, W, 3)
+        'normals':   normals_flat,                       # (H*W, 3) or None
         'rgbs':      poly_rgbs.astype(np.float32),       # (K, V, 3)
         'light_pos': light_pos,                          # (K, 3)
         'cam_pos':   cam_pos,                            # (K, 3)
         'cv_ids':    cv_ids,                             # (K,) int  camera index 1..4
         'il_ids':    il_ids,                             # (K,) int  LED index e.g. 26–32
         'rot_azims': rot_azims,                          # (K,) float turntable azimuth °
+    }
+
+
+def load_material_all_sources(root_folder, mat_id, svfresnel_dir=None):
+    """Load poly + pan + lls captures merged into pan-equivalent grayscale.
+
+    For each source the per-view pan-equivalent value is:
+      poly: rgb · per_il_weights        (3-vector dot product)
+      pan : scalar (already pan-equivalent)
+      lls : scalar / _LLS_EMPIRICAL_SCALE  (rescale onto pan units)
+
+    Returns dict with concatenated arrays (K = K_poly + K_pan + K_lls):
+      H, W, normals (HW,3)|None,
+      gray_pan_equiv (K, V) float32,
+      light_pos      (K, 3) float32,
+      source_type    (K,)   object array of {'poly','pan','lls'}.
+    """
+    prefix = Path(root_folder) / f'mat{mat_id:04d}'
+    raw_calib = spio.loadmat(f'{prefix}_calibration.mat')
+    calib = load_calibration(root_folder, mat_id)
+    w = _parse_poly2pan_weights(raw_calib)
+    calib['poly2pan_per_il']     = w['per_il']
+    calib['poly2pan_per_cv']     = w['per_cv']
+    calib['poly2pan_global_avg'] = w['global_avg']
+
+    xyz_map, H, W = _read_xyz_map(f'{prefix}_xyz_rot000.exr')
+    n_pixels = H * W
+
+    normals_flat = None
+    if svfresnel_dir is not None:
+        normals_flat = _read_gt_normal_map(svfresnel_dir, mat_id, H, W)
+
+    gray_parts, light_parts, cam_parts, type_parts = [], [], [], []
+    cv_parts, il_parts, rot_parts = [], [], []
+
+    # ---- poly --------------------------------------------------------
+    poly_data, poly_ch_names, pH, pW = _read_exr(f'{prefix}_poly.exr')
+    assert (pH, pW) == (H, W)
+    poly_images = _parse_poly_channels(poly_ch_names)
+    if poly_images:
+        n_poly = len(poly_images)
+        poly_rgbs = poly_data.reshape(n_pixels, n_poly, 3).transpose(1, 0, 2)
+        np.clip(poly_rgbs, 0, None, out=poly_rgbs)
+        poly_w = np.stack([
+            _pan_weights_for_image(calib, im['rotation'], im['camera'],
+                                    im['led'], is_poly=True)
+            for im in poly_images], axis=0).astype(np.float32)
+        poly_gray = (poly_rgbs * poly_w[:, None, :]).sum(axis=-1)  # (K, V)
+        poly_light = np.array([
+            calib[im['rotation']][im['led']] for im in poly_images], dtype=np.float32)
+        poly_cam = np.array([
+            calib[im['rotation']][im['camera']] for im in poly_images], dtype=np.float32)
+        poly_cv = np.array([int(re.search(r'\d+', im['camera']).group()) for im in poly_images], dtype=np.int32)
+        poly_il = np.array([int(re.search(r'\d+', im['led']).group()) for im in poly_images], dtype=np.int32)
+        poly_rot = np.array([int(re.search(r'\d+', im['rotation']).group()) for im in poly_images], dtype=np.float32)
+        gray_parts.append(poly_gray)
+        light_parts.append(poly_light)
+        cam_parts.append(poly_cam)
+        type_parts.append(np.array(['poly'] * n_poly, dtype=object))
+        cv_parts.append(poly_cv); il_parts.append(poly_il); rot_parts.append(poly_rot)
+    del poly_data
+
+    # ---- pan ---------------------------------------------------------
+    pan_path = f'{prefix}_pan.exr'
+    if os.path.exists(pan_path):
+        pan_data, pan_ch_names, pHp, pWp = _read_exr(pan_path)
+        assert (pHp, pWp) == (H, W)
+        name_to_idx = {n: i for i, n in enumerate(pan_ch_names)}
+        pan_images = [im for im in _parse_pan_channels(pan_ch_names)
+                       if int(im['led'][2:]) <= 24]
+        if pan_images:
+            n_pan = len(pan_images)
+            pan_flat = pan_data.reshape(n_pixels, -1)
+            ch_ci = np.array([name_to_idx[im['channel']] for im in pan_images])
+            pan_gray = pan_flat[:, ch_ci].T.astype(np.float32)  # (K, V)
+            np.clip(pan_gray, 0, None, out=pan_gray)
+            pan_light = np.array([
+                calib[im['rotation']][im['led']] for im in pan_images], dtype=np.float32)
+            pan_cam = np.array([
+                calib[im['rotation']][im['camera']] for im in pan_images], dtype=np.float32)
+            pan_cv = np.array([int(re.search(r'\d+', im['camera']).group()) for im in pan_images], dtype=np.int32)
+            pan_il = np.array([int(re.search(r'\d+', im['led']).group()) for im in pan_images], dtype=np.int32)
+            pan_rot = np.array([int(re.search(r'\d+', im['rotation']).group()) for im in pan_images], dtype=np.float32)
+            gray_parts.append(pan_gray)
+            light_parts.append(pan_light)
+            cam_parts.append(pan_cam)
+            type_parts.append(np.array(['pan'] * n_pan, dtype=object))
+            cv_parts.append(pan_cv); il_parts.append(pan_il); rot_parts.append(pan_rot)
+        del pan_data
+
+    return {
+        'H': H, 'W': W,
+        'xyz_map': xyz_map,
+        'normals': normals_flat,
+        'gray_pan_equiv': np.concatenate(gray_parts, axis=0),    # (K, V)
+        'light_pos':      np.concatenate(light_parts, axis=0),   # (K, 3)
+        'cam_pos':        np.concatenate(cam_parts, axis=0),     # (K, 3)
+        'source_type':    np.concatenate(type_parts),            # (K,)
+        'cv_ids':         np.concatenate(cv_parts),              # (K,)
+        'il_ids':         np.concatenate(il_parts),              # (K,)
+        'rot_azims':      np.concatenate(rot_parts),             # (K,)
     }
 
 
@@ -144,6 +258,45 @@ def spherical_coords(dirs):
     elev = np.degrees(np.arctan2(z, np.sqrt(x**2 + y**2)))
     azim = np.degrees(np.arctan2(y, x))
     return elev, azim
+
+
+def compute_signed_theta(swept_dirs_cart, fixed_dir_cart):
+    """Project swept directions onto the incidence plane of fixed_dir and
+    return signed polar angle from the surface normal (+Z).
+
+    Convention identical to UBO visualize_brdf_lobes_ubo_gt.compute_signed_theta:
+      positive → specular side (opposite tangential hemisphere from fixed)
+      negative → retro side    (same tangential hemisphere as fixed)
+    """
+    fi_t = np.array([fixed_dir_cart[0], fixed_dir_cart[1], 0.0])
+    fi_t_norm = np.linalg.norm(fi_t)
+    if fi_t_norm < 1e-8:
+        forward = np.array([-1.0, 0.0, 0.0])
+    else:
+        forward = -fi_t / fi_t_norm
+    in_plane = swept_dirs_cart[:, 0] * forward[0] + swept_dirs_cart[:, 1] * forward[1]
+    return np.arctan2(in_plane, swept_dirs_cart[:, 2])
+
+
+def compute_signed_theta_pairwise(swept_dirs, fixed_dirs):
+    """Vectorized signed-theta where each swept direction has its OWN fixed
+    direction (e.g. each Bonn view has its own wo, since the camera azimuth
+    rotates with the turntable). ``swept_dirs`` and ``fixed_dirs`` are both
+    (N, 3) and aligned row-by-row.
+
+    Returns (N,) signed theta in radians, same convention as
+    ``compute_signed_theta`` (positive = specular side).
+    """
+    fi_t = fixed_dirs.copy()
+    fi_t[:, 2] = 0.0
+    fi_t_norm = np.linalg.norm(fi_t, axis=1, keepdims=True)
+    safe = fi_t_norm[:, 0] >= 1e-8
+    forward = np.zeros_like(fi_t)
+    # Default forward (when fixed_dir is along normal): -X
+    forward[~safe, 0] = -1.0
+    forward[safe] = -fi_t[safe] / fi_t_norm[safe]
+    in_plane = swept_dirs[:, 0] * forward[:, 0] + swept_dirs[:, 1] * forward[:, 1]
+    return np.arctan2(in_plane, swept_dirs[:, 2])
 
 
 # ======================================================================
@@ -280,7 +433,7 @@ def plot_fix_wi_vary_wo(mat_id, point_idx, pixel_row, pixel_col,
 def plot_fix_wo_vary_wi(mat_id, point_idx, pixel_row, pixel_col,
                         xyz_point, rgbs_all, light_pos, cam_pos,
                         cv_ids, il_ids, rot_azims,
-                        out_dir):
+                        out_dir, apply_cos_wi=True):
     """Fix wo (average over cv elevations), plot BRDF×cos(θ_i) vs wi elevation.
 
     Index-based grouping (no heuristic tolerance):
@@ -353,7 +506,10 @@ def plot_fix_wo_vary_wi(mat_id, point_idx, pixel_row, pixel_col,
             if not np.any(mask):
                 continue
             brdf_mag = np.linalg.norm(rgbs_all[mask], axis=-1)
-            y = float(np.mean(brdf_mag * cos_theta_i[mask]))
+            if apply_cos_wi:
+                y = float(np.mean(brdf_mag * cos_theta_i[mask]))
+            else:
+                y = float(np.mean(brdf_mag))
             x_vals.append(float(np.mean(wi_elev[mask])))   # actual angle
             y_vals.append(y)
         x_vals, y_vals = zip(*sorted(zip(x_vals, y_vals))) if x_vals else ([], [])
@@ -361,9 +517,14 @@ def plot_fix_wo_vary_wi(mat_id, point_idx, pixel_row, pixel_col,
                 label=f"rot={rot:.0f}°  (wo_azim≈{avg_wo_azim_by_rot[rot]:.0f}°)")
 
     ax.set_xlabel("wi elevation (°)")
-    ax.set_ylabel("BRDF × cos(θ_i)  (‖RGB‖ × cos)")
+    if apply_cos_wi:
+        ax.set_ylabel("BRDF × cos(θ_i)  (‖RGB‖ × cos)")
+        title_metric = "BRDF×cos"
+    else:
+        ax.set_ylabel("BRDF magnitude (‖RGB‖)")
+        title_metric = "BRDF"
     ax.set_title(f"mat{mat_id:04d}  point({pixel_row},{pixel_col})  "
-                 f"Fix wo (wo_elev≈{mean_wo_elev:.0f}°, avg over cv) → BRDF×cos vs wi elevation")
+                 f"Fix wo (wo_elev≈{mean_wo_elev:.0f}°, avg over cv) → {title_metric} vs wi elevation")
     ax.legend(fontsize=8, loc='best')
     ax.grid(True, alpha=0.3)
     plt.tight_layout()
@@ -372,6 +533,379 @@ def plot_fix_wo_vary_wi(mat_id, point_idx, pixel_row, pixel_col,
     plt.savefig(fname, dpi=150)
     plt.close()
     # Azimuth slice omitted: see docstring for reason.
+
+
+def plot_polar_fix_wi_vary_wo(mat_id, point_idx, pixel_row, pixel_col,
+                              xyz_point, rgbs_all, light_pos, cam_pos,
+                              il_ids,
+                              out_dir):
+    """UBO-style polar plot: one curve per il_id (fixed wi elevation).
+
+    For each il_id group, the mean wi defines an incidence plane; every wo
+    in the group is projected into that plane and plotted at its signed
+    polar angle. Mirrors ``visualize_brdf_lobes_ubo_gt.plot_vary_wo_gt``.
+    """
+    wi_all = light_pos - xyz_point[None, :]
+    wi_all /= np.maximum(np.linalg.norm(wi_all, axis=1, keepdims=True), 1e-8)
+    wo_all = cam_pos - xyz_point[None, :]
+    wo_all /= np.maximum(np.linalg.norm(wo_all, axis=1, keepdims=True), 1e-8)
+
+    fig, ax = plt.subplots(figsize=(8, 8), subplot_kw={'projection': 'polar'})
+    unique_il = sorted(np.unique(il_ids).tolist())
+    cmap = plt.cm.tab10
+
+    for ci, il in enumerate(unique_il):
+        mask = il_ids == il
+        if not np.any(mask):
+            continue
+        # Each view in the group has its own (rotated) wi; compute signed_theta
+        # for each wo against the matching wi to keep the incidence plane valid.
+        wi_group = wi_all[mask]
+        wo_group = wo_all[mask]
+        wi_theta_deg = float(np.degrees(
+            np.arccos(np.clip(wi_group[:, 2], -1, 1))).mean())
+        signed_theta = compute_signed_theta_pairwise(wo_group, wi_group)
+        brdf_mag = np.linalg.norm(rgbs_all[mask], axis=-1)
+        order = np.argsort(signed_theta)
+        ax.plot(signed_theta[order], brdf_mag[order], 'o-', markersize=4,
+                color=cmap(ci),
+                label=f'il{il:03d}  θ_i≈{wi_theta_deg:.0f}°')
+        ax.axvline(x=np.deg2rad(wi_theta_deg), color=cmap(ci),
+                   linestyle='--', alpha=0.5)
+
+    ax.set_theta_zero_location('N')
+    ax.set_theta_direction(1)
+    ax.set_thetamin(-90)
+    ax.set_thetamax(90)
+    ax.legend(loc='upper right', bbox_to_anchor=(1.3, 1.0), fontsize=8)
+    ax.set_title(f'mat{mat_id:04d}  pt({pixel_row},{pixel_col})\n'
+                 f'GT BRDF Polar Plot (Fixed wi, vary wo)')
+    plt.tight_layout()
+    fname = os.path.join(out_dir,
+        f"mat{mat_id:04d}_pt{pixel_row:04d}x{pixel_col:04d}_polar_vary_wo.png")
+    plt.savefig(fname, dpi=150)
+    plt.close()
+
+
+def plot_polar_fix_wo_vary_wi(mat_id, point_idx, pixel_row, pixel_col,
+                              xyz_point, rgbs_all, light_pos, cam_pos,
+                              cv_ids,
+                              out_dir, apply_cos_wi=True):
+    """UBO-style polar plot: one curve per cv_id (fixed wo elevation).
+
+    For each cv_id group, the mean wo defines an incidence plane; every wi
+    in the group is projected into that plane. y = BRDF (× cos(θ_i) when
+    ``apply_cos_wi``). Mirrors ``visualize_brdf_lobes_ubo_gt.plot_vary_wi_gt``.
+    """
+    wi_all = light_pos - xyz_point[None, :]
+    wi_all /= np.maximum(np.linalg.norm(wi_all, axis=1, keepdims=True), 1e-8)
+    wo_all = cam_pos - xyz_point[None, :]
+    wo_all /= np.maximum(np.linalg.norm(wo_all, axis=1, keepdims=True), 1e-8)
+    cos_theta_i = np.clip(wi_all[:, 2], 0, None)
+
+    fig, ax = plt.subplots(figsize=(8, 8), subplot_kw={'projection': 'polar'})
+    unique_cv = sorted(np.unique(cv_ids).tolist())
+    cmap = plt.cm.tab10
+
+    for ci, cv in enumerate(unique_cv):
+        mask = cv_ids == cv
+        if not np.any(mask):
+            continue
+        wi_group = wi_all[mask]
+        wo_group = wo_all[mask]
+        wo_theta_deg = float(np.degrees(
+            np.arccos(np.clip(wo_group[:, 2], -1, 1))).mean())
+        signed_theta = compute_signed_theta_pairwise(wi_group, wo_group)
+        brdf_mag = np.linalg.norm(rgbs_all[mask], axis=-1)
+        y = brdf_mag * cos_theta_i[mask] if apply_cos_wi else brdf_mag
+        order = np.argsort(signed_theta)
+        ax.plot(signed_theta[order], y[order], 'o-', markersize=4,
+                color=cmap(ci),
+                label=f'cv{cv:02d}  θ_o≈{wo_theta_deg:.0f}°')
+        ax.axvline(x=np.deg2rad(wo_theta_deg), color=cmap(ci),
+                   linestyle='--', alpha=0.5)
+
+    ax.set_theta_zero_location('N')
+    ax.set_theta_direction(1)
+    ax.set_thetamin(-90)
+    ax.set_thetamax(90)
+    ax.legend(loc='upper right', bbox_to_anchor=(1.3, 1.0), fontsize=8)
+    title_lhs = 'GT BRDF × cos(θ_i)' if apply_cos_wi else 'GT BRDF'
+    ax.set_title(f'mat{mat_id:04d}  pt({pixel_row},{pixel_col})\n'
+                 f'{title_lhs} Polar Plot (Fixed wo, vary wi)')
+    plt.tight_layout()
+    fname = os.path.join(out_dir,
+        f"mat{mat_id:04d}_pt{pixel_row:04d}x{pixel_col:04d}_polar_vary_wi.png")
+    plt.savefig(fname, dpi=150)
+    plt.close()
+
+
+def compute_brdf_vs_costhetai_data(xyz_point, rgbs_all, light_pos, il_ids,
+                                   apply_cos_wi=True, normal=None):
+    """Return (cos_theta_i_per_view, y_per_view) for one surface point.
+
+    cos(θ_i) is computed against the per-point surface normal when supplied
+    (Bonn provides a GT normal map via svfresnel) — otherwise it falls back
+    to wi·(+Z), which is only correct for a perfectly flat sample.
+
+    y is BRDF × cos(θ_i) when apply_cos_wi, else raw BRDF magnitude.
+    """
+    wi_all = light_pos - xyz_point[None, :]
+    wi_all /= np.maximum(np.linalg.norm(wi_all, axis=1, keepdims=True), 1e-8)
+    if normal is None:
+        cos_theta_i = np.clip(wi_all[:, 2], 0.0, None)
+    else:
+        n = np.asarray(normal, dtype=np.float32).reshape(3)
+        n_norm = np.linalg.norm(n)
+        if n_norm < 1e-8:
+            cos_theta_i = np.clip(wi_all[:, 2], 0.0, None)
+        else:
+            n = n / n_norm
+            cos_theta_i = np.clip(wi_all @ n, 0.0, None)
+    brdf_mag = np.linalg.norm(rgbs_all, axis=-1)
+    y_all = brdf_mag * cos_theta_i if apply_cos_wi else brdf_mag
+    return cos_theta_i, y_all
+
+
+def plot_brdf_vs_costhetai(mat_id, point_idx, pixel_row, pixel_col,
+                           xyz_point, rgbs_all, light_pos, cam_pos,
+                           il_ids,
+                           out_dir, apply_cos_wi=True, normal=None):
+    """Per-point: mean BRDF vs cos(θ_i), averaged over all wi azimuths & wo.
+
+    Shows individual views as scatter (one dot per view) plus a line
+    connecting the per-il_id mean. No errorbars.
+    """
+    cos_theta_i, y_all = compute_brdf_vs_costhetai_data(
+        xyz_point, rgbs_all, light_pos, il_ids, apply_cos_wi, normal=normal)
+
+    unique_il = sorted(np.unique(il_ids).tolist())
+    rows = []
+    for il in unique_il:
+        mask = il_ids == il
+        if not np.any(mask):
+            continue
+        rows.append((float(cos_theta_i[mask].mean()),
+                     float(y_all[mask].mean()),
+                     int(mask.sum()), il))
+    rows.sort(key=lambda r: r[0])
+    cos_means = np.array([r[0] for r in rows])
+    y_means   = np.array([r[1] for r in rows])
+    counts    = [r[2] for r in rows]
+    il_labels = [r[3] for r in rows]
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+    ax.scatter(cos_theta_i, y_all, alpha=0.35, s=18, color='C0',
+               label='individual views')
+    ax.plot(cos_means, y_means, 'o-', markersize=8, linewidth=2.0,
+            color='C1', label='per-il mean')
+    for x, y, il, n in zip(cos_means, y_means, il_labels, counts):
+        ax.annotate(f'il{il:03d} (n={n})', (x, y),
+                    textcoords='offset points', xytext=(6, 6), fontsize=8)
+
+    metric = 'BRDF × cos(θ_i)' if apply_cos_wi else 'BRDF magnitude (‖RGB‖)'
+    ax.set_xlabel('cos(θ_i)')
+    ax.set_ylabel(metric)
+    ax.set_title(f'mat{mat_id:04d}  pt({pixel_row},{pixel_col})\n'
+                 f'{metric} averaged over all wi azimuths and all wo')
+    ax.set_xlim(0.0, 1.0)
+    ax.grid(True, alpha=0.3)
+    ax.legend(loc='best', fontsize=8)
+    plt.tight_layout()
+    fname = os.path.join(out_dir,
+        f"mat{mat_id:04d}_pt{pixel_row:04d}x{pixel_col:04d}_brdf_vs_costhetai.png")
+    plt.savefig(fname, dpi=150)
+    plt.close()
+
+
+def plot_aggregate_brdf_vs_costhetai_multisource(
+        mat_id, mat_all, pix_indices, out_dir, apply_cos_wi=True,
+        cos_bins=20):
+    """Aggregate poly + pan + lls onto one figure.
+
+    For each sampled pixel × view we compute cos(θ_i) (using the GT normal
+    if available) and the pan-equivalent grayscale BRDF. Points are plotted
+    as scatter coloured by source. A solid binned-mean line is drawn per
+    source so we can see whether the three line up.
+    """
+    H = mat_all['H']
+    W = mat_all['W']
+    light_pos = mat_all['light_pos']
+    src_type  = mat_all['source_type']
+    gray      = mat_all['gray_pan_equiv']
+    normals   = mat_all['normals']
+
+    cos_all, y_all, src_all = [], [], []
+    for pix_idx in pix_indices:
+        r, c = pix_idx // W, pix_idx % W
+        xyz = mat_all['xyz_map'][r, c]
+        n_pt = (normals[pix_idx] if normals is not None
+                else np.array([0.0, 0.0, 1.0], dtype=np.float32))
+        wi = light_pos - xyz[None, :]
+        wi /= np.maximum(np.linalg.norm(wi, axis=1, keepdims=True), 1e-8)
+        n = n_pt / max(np.linalg.norm(n_pt), 1e-8)
+        cos_t_i = np.clip(wi @ n, 0.0, None)
+        y = gray[:, pix_idx]
+        if apply_cos_wi:
+            y = y * cos_t_i
+        cos_all.append(cos_t_i)
+        y_all.append(y)
+        src_all.append(src_type)
+    cos_all = np.concatenate(cos_all)
+    y_all   = np.concatenate(y_all)
+    src_all = np.concatenate(src_all)
+
+    fig, ax = plt.subplots(figsize=(9, 6))
+    palette = {'poly': 'C0', 'pan': 'C1', 'lls': 'C2'}
+    bin_edges = np.linspace(0.0, 1.0, cos_bins + 1)
+    bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+
+    for src in ['poly', 'pan', 'lls']:
+        mask = src_all == src
+        if not np.any(mask):
+            continue
+        x = cos_all[mask]
+        y = y_all[mask]
+        ax.scatter(x, y, s=8, alpha=0.15, color=palette[src],
+                   label=f'{src}  (n={mask.sum()})')
+        # Binned mean line for this source.
+        bin_idx = np.clip(np.digitize(x, bin_edges) - 1, 0, cos_bins - 1)
+        means = np.full(cos_bins, np.nan)
+        for b in range(cos_bins):
+            sel = bin_idx == b
+            if sel.sum() > 0:
+                means[b] = y[sel].mean()
+        valid = ~np.isnan(means)
+        ax.plot(bin_centers[valid], means[valid], '-o',
+                color=palette[src], linewidth=2.0, markersize=5,
+                label=f'{src} binned mean')
+
+    metric = 'BRDF × cos(θ_i)' if apply_cos_wi else 'BRDF magnitude (pan-equiv)'
+    ax.set_xlabel('cos(θ_i)')
+    ax.set_ylabel(metric)
+    ax.set_title(f'mat{mat_id:04d}  ({len(pix_indices)} pts × poly+pan+lls)\n'
+                 f'{metric} averaged in cos(θ_i) bins (per source)')
+    ax.set_xlim(0.0, 1.0)
+    ax.grid(True, alpha=0.3)
+    ax.legend(loc='best', fontsize=8)
+    plt.tight_layout()
+    fname = os.path.join(out_dir,
+        f"mat{mat_id:04d}_brdf_vs_costhetai_all_sources.png")
+    plt.savefig(fname, dpi=150)
+    plt.close()
+
+
+def plot_aggregate_brdf_vs_costhetai(mat_id, per_point_records, out_dir,
+                                     apply_cos_wi=True):
+    """Aggregate across ALL sampled points for one material.
+
+    per_point_records: list of dicts each with keys
+        pixel_row, pixel_col, cos_theta_i (K,), y_all (K,), il_ids (K,).
+
+    Output: one PNG. Shows
+      - per-point per-il_id mean as a scatter dot (alpha-blended)
+      - bold line through the median across points per il_id
+    No vertical errorbars.
+    """
+    if not per_point_records:
+        return
+
+    all_il_ids = sorted({int(il) for r in per_point_records
+                                  for il in np.unique(r['il_ids']).tolist()})
+
+    per_il = {il: {'cos': [], 'y': []} for il in all_il_ids}
+    for r in per_point_records:
+        for il in all_il_ids:
+            mask = r['il_ids'] == il
+            if not np.any(mask):
+                continue
+            per_il[il]['cos'].append(float(r['cos_theta_i'][mask].mean()))
+            per_il[il]['y'].append(float(r['y_all'][mask].mean()))
+
+    fig, ax = plt.subplots(figsize=(9, 6))
+    cmap = plt.cm.tab10
+    for ci, il in enumerate(all_il_ids):
+        cos_arr = np.array(per_il[il]['cos'])
+        y_arr = np.array(per_il[il]['y'])
+        if cos_arr.size == 0:
+            continue
+        ax.scatter(cos_arr, y_arr, alpha=0.35, s=22,
+                   color=cmap(ci), label=f'il{il:03d}  (n_pts={cos_arr.size})')
+
+    metric = 'BRDF × cos(θ_i)' if apply_cos_wi else 'BRDF magnitude (‖RGB‖)'
+    ax.set_xlabel('cos(θ_i)')
+    ax.set_ylabel(metric)
+    ax.set_title(f'mat{mat_id:04d}  ({len(per_point_records)} surface points)\n'
+                 f'{metric} averaged over all wi azimuths and all wo')
+    ax.set_xlim(0.0, 1.0)
+    ax.grid(True, alpha=0.3)
+    ax.legend(loc='best', fontsize=8)
+    plt.tight_layout()
+    fname = os.path.join(out_dir, f"mat{mat_id:04d}_brdf_vs_costhetai_all_points.png")
+    plt.savefig(fname, dpi=150)
+    plt.close()
+
+
+def plot_fix_wo_vary_wi_combined(mat_id, point_idx, pixel_row, pixel_col,
+                                 xyz_point, gray_all, light_pos,
+                                 cv_ids, il_ids, rot_azims, source_type,
+                                 out_dir, apply_cos_wi=True, normal=None):
+    """Same axes as plot_fix_wo_vary_wi but combines poly + pan LEDs.
+
+    y is pan-equivalent grayscale BRDF (× cos(θ_i) when apply_cos_wi).
+    cos(θ_i) uses the per-pixel GT normal when supplied.
+    """
+    wi_all = light_pos - xyz_point[None, :]
+    wi_all /= np.maximum(np.linalg.norm(wi_all, axis=1, keepdims=True), 1e-8)
+    if normal is not None:
+        n = np.asarray(normal, dtype=np.float32).reshape(3)
+        n_norm = np.linalg.norm(n)
+        n = n / max(n_norm, 1e-8) if n_norm >= 1e-8 else np.array([0.0, 0.0, 1.0], dtype=np.float32)
+    else:
+        n = np.array([0.0, 0.0, 1.0], dtype=np.float32)
+    cos_theta_i = np.clip(wi_all @ n, 0.0, None)
+    wi_elev = np.degrees(np.arctan2(wi_all[:, 2],
+                                     np.sqrt(wi_all[:, 0]**2 + wi_all[:, 1]**2)))
+
+    unique_rot = sorted(np.unique(rot_azims).tolist())
+    cmap = plt.cm.tab10
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    for gi, rot in enumerate(unique_rot):
+        rot_mask = rot_azims == rot
+        # One point per il_id seen in this rotation, averaged over cv_ids.
+        unique_il_in_rot = sorted(np.unique(il_ids[rot_mask]).tolist())
+        x_vals, y_vals, src_used = [], [], []
+        for il in unique_il_in_rot:
+            cell = rot_mask & (il_ids == il)
+            if not np.any(cell):
+                continue
+            y_pixel_views = gray_all[cell]              # (n_views,)
+            if apply_cos_wi:
+                y_pixel_views = y_pixel_views * cos_theta_i[cell]
+            x_vals.append(float(np.mean(wi_elev[cell])))
+            y_vals.append(float(np.mean(y_pixel_views)))
+            src_used.append(set(source_type[cell].tolist()))
+        if not x_vals:
+            continue
+        x_arr, y_arr = zip(*sorted(zip(x_vals, y_vals)))
+        ax.plot(x_arr, y_arr, 'o-', markersize=5, color=cmap(gi),
+                label=f"rot={rot:.0f}° (n_il={len(x_arr)})")
+
+    metric = 'BRDF × cos(θ_i)' if apply_cos_wi else 'BRDF magnitude (pan-equiv)'
+    ax.set_xlabel("wi elevation (°)")
+    ax.set_ylabel(metric)
+    n_poly = int((source_type == 'poly').sum())
+    n_pan  = int((source_type == 'pan').sum())
+    ax.set_title(f"mat{mat_id:04d}  point({pixel_row},{pixel_col})  "
+                 f"Fix wo, vary wi  [poly={n_poly}, pan={n_pan}]")
+    ax.legend(fontsize=8, loc='best')
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    fname = os.path.join(out_dir,
+        f"mat{mat_id:04d}_pt{pixel_row:04d}x{pixel_col:04d}_fixWo_elev_polypan.png")
+    plt.savefig(fname, dpi=150)
+    plt.close()
 
 
 def plot_3d_lobe_fix_wi(mat_id, point_idx, pixel_row, pixel_col,
@@ -416,10 +950,11 @@ def plot_3d_lobe_fix_wi(mat_id, point_idx, pixel_row, pixel_col,
 def plot_3d_lobe_fix_wo(mat_id, point_idx, pixel_row, pixel_col,
                         xyz_point, rgbs_all, light_pos, cam_pos,
                         rot_azims,
-                        out_dir):
+                        out_dir, apply_cos_wi=True):
     """3D lobe: scatter all views coloured by rotation azimuth.
 
-    x = wi elevation, y = wi azimuth, z = BRDF magnitude × cos(θ_i).
+    x = wi elevation, y = wi azimuth, z = BRDF magnitude × cos(θ_i)
+    when ``apply_cos_wi`` is True; raw BRDF magnitude otherwise.
     Each rotation (turntable azimuth) gets its own colour.
     """
     wi_all = light_pos - xyz_point[None, :]
@@ -437,15 +972,21 @@ def plot_3d_lobe_fix_wo(mat_id, point_idx, pixel_row, pixel_col,
 
     for gi, rot in enumerate(unique_rot):
         mask = rot_azims == rot
-        brdf_cos = np.linalg.norm(rgbs_all[mask], axis=-1) * cos_theta_i[mask]
-        ax.scatter(wi_elev[mask], wi_azim[mask], brdf_cos,
+        brdf_mag = np.linalg.norm(rgbs_all[mask], axis=-1)
+        z_vals = brdf_mag * cos_theta_i[mask] if apply_cos_wi else brdf_mag
+        ax.scatter(wi_elev[mask], wi_azim[mask], z_vals,
                    color=cmap(gi), s=30, label=f"rot={rot:.0f}°")
 
     ax.set_xlabel("wi elevation (°)")
     ax.set_ylabel("wi azimuth (°)")
-    ax.set_zlabel("BRDF × cos(θ_i)  (‖RGB‖ × cos)")
+    if apply_cos_wi:
+        ax.set_zlabel("BRDF × cos(θ_i)  (‖RGB‖ × cos)")
+        title_metric = "BRDF×cos"
+    else:
+        ax.set_zlabel("BRDF magnitude (‖RGB‖)")
+        title_metric = "BRDF"
     ax.set_title(f"mat{mat_id:04d}  point({pixel_row},{pixel_col})  "
-                 f"All views → 3D BRDF×cos lobe (coloured by rotation)")
+                 f"All views → 3D {title_metric} lobe (coloured by rotation)")
     ax.legend(fontsize=7, loc='best')
     plt.tight_layout()
     fname = os.path.join(out_dir,
@@ -459,71 +1000,180 @@ def plot_3d_lobe_fix_wo(mat_id, point_idx, pixel_row, pixel_col,
 # ======================================================================
 
 def main():
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    parser = argparse.ArgumentParser(description="Visualize Bonn GT BRDF lobes")
+    parser.add_argument('--root_folder', default=ROOT_FOLDER,
+                        help='Bonn dataset root (with matXXXX_*.exr files)')
+    parser.add_argument('--svfresnel_dir', default=SVFRESNEL_DIR,
+                        help='svfresnel root with per-pixel GT normal maps. '
+                             'Pass empty string to fall back to assuming +Z normal.')
+    parser.add_argument('--output_dir', default=OUTPUT_DIR,
+                        help='Output directory for lobe PNGs')
+    parser.add_argument('--material_ids', type=int, nargs='+', default=MATERIAL_IDS,
+                        help='Material IDs to visualize')
+    parser.add_argument('--num_points', type=int, default=NUM_POINTS,
+                        help='Number of surface points (uniform grid)')
+    parser.add_argument('--apply_cos_wi', action=argparse.BooleanOptionalAction,
+                        default=True,
+                        help='Multiply vary-wi GT lobe by cos(θ_i). '
+                             'Pass --no-apply_cos_wi to plot raw BRDF.')
+    parser.add_argument('--aggregate_only', action='store_true',
+                        help='Skip per-point Cartesian/3D/polar plots; '
+                             'emit only the aggregate brdf_vs_costhetai figure.')
+    parser.add_argument('--all_sources', action='store_true',
+                        help='Use poly + pan + lls (pan-equivalent grayscale) '
+                             'instead of poly RGB only. Implies --aggregate_only.')
+    args = parser.parse_args()
+    if args.all_sources:
+        args.aggregate_only = True
 
-    for mat_id in MATERIAL_IDS:
+    os.makedirs(args.output_dir, exist_ok=True)
+
+    for mat_id in args.material_ids:
         print(f"\n{'='*60}")
-        print(f"Loading material {mat_id:04d} from {ROOT_FOLDER}")
+        print(f"Loading material {mat_id:04d} from {args.root_folder}")
         print(f"{'='*60}")
 
-        mat = load_material(ROOT_FOLDER, mat_id)
+        svfresnel = args.svfresnel_dir if args.svfresnel_dir else None
+        if args.all_sources:
+            mat_all = load_material_all_sources(
+                args.root_folder, mat_id, svfresnel_dir=svfresnel)
+            H, W = mat_all['H'], mat_all['W']
+            K = mat_all['gray_pan_equiv'].shape[0]
+            sources = sorted(set(mat_all['source_type'].tolist()))
+            print(f"  H={H}, W={W}, K={K} views, sources={sources}, "
+                  f"normals={'GT' if mat_all['normals'] is not None else '+Z fallback'}")
+            polypan_dir = os.path.join(args.output_dir, "fixWo_polypan",
+                                        f"mat{mat_id:04d}")
+            os.makedirs(polypan_dir, exist_ok=True)
+            pix_indices = uniform_sample_point_indices(H, W, args.num_points)
+            print(f"  Sampling {len(pix_indices)} points (uniform grid)")
+            for pi, pix_idx in enumerate(pix_indices):
+                pixel_row = int(pix_idx) // W
+                pixel_col = int(pix_idx) % W
+                xyz_pt = mat_all['xyz_map'][pixel_row, pixel_col]
+                normal_pt = (mat_all['normals'][pix_idx]
+                             if mat_all['normals'] is not None else None)
+                gray_views = mat_all['gray_pan_equiv'][:, int(pix_idx)]
+                plot_fix_wo_vary_wi_combined(
+                    mat_id, pi, pixel_row, pixel_col,
+                    xyz_pt, gray_views,
+                    mat_all['light_pos'],
+                    mat_all['cv_ids'], mat_all['il_ids'], mat_all['rot_azims'],
+                    mat_all['source_type'],
+                    polypan_dir, apply_cos_wi=args.apply_cos_wi,
+                    normal=normal_pt)
+            print(f"  Saved fixWo poly+pan plots to {polypan_dir}")
+            continue
+
+        mat = load_material(args.root_folder, mat_id, svfresnel_dir=svfresnel)
         H, W = mat['H'], mat['W']
         K = mat['rgbs'].shape[0]
-        print(f"  H={H}, W={W}, K={K} views")
+        print(f"  H={H}, W={W}, K={K} views, "
+              f"normals={'GT' if mat['normals'] is not None else '+Z fallback'}")
 
         # Uniform grid sampling of surface points
-        pix_indices = uniform_sample_point_indices(H, W, NUM_POINTS)
+        pix_indices = uniform_sample_point_indices(H, W, args.num_points)
         print(f"  Sampling {len(pix_indices)} points (uniform grid)")
 
-        mat_out_dir = os.path.join(OUTPUT_DIR, f"mat{mat_id:04d}")
+        mat_out_dir = os.path.join(args.output_dir, f"mat{mat_id:04d}")
         os.makedirs(mat_out_dir, exist_ok=True)
+        cos_out_dir = os.path.join(args.output_dir, "brdf_vs_costhetai", f"mat{mat_id:04d}")
+        os.makedirs(cos_out_dir, exist_ok=True)
+
+        per_point_records = []
 
         for pi, pix_idx in enumerate(pix_indices):
             pixel_row = pix_idx // W
             pixel_col = pix_idx % W
             xyz_point = mat['xyz_map'][pixel_row, pixel_col]  # (3,)
+            normal_point = (mat['normals'][pix_idx]
+                            if mat['normals'] is not None else None)
 
             # BRDF values (RGB) for this pixel across all K views
             rgbs_point = mat['rgbs'][:, pix_idx, :]  # (K, 3)
 
-            print(f"  Point {pi+1}/{len(pix_indices)}: "
-                  f"pixel=({pixel_row},{pixel_col})  xyz={xyz_point}")
+            if not args.aggregate_only:
+                print(f"  Point {pi+1}/{len(pix_indices)}: "
+                      f"pixel=({pixel_row},{pixel_col})  xyz={xyz_point}")
 
-            # 1) Fix wi (avg over il), vary wo – 2D elevation + azimuth slices
-            plot_fix_wi_vary_wo(
-                mat_id, pi, pixel_row, pixel_col,
-                xyz_point, rgbs_point,
-                mat['light_pos'], mat['cam_pos'],
-                mat['cv_ids'], mat['il_ids'], mat['rot_azims'],
-                mat_out_dir)
+                # 1) Fix wi (avg over il), vary wo – 2D elevation + azimuth slices
+                plot_fix_wi_vary_wo(
+                    mat_id, pi, pixel_row, pixel_col,
+                    xyz_point, rgbs_point,
+                    mat['light_pos'], mat['cam_pos'],
+                    mat['cv_ids'], mat['il_ids'], mat['rot_azims'],
+                    mat_out_dir)
 
-            # 2) Fix wo (avg over cv), vary wi – 2D elevation + azimuth slices
-            plot_fix_wo_vary_wi(
-                mat_id, pi, pixel_row, pixel_col,
-                xyz_point, rgbs_point,
-                mat['light_pos'], mat['cam_pos'],
-                mat['cv_ids'], mat['il_ids'], mat['rot_azims'],
-                mat_out_dir)
+                # 2) Fix wo (avg over cv), vary wi – 2D elevation + azimuth slices
+                plot_fix_wo_vary_wi(
+                    mat_id, pi, pixel_row, pixel_col,
+                    xyz_point, rgbs_point,
+                    mat['light_pos'], mat['cam_pos'],
+                    mat['cv_ids'], mat['il_ids'], mat['rot_azims'],
+                    mat_out_dir, apply_cos_wi=args.apply_cos_wi)
 
-            # 3) All views – 3D BRDF lobe coloured by rotation azimuth
-            plot_3d_lobe_fix_wi(
-                mat_id, pi, pixel_row, pixel_col,
-                xyz_point, rgbs_point,
-                mat['light_pos'], mat['cam_pos'],
-                mat['rot_azims'],
-                mat_out_dir)
+                # 3) All views – 3D BRDF lobe coloured by rotation azimuth
+                plot_3d_lobe_fix_wi(
+                    mat_id, pi, pixel_row, pixel_col,
+                    xyz_point, rgbs_point,
+                    mat['light_pos'], mat['cam_pos'],
+                    mat['rot_azims'],
+                    mat_out_dir)
 
-            # 4) All views – 3D BRDF×cos lobe coloured by rotation azimuth
-            plot_3d_lobe_fix_wo(
-                mat_id, pi, pixel_row, pixel_col,
-                xyz_point, rgbs_point,
-                mat['light_pos'], mat['cam_pos'],
-                mat['rot_azims'],
-                mat_out_dir)
+                # 4) All views – 3D BRDF×cos lobe coloured by rotation azimuth
+                plot_3d_lobe_fix_wo(
+                    mat_id, pi, pixel_row, pixel_col,
+                    xyz_point, rgbs_point,
+                    mat['light_pos'], mat['cam_pos'],
+                    mat['rot_azims'],
+                    mat_out_dir, apply_cos_wi=args.apply_cos_wi)
+
+                # 5) UBO-style polar plot: fix wi, vary wo (one curve per il_id)
+                plot_polar_fix_wi_vary_wo(
+                    mat_id, pi, pixel_row, pixel_col,
+                    xyz_point, rgbs_point,
+                    mat['light_pos'], mat['cam_pos'],
+                    mat['il_ids'],
+                    mat_out_dir)
+
+                # 6) UBO-style polar plot: fix wo, vary wi (one curve per cv_id)
+                plot_polar_fix_wo_vary_wi(
+                    mat_id, pi, pixel_row, pixel_col,
+                    xyz_point, rgbs_point,
+                    mat['light_pos'], mat['cam_pos'],
+                    mat['cv_ids'],
+                    mat_out_dir, apply_cos_wi=args.apply_cos_wi)
+
+                # 7) BRDF vs cos(θ_i): averaged over all wi azimuths and all wo
+                #    (saved to a separate sub-folder for easy comparison)
+                plot_brdf_vs_costhetai(
+                    mat_id, pi, pixel_row, pixel_col,
+                    xyz_point, rgbs_point,
+                    mat['light_pos'], mat['cam_pos'],
+                    mat['il_ids'],
+                    cos_out_dir, apply_cos_wi=args.apply_cos_wi,
+                    normal=normal_point)
+
+            # Collect per-point data for the across-points aggregate plot.
+            cos_view, y_view = compute_brdf_vs_costhetai_data(
+                xyz_point, rgbs_point, mat['light_pos'], mat['il_ids'],
+                apply_cos_wi=args.apply_cos_wi, normal=normal_point)
+            per_point_records.append({
+                'pixel_row': pixel_row,
+                'pixel_col': pixel_col,
+                'cos_theta_i': cos_view,
+                'y_all': y_view,
+                'il_ids': mat['il_ids'],
+            })
+
+        # Across-points aggregate (one figure per material)
+        plot_aggregate_brdf_vs_costhetai(
+            mat_id, per_point_records, cos_out_dir,
+            apply_cos_wi=args.apply_cos_wi)
 
         print(f"  Saved plots to {mat_out_dir}")
 
-    print(f"\nDone. All outputs in {OUTPUT_DIR}")
+    print(f"\nDone. All outputs in {args.output_dir}")
 
 
 if __name__ == '__main__':
