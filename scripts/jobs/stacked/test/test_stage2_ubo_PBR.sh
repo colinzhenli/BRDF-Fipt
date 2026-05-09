@@ -9,7 +9,7 @@ set -e
 MATERIAL="${1:?Usage: $0 <material> <gpu>}"
 GPU="${2:?Usage: $0 <material> <gpu>}"
 
-EXP_BASE="Stage-2_PBR-Disney_UBO_${MATERIAL}"
+EXP_BASE="Stage-2_PBR-Disney_UBO_${MATERIAL}_Cosine"
 RUN_EXP="${EXP_BASE}_run_1"
 TEST_EXP="${EXP_BASE}_test_1"
 BTF="${MATERIAL}_W400xH400_L151xV151.btf"
@@ -35,11 +35,12 @@ python test.py \
     material.disney=True \
     material.anisotropic=True \
     material.soft_constraint=True \
-    material.predict_frame=False \
+    material.predict_frame=True \
     experiment_name=$TEST_EXP \
     model.optimizer.name=Adam \
     model.optimizer.lr=0.002 \
     model.optimizer.decoder_lr=2e-4 \
+    model.apply_cosine_weight=True \
     model.loss.recon_loss.name=logrel \
     model.loss.recon_loss.log_space.logrel_ref=0.05 \
     model.loss.reg_loss.weight=0.0 \

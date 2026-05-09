@@ -25,7 +25,8 @@ python main.py \
     experiment_name=DEBUG_stage1_pan-only_test \
     model.optimizer.name=Adam8bit \
     model.loss.recon_loss.name=logrel \
-    model.loss.recon_loss.log_space.logrel_ref=0.05 \
+    # model.loss.recon_loss.log_space.logrel_ref=0.05 \
+    model.loss.recon_loss.log_space.logrel_ref=0.02 \
     model.loss.reg_loss.weight=0.0 \
     model.loss.pan_weight=0.5 \
     model.loss.lls_weight=0.0 \

@@ -53,6 +53,7 @@ class Stage1Trainer_MERL(pl.LightningModule):
         self.inference_lr = cfg.model.optimizer.inference_lr
         self.inference_steps = cfg.model.optimizer.inference_steps
         self.is_graypatch = material.__class__.__name__ == 'GreyPatchBRDF'
+        self.grazing_ratio = getattr(cfg.model, 'grazing_ratio', 0.0)
         print("after latent reg weight")
         self.renderer = ForwardRenderer(cfg, self.material)
         self.gt_renderer = ForwardRenderer(cfg, self.gt_material)
@@ -342,11 +343,39 @@ class Stage1Trainer_MERL(pl.LightningModule):
         
         # Add regularizer
         loss = recon_loss
-        
+
         return loss
-    
+
+    def _zero_angle_aux_predictions(self, material_id):
+        """Build (pred, target) for grazing-incidence augmentation.
+
+        Bypasses the renderer; draws ``n_grazing`` material ids uniformly
+        from the **entire material set** (not just the current batch), builds
+        local-frame wi at z=0 (random azimuth) and wo on the upper hemisphere
+        (uniform), calls eval_brdf directly. Returns None when disabled.
+        """
+        n_total = material_id.shape[0]
+        n_grazing = int(self.grazing_ratio * n_total)
+        if n_grazing <= 0:
+            return None
+
+        device = material_id.device
+        mids = torch.randint(0, self.material.num_materials, (n_grazing,), device=device)
+
+        phi_i = torch.rand(n_grazing, device=device) * (2 * math.pi)
+        wi_local = torch.stack([torch.cos(phi_i), torch.sin(phi_i),
+                                torch.zeros_like(phi_i)], dim=-1)
+        z_o = torch.rand(n_grazing, device=device)
+        phi_o = torch.rand(n_grazing, device=device) * (2 * math.pi)
+        sin_t_o = torch.sqrt((1 - z_o ** 2).clamp(min=0))
+        wo_local = torch.stack([sin_t_o * torch.cos(phi_o),
+                                sin_t_o * torch.sin(phi_o), z_o], dim=-1)
+
+        brdf = self.material.eval_brdf(wi_local, wo_local, mids)
+        return brdf, torch.zeros_like(brdf)
+
     def training_step(self, batch, batch_idx):
-        
+
         """
         with importance sampling
         """
@@ -362,10 +391,19 @@ class Stage1Trainer_MERL(pl.LightningModule):
         #print(f"rgbs_gt: {rgbs_gt.shape}, wi: {wi.shape}, wo: {wo.shape}, material_id: {material_id.shape}")
 
         # forward renders
-        rgbs=self.material.eval_brdf(wi, wo, material_id)
-        
-        # print("rgbs",torch.mean(rgbs))
-        # print("rgbs_gt",torch.mean(rgbs_gt))
+        rgbs = self.material.eval_brdf(wi, wo, material_id)
+
+        # --- Grazing augmentation: concat synthetic rays into the batch so
+        # the loss/PSNR is computed once over a single combined set. ---
+        grazing_aug = self._zero_angle_aux_predictions(material_id)
+        grazing_loss_log = torch.tensor(0.0, device=rgbs.device)
+        if grazing_aug is not None:
+            g_pred, g_gt = grazing_aug
+            g_vis = torch.ones_like(g_pred, dtype=torch.bool)
+            grazing_loss_log = self.loss_function(g_pred, g_gt, g_vis)  # monitoring only
+            rgbs = torch.cat([rgbs, g_pred], dim=0)
+            rgbs_gt = torch.cat([rgbs_gt, g_gt], dim=0)
+
         vis = torch.ones_like(rgbs, dtype=torch.bool)
         loss = self.loss_function(rgbs, rgbs_gt, vis)
 
@@ -374,13 +412,14 @@ class Stage1Trainer_MERL(pl.LightningModule):
             print("psnr_loss is nan")
         max_val = rgbs_gt.squeeze(0)[vis].max().clamp_min(1e-8)
         psnr       = 10.0 * torch.log10((max_val ** 2) / psnr_loss.clamp_min(1e-10))
-        
+
         # ------------------------------------------------------------------
         # 7.  Logging  (now includes diagnostics)
         # ------------------------------------------------------------------
         self.log_dict({
             'train/recon_loss':   loss,
             'train/total_loss':   loss,
+            'train/grazing_loss': grazing_loss_log,
             'train/psnr':         psnr,
         }, prog_bar=True, batch_size=rgbs.shape[0])
 
@@ -427,8 +466,141 @@ class Stage1Trainer_MERL(pl.LightningModule):
             'val/psnr':         psnr,
         }, prog_bar=True, batch_size=rgbs.shape[0])
 
+        if batch_idx == 0:
+            output_dir = os.path.join(self.cfg.exp_output_root_path, 'images')
+            os.makedirs(output_dir, exist_ok=True)
+            self.visualize_brdf_lobe(output_dir=output_dir, num_materials=10, resolution=64)
+
         return loss
-    
+
+    def visualize_brdf_lobe(self, output_dir, num_materials=10, resolution=64):
+        """Polar BRDF lobe plots for a sample of materials.
+
+        Two visualizations:
+          (1) Fix wi, vary wo — single figure per material with theta_i overlays.
+          (2) Fix wo, vary wi — grid of (wi_phi × wo_phi) figures per material so
+              the zero-grazing constraint can be inspected at all azimuths
+              (not just wi_phi=0 / wo_phi=0).
+        """
+        if not hasattr(self.material, 'eval_brdf'):
+            return
+
+        import matplotlib
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as plt
+
+        device = next(self.material.parameters()).device
+        torch.manual_seed(42)
+        material_indices = torch.randint(
+            0, self.material.num_materials, (num_materials,), device=device)
+
+        local_normal = torch.tensor([[0.0, 0.0, 1.0]], device=device)
+        brdf_lobe_dir = os.path.join(output_dir, 'brdf_lobes')
+        os.makedirs(brdf_lobe_dir, exist_ok=True)
+
+        # ---- Visualization 1: Fix wi, vary wo --------------------------------
+        theta_i_values = [15.0, 30.0, 45.0, 60.0, 75.0]
+        for mat_idx in range(num_materials):
+            mid = material_indices[mat_idx:mat_idx + 1]
+            fig, ax = plt.subplots(figsize=(8, 8), subplot_kw={'projection': 'polar'})
+
+            for theta_i_deg in theta_i_values:
+                theta_i = np.radians(theta_i_deg)
+                wi = torch.tensor([[np.sin(theta_i), 0.0, np.cos(theta_i)]],
+                                  device=device, dtype=torch.float32)
+
+                theta_o_range = np.linspace(-np.pi / 2, np.pi / 2, resolution * 2)
+                wo_batch = torch.zeros(len(theta_o_range), 3, device=device)
+                for j, theta_o in enumerate(theta_o_range):
+                    if theta_o >= 0:
+                        wo_batch[j, 0] = -np.sin(theta_o)
+                        wo_batch[j, 2] =  np.cos(theta_o)
+                    else:
+                        wo_batch[j, 0] =  np.sin(-theta_o)
+                        wo_batch[j, 2] =  np.cos(-theta_o)
+
+                wi_batch = wi.expand(len(theta_o_range), -1)
+                mid_batch = mid.expand(len(theta_o_range))
+                with torch.no_grad():
+                    brdf = self.material.eval_brdf(wi_batch, wo_batch, mid_batch)
+
+                ax.plot(theta_o_range, brdf.mean(dim=-1).cpu().numpy(),
+                        label=f'θ_i={theta_i_deg}°')
+                ax.axvline(x=np.radians(theta_i_deg),
+                           color=ax.lines[-1].get_color(), linestyle='--', alpha=0.5)
+
+            ax.set_theta_zero_location('N')
+            ax.set_theta_direction(1)
+            ax.set_thetamin(-90)
+            ax.set_thetamax(90)
+            ax.legend(loc='upper right', bbox_to_anchor=(1.3, 1.0))
+            ax.set_title(f'BRDF Polar Plot (vary wo) - Mat {int(mid.item())}\n'
+                         f'(Fixed wi, vary wo; 0°=normal, dashed=specular direction)')
+            plt.tight_layout()
+            plt.savefig(os.path.join(brdf_lobe_dir,
+                f'polar_brdf_vary_wo_mat_{int(mid.item()):04d}.png'), dpi=150)
+            plt.close()
+
+        # ---- Visualization 2: Fix wo, vary wi  (BRDF × cos_theta_i) ----------
+        theta_o_values = [15.0, 30.0, 45.0, 60.0]
+        wi_phi_values  = [0.0, 45.0, 90.0, 135.0, 180.0]
+        wo_phi_values  = [0.0, 90.0, 180.0, 270.0]
+
+        for mat_idx in range(num_materials):
+            mid = material_indices[mat_idx:mat_idx + 1]
+            for wi_phi_deg in wi_phi_values:
+                for wo_phi_deg in wo_phi_values:
+                    wi_phi = np.radians(wi_phi_deg)
+                    wo_phi = np.radians(wo_phi_deg)
+                    fig, ax = plt.subplots(figsize=(8, 8), subplot_kw={'projection': 'polar'})
+
+                    for theta_o_deg in theta_o_values:
+                        theta_o = np.radians(theta_o_deg)
+                        wo = torch.tensor([[
+                            np.sin(theta_o) * np.cos(wo_phi),
+                            np.sin(theta_o) * np.sin(wo_phi),
+                            np.cos(theta_o),
+                        ]], device=device, dtype=torch.float32)
+
+                        theta_i_range = np.linspace(-np.pi / 2 + 0.01,
+                                                    np.pi / 2 - 0.01, resolution * 2)
+                        ti = torch.tensor(theta_i_range, device=device, dtype=torch.float32)
+                        wi_batch = torch.stack([
+                            -torch.sin(ti) * float(np.cos(wi_phi)),
+                            -torch.sin(ti) * float(np.sin(wi_phi)),
+                            torch.cos(ti),
+                        ], dim=-1)
+
+                        wo_batch = wo.expand(len(theta_i_range), -1)
+                        mid_batch = mid.expand(len(theta_i_range))
+                        with torch.no_grad():
+                            brdf = self.material.eval_brdf(wi_batch, wo_batch, mid_batch)
+
+                        cos_theta_i = wi_batch[:, 2].clamp(min=0).cpu().numpy()
+                        ax.plot(theta_i_range, brdf.mean(dim=-1).cpu().numpy() * cos_theta_i,
+                                label=f'θ_o={theta_o_deg}°')
+                        ax.axvline(x=np.radians(theta_o_deg),
+                                   color=ax.lines[-1].get_color(), linestyle='--', alpha=0.5)
+
+                    ax.set_theta_zero_location('N')
+                    ax.set_theta_direction(1)
+                    ax.set_thetamin(-90)
+                    ax.set_thetamax(90)
+                    ax.legend(loc='upper right', bbox_to_anchor=(1.3, 1.0))
+                    ax.set_title(
+                        f'BRDF × cos(θ_i) - Mat {int(mid.item())}\n'
+                        f'wi_φ={wi_phi_deg:.0f}°, wo_φ={wo_phi_deg:.0f}° '
+                        f'(±90° = grazing)')
+                    plt.tight_layout()
+                    plt.savefig(os.path.join(
+                        brdf_lobe_dir,
+                        f'polar_brdf_vary_wi_mat_{int(mid.item()):04d}'
+                        f'_wiphi{int(wi_phi_deg):03d}_wophi{int(wo_phi_deg):03d}.png'), dpi=150)
+                    plt.close()
+
+        n_vary_wi = num_materials * len(wi_phi_values) * len(wo_phi_values)
+        print(f"[BRDF Lobe Visualization] Saved {num_materials + n_vary_wi} figures to {brdf_lobe_dir}")
+
     def on_train_batch_start(self, batch, batch_idx):
         pass
         #step = self.global_step

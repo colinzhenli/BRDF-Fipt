@@ -15,7 +15,8 @@ python main.py \
     model.apply_cosine_weight=False \
     model.test=True \
     model.loss.recon_loss.name=logrel \
-    model.loss.recon_loss.log_space.logrel_ref=0.05 \
+    # model.loss.recon_loss.log_space.logrel_ref=0.05 \
+    model.loss.recon_loss.log_space.logrel_ref=0.02 \
     model.trainer.limit_train_batches=512 \
     model.trainer.enable_checkpointing=False \
     model.loss.reg_loss.weight=0. \

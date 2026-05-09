@@ -1,11 +1,10 @@
 #!/bin/bash
 
-export CUDA_VISIBLE_DEVICES=2
-
 python main.py \
-    dataset_folder=/media/raid/cloth/Bonn_train \
+    dataset_folder=/home/zla247/scratch/data/Bonn/train  \
+    output_folder=/home/zla247/scratch/output/BRDF \
     data=bonn \
-    data.num_load_workers=8 \
+    data.num_load_workers=2 \
     data.use_pan=True \
     data.use_lls=True \
     data.debug=False \
@@ -14,25 +13,25 @@ python main.py \
     data.point_subsample_ratio=0.1 \
     renderer=multiarea_emitter \
     material=bonn_latent \
-    experiment_name=Continue_Stage-1_Bonn_Subsample-0.1_Batch-500K_run_1 \
+    experiment_name=Fir_Stage-1_Bonn-Cosine_Grazing-ratio-0.05_Logref-0.02_run_1 \
     model.optimizer.reset_latent_momentum_on_chunk_switch=False \
     model.optimizer.name=Adam8bit \
     model.loss.recon_loss.name=logrel \
-    # model.loss.recon_loss.log_space.logrel_ref=0.05 \
     model.loss.recon_loss.log_space.logrel_ref=0.02 \
     model.loss.reg_loss.weight=0.0 \
     model.loss.pan_weight=1.0 \
     model.loss.lls_weight=1.0 \
     model.lls_spp=4 \
     model.stage=1 \
-    model.apply_cosine_weight=False \
     model.test=False \
-    model.continue_training=True \
+    model.apply_cosine_weight=True \
+    model.continue_training=False \
     model.trainer.max_epochs=100 \
     model.optimizer.lr=2e-3 \
     model.optimizer.decoder_lr=2e-4 \
     model.trainer.limit_train_batches=8000 \
-    model.trainer.check_val_every_n_epoch=10 \
+    model.trainer.check_val_every_n_epoch=5 \
+    model.grazing_ratio=0.05 \
     material.decoder.use_skip_connection=True \
     material.decoder.use_film=False \
     material.decoder.use_color_decomp=False \
@@ -41,4 +40,4 @@ python main.py \
     material.decoder.smooth_reg=False \
     material.different_decoder=False \
     data.filter_observations=False \
-    model.ckpt_path=/media/raid/cloth/output/BRDF/Bonn-Theia2/Stage-1_VML_Bonn_Subsample-0.1_Batch-500K_run_1/training/model_0.20_0.20/last.ckpt
+    # model.ckpt_path=/home/zla247/scratch/output/BRDF/Bonn-Theia2/Fir_Stage-1_Cosine-weighted_Bonn_Subsample-0.1_Batch-500K_run_1/training/model_0.20_0.20/last.ckpt

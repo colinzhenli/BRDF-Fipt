@@ -83,6 +83,7 @@ class Stage1Trainer_Bonn(pl.LightningModule):
         self.lls_spp = getattr(cfg.model, 'lls_spp', 16)
         self.latent_reg_weight = getattr(cfg.model, 'latent_reg_weight', 1e-4)
         self.smooth_reg_weight = getattr(cfg.model, 'smooth_reg_weight', 1e-3)
+        self.grazing_ratio = getattr(cfg.model, 'grazing_ratio', 0.0)
         self.reset_latent_momentum = getattr(cfg.model.optimizer, 'reset_latent_momentum_on_chunk_switch', False)
         self._opt_name = getattr(cfg.model.optimizer, 'name', 'SparseAdam')
 
@@ -95,11 +96,19 @@ class Stage1Trainer_Bonn(pl.LightningModule):
             self.register_buffer('pan_weights', init_pan_weights)
 
         # Multiply BRDF output by max(predicted_normal · wi, 0) before comparing
-        # to GT on the poly and pan branches. Use when GT bakes in the
-        # foreshortening (e.g. fine-tuning on real captured measurements) but
-        # the decoder predicts a pure BRDF. The LLS branch already integrates
-        # the cosine internally inside _lls_monte_carlo, so it is unaffected.
+        # to GT. Use when GT bakes in the foreshortening (e.g. fine-tuning on
+        # real captured measurements) but the decoder predicts a pure BRDF.
+        # Affects poly, pan, AND lls by default — the LLS forward model is
+        #     predicted = Σ_k (BRDF_k · w_k) / Σ_k w_k,  w_k = cos_k / dist_k²
+        # so the cos in w_k cancels with Σ w_k in the denominator and the
+        # prediction does NOT vanish at grazing even though GT does. Applying
+        # cos manually puts cos² in the numerator and restores the grazing
+        # attenuation.
         self.apply_cosine_weight = bool(getattr(cfg.model, 'apply_cosine_weight', False))
+        # Hard-coded LLS-only override (no config knob). Set to False to A/B
+        # test the older "no-manual-cos" LLS behavior while leaving poly/pan
+        # alone. Has no effect when ``apply_cosine_weight`` is False.
+        self.apply_cosine_lls = True
 
     # ------------------------------------------------------------------
     # Optimiser
@@ -258,8 +267,14 @@ class Stage1Trainer_Bonn(pl.LightningModule):
     def _lls_monte_carlo(self, xyz, wo, lls_corners, point_ids, material_ids, spp, normals=None):
         """Monte-Carlo integration over LLS quad (white-frame calibrated).
 
-        predicted = sum_k(BRDF(wi_k, wo) * w_k) / sum_k(w_k)
-        w_k = max(0, cos_theta_i_k) / dist_k^2
+        Default forward model (``apply_cosine_weight and apply_cosine_lls``):
+            predicted = Σ_k (BRDF_k · cos²_k / dist²_k) / Σ_k (cos_k / dist²_k)
+        Falls back to the legacy form when either flag is off:
+            predicted = Σ_k (BRDF_k · cos_k / dist²_k) / Σ_k (cos_k / dist²_k)
+
+        The default form has cos² in the numerator and reproduces the
+        small-strip "point light at center with foreshortening" radiometric
+        model — the prediction vanishes at grazing, matching raw GT shape.
 
         Normal handling mirrors pan/poly: if the material has
         ``predict_frame=True`` the predicted normal (from the latent bank) is
@@ -316,8 +331,17 @@ class Stage1Trainer_Bonn(pl.LightningModule):
             normals.unsqueeze(1).expand(-1, spp, -1).reshape(N * spp, 3)
             if normals is not None else None)
 
-        brdf_flat, _, _ = self._eval_brdf(
-            xyz_flat, wi_flat, wo_flat, pid_flat, mid_flat, normals=normals_flat)
+        # When both flags are on, multiply BRDF by max(wi · n_pred, 0) per
+        # sample so the cos in w_k stops cancelling at the prediction level.
+        apply_cos_lls = self.apply_cosine_weight and self.apply_cosine_lls
+        if apply_cos_lls:
+            brdf_flat, _, _, wi_local_flat = self._eval_brdf(
+                xyz_flat, wi_flat, wo_flat, pid_flat, mid_flat,
+                normals=normals_flat, return_wi_local=True)
+            brdf_flat = self._apply_cosine(brdf_flat, wi_local_flat)
+        else:
+            brdf_flat, _, _ = self._eval_brdf(
+                xyz_flat, wi_flat, wo_flat, pid_flat, mid_flat, normals=normals_flat)
         brdf_k = brdf_flat.reshape(N, spp, 3)                       # (N, spp, 3)
 
         numerator   = (brdf_k * w_k).sum(dim=1)                     # (N, 3)
@@ -382,6 +406,41 @@ class Stage1Trainer_Bonn(pl.LightningModule):
             per_pix = per_pix * confidence
         return per_pix.mean()
 
+    def _zero_angle_aux_predictions(self, point_ids, material_ids):
+        """Build (pred, target) for grazing-incidence augmentation.
+
+        Bypasses frame transform / LLS MC: draws ``n_grazing`` global point
+        ids uniformly from the **entire latent bank** (not just the current
+        batch), builds local-frame wi at z=0 (random azimuth) and wo on the
+        upper hemisphere (uniform), calls the decoder directly with
+        normal=(0,0,1). No cosine multiplication. Returns None when disabled.
+        """
+        n_total = point_ids.shape[0]
+        n_grazing = int(self.grazing_ratio * n_total)
+        if n_grazing <= 0:
+            return None
+
+        device = point_ids.device
+        total_latents = self.material.point_latent_bank.num_embeddings
+        global_pids = torch.randint(0, total_latents, (n_grazing,), device=device)
+
+        phi_i = torch.rand(n_grazing, device=device) * (2 * math.pi)
+        wi_local = torch.stack([torch.cos(phi_i), torch.sin(phi_i),
+                                torch.zeros_like(phi_i)], dim=-1)
+        z_o = torch.rand(n_grazing, device=device)
+        phi_o = torch.rand(n_grazing, device=device) * (2 * math.pi)
+        sin_t_o = torch.sqrt((1 - z_o ** 2).clamp(min=0))
+        wo_local = torch.stack([sin_t_o * torch.cos(phi_o),
+                                sin_t_o * torch.sin(phi_o), z_o], dim=-1)
+        normal_local = torch.zeros_like(wi_local)
+        normal_local[..., 2] = 1.0
+
+        latent = self.material.point_latent_bank(global_pids)
+        enc_dir = self.material.decoder.encode_directions(wi_local, wo_local, normal_local)
+        brdf = self.material.decoder(enc_dir, latent[:, :self.material.latent_dim])
+
+        return brdf, torch.zeros_like(brdf)
+
     # ------------------------------------------------------------------
     # Training
     # ------------------------------------------------------------------
@@ -417,7 +476,23 @@ class Stage1Trainer_Bonn(pl.LightningModule):
         pan_loss_raw  = zero
         lls_loss_raw  = zero
 
-        # --- polychromatic (RGB) loss ---
+        # --- Zero-angle (grazing) augmentation rays (generated once, attached
+        # to all three paths so the grazing constraint reaches all latents
+        # regardless of which data type appears in this batch). ---
+        grazing_aug = self._zero_angle_aux_predictions(point_ids, material_ids)
+        grazing_loss_log = zero
+        if grazing_aug is not None:
+            brdf_g, gt_g_3ch = grazing_aug                       # (n_g, 3), zeros
+            n_g = brdf_g.shape[0]
+            # Gray projection (matches pan/lls real-data forward).
+            pan_w_g = self.pan_weights.view(1, 3).expand(n_g, 3)
+            pred_gray_g = (brdf_g * pan_w_g).sum(-1, keepdim=True)
+            gt_g_gray = torch.zeros_like(pred_gray_g)
+            conf_g = torch.ones(n_g, device=xyz.device)
+            # Monitoring-only metric (does not enter the gradient).
+            grazing_loss_log = self._compute_loss(brdf_g, gt_g_3ch)
+
+        # --- polychromatic (RGB) loss (real poly + grazing) ---
         if poly_mask.any():
             poly_normals = gt_normals[poly_mask] if gt_normals is not None else None
             if self.apply_cosine_weight:
@@ -431,13 +506,28 @@ class Stage1Trainer_Bonn(pl.LightningModule):
                     xyz[poly_mask], wi[poly_mask], wo[poly_mask],
                     point_ids[poly_mask], material_ids[poly_mask],
                     normals=poly_normals)
-            poly_loss_raw = self._compute_loss(brdf, rgbs_gt[poly_mask],
-                                               confidence[poly_mask])
-            total_loss = total_loss + poly_loss_raw
             smooth_total = smooth_total + sm
             poly_pred = brdf
+            real_pred, real_gt, real_conf = brdf, rgbs_gt[poly_mask], confidence[poly_mask]
+        else:
+            real_pred = real_gt = real_conf = None
 
-        # --- panchromatic (grayscale) loss ---
+        if grazing_aug is not None or poly_mask.any():
+            if grazing_aug is None:
+                pred, gt_, conf = real_pred, real_gt, real_conf
+            elif real_pred is None:
+                pred, gt_, conf = brdf_g, gt_g_3ch, conf_g
+            else:
+                pred = torch.cat([real_pred, brdf_g], dim=0)
+                gt_  = torch.cat([real_gt, gt_g_3ch], dim=0)
+                conf = torch.cat([real_conf, conf_g], dim=0)
+            poly_loss_raw = self._compute_loss(pred, gt_, conf)
+            total_loss = total_loss + poly_loss_raw
+            poly_combined_pred, poly_combined_gt, poly_combined_conf = pred, gt_, conf
+        else:
+            poly_combined_pred = poly_combined_gt = poly_combined_conf = None
+
+        # --- panchromatic (grayscale) loss (real pan + grazing-as-gray) ---
         if pan_mask.any():
             pan_normals = gt_normals[pan_mask] if gt_normals is not None else None
             if self.apply_cosine_weight:
@@ -451,40 +541,67 @@ class Stage1Trainer_Bonn(pl.LightningModule):
                     xyz[pan_mask], wi[pan_mask], wo[pan_mask],
                     point_ids[pan_mask], material_ids[pan_mask],
                     normals=pan_normals)
-            pred_gray = (brdf_pan * ray_pan_w[pan_mask]).sum(-1, keepdim=True)
-            gt_gray   = rgbs_gt[pan_mask][:, :1]
-            pan_loss_raw = self._compute_loss(
-                pred_gray, gt_gray, confidence[pan_mask])
-            total_loss = total_loss + self.pan_loss_weight * pan_loss_raw
             smooth_total = smooth_total + sm
+            real_pred = (brdf_pan * ray_pan_w[pan_mask]).sum(-1, keepdim=True)
+            real_gt   = rgbs_gt[pan_mask][:, :1]
+            real_conf = confidence[pan_mask]
+        else:
+            real_pred = real_gt = real_conf = None
 
-        # --- LLS (Monte-Carlo) loss ---
+        if grazing_aug is not None or pan_mask.any():
+            if grazing_aug is None:
+                pred, gt_, conf = real_pred, real_gt, real_conf
+            elif real_pred is None:
+                pred, gt_, conf = pred_gray_g, gt_g_gray, conf_g
+            else:
+                pred = torch.cat([real_pred, pred_gray_g], dim=0)
+                gt_  = torch.cat([real_gt, gt_g_gray], dim=0)
+                conf = torch.cat([real_conf, conf_g], dim=0)
+            pan_loss_raw = self._compute_loss(pred, gt_, conf)
+            total_loss = total_loss + self.pan_loss_weight * pan_loss_raw
+
+        # --- LLS (Monte-Carlo) loss (real lls + grazing-as-gray) ---
         if lls_mask.any():
             lls_normals = gt_normals[lls_mask] if gt_normals is not None else None
             lls_pred = self._lls_monte_carlo(
                 xyz[lls_mask], wo[lls_mask], lls_corners[lls_mask],
                 point_ids[lls_mask], material_ids[lls_mask], self.lls_spp,
                 normals=lls_normals)
-            pred_gray = (lls_pred * ray_pan_w[lls_mask]).sum(-1, keepdim=True)
-            gt_gray   = rgbs_gt[lls_mask][:, :1]
-            lls_loss_raw = self._compute_loss(
-                pred_gray, gt_gray, confidence[lls_mask])
+            real_pred = (lls_pred * ray_pan_w[lls_mask]).sum(-1, keepdim=True)
+            real_gt   = rgbs_gt[lls_mask][:, :1]
+            real_conf = confidence[lls_mask]
+        else:
+            real_pred = real_gt = real_conf = None
+
+        if grazing_aug is not None or lls_mask.any():
+            if grazing_aug is None:
+                pred, gt_, conf = real_pred, real_gt, real_conf
+            elif real_pred is None:
+                pred, gt_, conf = pred_gray_g, gt_g_gray, conf_g
+            else:
+                pred = torch.cat([real_pred, pred_gray_g], dim=0)
+                gt_  = torch.cat([real_gt, gt_g_gray], dim=0)
+                conf = torch.cat([real_conf, conf_g], dim=0)
+            lls_loss_raw = self._compute_loss(pred, gt_, conf)
             total_loss = total_loss + self.lls_loss_weight * lls_loss_raw
 
-        # Smoothness regularisation (from poly branch only to avoid double-counting)
+        # Smoothness regularisation (from poly+pan branches only to avoid
+        # double-counting; grazing skips eval_brdf so contributes nothing)
         total_loss = total_loss + self.smooth_reg_weight * smooth_total
 
-        # PSNR — computed on poly RGB only
+        # PSNR — over the combined poly path (real poly + grazing). The peak
+        # is unaffected by zero-target grazing samples.
         psnr = torch.tensor(0.0, device=xyz.device)
-        if poly_pred is not None and poly_pred.numel() > 0:
+        if poly_combined_pred is not None and poly_combined_pred.numel() > 0:
             psnr, _ = self._compute_psnr_mse(
-                poly_pred, rgbs_gt[poly_mask], valid=confidence[poly_mask] > 0)
+                poly_combined_pred, poly_combined_gt, valid=poly_combined_conf > 0)
 
         self.log_dict({
             'train/total_loss': total_loss,
             'train/poly_loss':  poly_loss_raw,
             'train/pan_loss':   pan_loss_raw,
             'train/lls_loss':   lls_loss_raw,
+            'train/grazing_loss': grazing_loss_log,
             'train/psnr':       psnr,
             'train/poly_pred_mean': poly_pred.mean() if poly_pred is not None else 0.0,
             'train/poly_gt_mean':   rgbs_gt[poly_mask].mean() if poly_mask.any() else 0.0,
@@ -553,6 +670,20 @@ class Stage1Trainer_Bonn(pl.LightningModule):
     # ------------------------------------------------------------------
     # Validation  (full-image from BonnValDataset)
     # ------------------------------------------------------------------
+    def on_validation_epoch_start(self):
+        # Pooled squared-error accumulators for an across-all-views PSNR.
+        # PSNR is non-linear in MSE (10*log10(peak^2/MSE)), so per-batch
+        # PSNRs cannot be averaged directly. Instead we accumulate
+        # sum-of-squared-errors and element counts in linear space across
+        # every val item (poly and gray), then convert once per epoch in
+        # ``on_validation_epoch_end``. Each (pixel × channel) counts as one
+        # observation: poly contributes 3 elements per pixel, gray
+        # contributes 1, matching the per-element MSE convention used by
+        # ``_compute_psnr_mse``. The shared ``peak`` (=1.0 by default) is
+        # what makes the combined metric well-defined across modalities.
+        self._val_sse_total = 0.0
+        self._val_n_total   = 0
+
     def validation_step(self, batch, batch_idx):
         xyz          = batch['xyz'].squeeze(0)
         wi           = batch['wi'].squeeze(0)
@@ -562,15 +693,33 @@ class Stage1Trainer_Bonn(pl.LightningModule):
         material_ids = batch['material_ids'].squeeze(0)
         confidence   = batch['confidence'].squeeze(0)          # (N,)
         img_hw       = batch['img_hw'].squeeze(0)              # (2,)
+        lls_corners  = batch['lls_corners'].squeeze(0)
         # Scatter map: original H*W flat index for each of the N supervised
         # pixels. Identity arange when point_subsample_ratio == 1.0.
         sub_indices  = batch['sub_indices'].squeeze(0).long()  # (N,)
+
+        # Per-ray RGB→pan weights from calibration; fall back to global buffer.
+        if 'pan_weights' in batch:
+            ray_pan_w = batch['pan_weights'].squeeze(0)        # (N, 3)
+        else:
+            ray_pan_w = self.pan_weights.unsqueeze(0).expand(xyz.shape[0], -1)
 
         gt_normals = batch.get('gt_normals')
         if gt_normals is not None:
             gt_normals = gt_normals.squeeze(0)
 
-        if self.apply_cosine_weight:
+        # Each val item is one full image, so all pixels share data_type.
+        data_type_val = int(batch['data_type'].squeeze(0)[0].item())
+
+        # ---- evaluate forward model branched on data_type --------------
+        # Mirror training_step exactly: poly uses regular BRDF eval; pan uses
+        # regular BRDF eval then RGB→gray projection; lls uses Monte-Carlo
+        # area-light integration then RGB→gray projection.
+        if data_type_val == DTYPE_LLS:
+            brdf = self._lls_monte_carlo(
+                xyz, wo, lls_corners, point_ids, material_ids, self.lls_spp,
+                normals=gt_normals)
+        elif self.apply_cosine_weight:
             brdf, _, _, wi_local = self._eval_brdf(
                 xyz, wi, wo, point_ids, material_ids,
                 normals=gt_normals, return_wi_local=True)
@@ -582,17 +731,41 @@ class Stage1Trainer_Bonn(pl.LightningModule):
         # Zero out brdf at occluded pixels
         brdf = brdf * confidence.unsqueeze(-1)
 
-        loss = self._compute_loss(brdf, rgbs_gt, confidence)
+        # ---- loss / PSNR / MSE per data_type ---------------------------
+        # For poly: 3-channel comparison.
+        # For pan and lls: project pred RGB → gray with calibrated weights,
+        # then compare against rgbs_gt[:, :1] (channel 0 carries the gray
+        # value). Pan and lls share the same RGB→gray projection mechanism,
+        # so they are merged into a single ``gray`` bucket. PSNR/MSE for
+        # the gray bucket use a 1-channel tensor so they are NOT averaged
+        # together with the 3-channel poly metrics.
+        if data_type_val == DTYPE_POLY:
+            pred_for_metric = brdf
+            gt_for_metric   = rgbs_gt
+            tag = 'poly'
+        else:
+            pred_for_metric = (brdf * ray_pan_w).sum(-1, keepdim=True)
+            gt_for_metric   = rgbs_gt[:, :1]
+            tag = 'gray'
 
-        # PSNR / MSE over valid (non-occluded) pixels only.
-        # PL averages logged metrics across validation batches automatically.
-        psnr, mse = self._compute_psnr_mse(brdf, rgbs_gt, valid=confidence > 0)
+        loss = self._compute_loss(pred_for_metric, gt_for_metric, confidence)
+        psnr, mse = self._compute_psnr_mse(
+            pred_for_metric, gt_for_metric, valid=confidence > 0)
 
         self.log_dict({
-            'val/loss': loss,
-            'val/psnr': psnr,
-            'val/mse':  mse,
+            f'val/{tag}_loss': loss,
+            f'val/{tag}_psnr': psnr,
+            f'val/{tag}_mse':  mse,
         }, prog_bar=True, batch_size=xyz.shape[0])
+
+        # Pool SSE / element-count for the across-all-modalities metric.
+        # Same valid mask as the per-type metric so occluded pixels are
+        # excluded from the aggregate too.
+        valid_mask = confidence > 0
+        if valid_mask.any():
+            diff = pred_for_metric[valid_mask] - gt_for_metric[valid_mask]
+            self._val_sse_total += diff.pow(2).sum().item()
+            self._val_n_total   += diff.numel()
 
         if hasattr(self.material, 'learnable_factor') and self.material.learnable_factor:
             factor_val = self.material.factor.detach()
@@ -617,37 +790,49 @@ class Stage1Trainer_Bonn(pl.LightningModule):
             canvas.index_copy_(0, sub_indices.to(flat.device), flat)
             return canvas.reshape(H, W, C)
 
-        gt_img   = _scatter_to_image(rgbs_gt)
-        pred_img = _scatter_to_image(brdf)
-
         output_dir = os.path.join(self.cfg.exp_output_root_path, 'images')
         os.makedirs(output_dir, exist_ok=True)
 
-        psnr_str = f'{psnr.item():.2f}'
-        mat_id   = material_ids[0].item()
+        mat_id = material_ids[0].item()
 
-        # # Save EXR (full HDR precision)
-        # gt_exr   = gt_img.cpu().numpy().astype(np.float32)
-        # pred_exr = pred_img.cpu().numpy().astype(np.float32)
-        # cv2.imwrite(
-        #     os.path.join(output_dir, f'gt_mat{mat_id:04d}_view{batch_idx}.exr'),
-        #     cv2.cvtColor(gt_exr, cv2.COLOR_RGB2BGR))
-        # cv2.imwrite(
-        #     os.path.join(output_dir,
-        #                  f'pred_mat{mat_id:04d}_view{batch_idx}_psnr{psnr_str}.exr'),
-        #     cv2.cvtColor(pred_exr, cv2.COLOR_RGB2BGR))
+        # Per-view image saving is gated by ``cfg.data.valid_num`` (mirrors
+        # the UBO trainer): metrics still run on every val item, but PNGs
+        # are only written for the first ``valid_num`` views. valid_num <= 0
+        # disables the gate (saves all views).
+        valid_num = getattr(self.cfg.data, 'valid_num', -1)
+        save_visuals = (valid_num <= 0) or (batch_idx < valid_num)
 
-        # Save 8-bit PNG (with proper tone mapping for HDR to LDR display)
-        gt_png   = self._tonemap_for_display(gt_img.detach())
-        pred_png = self._tonemap_for_display(pred_img.detach())
-        
-        cv2.imwrite(
-            os.path.join(output_dir, f'gt_mat{mat_id:04d}_view{batch_idx}.png'),
-            cv2.cvtColor(gt_png, cv2.COLOR_RGB2BGR))
-        cv2.imwrite(
-            os.path.join(output_dir,
-                         f'pred_mat{mat_id:04d}_view{batch_idx}_psnr{psnr_str}.png'),
-            cv2.cvtColor(pred_png, cv2.COLOR_RGB2BGR))
+        if save_visuals:
+            # For visualization, both gt and pred are converted to a
+            # displayable 3-channel tensor:
+            #   - poly views: full RGB on both sides (unchanged).
+            #   - pan/lls views: GT's gray-in-channel-0 is broadcast to all
+            #     3 channels; pred is the calibrated RGB→gray projection
+            #     broadcast to 3 channels. This makes both sides true
+            #     grayscale instead of the previous red-only artifact.
+            if data_type_val == DTYPE_POLY:
+                gt_for_display   = rgbs_gt
+                pred_for_display = brdf
+            else:
+                gt_for_display   = rgbs_gt[:, :1].expand(-1, 3)
+                pred_for_display = pred_for_metric.expand(-1, 3)
+
+            gt_img   = _scatter_to_image(gt_for_display)
+            pred_img = _scatter_to_image(pred_for_display)
+
+            psnr_str = f'{psnr.item():.2f}'
+
+            # Save 8-bit PNG (with proper tone mapping for HDR to LDR display)
+            gt_png   = self._tonemap_for_display(gt_img.detach())
+            pred_png = self._tonemap_for_display(pred_img.detach())
+
+            cv2.imwrite(
+                os.path.join(output_dir, f'gt_mat{mat_id:04d}_view{batch_idx}_{tag}.png'),
+                cv2.cvtColor(gt_png, cv2.COLOR_RGB2BGR))
+            cv2.imwrite(
+                os.path.join(output_dir,
+                             f'pred_mat{mat_id:04d}_view{batch_idx}_{tag}_psnr{psnr_str}.png'),
+                cv2.cvtColor(pred_png, cv2.COLOR_RGB2BGR))
 
         # ---- save normal and tangent maps once (view-independent) ----------
         if batch_idx == 0:
@@ -676,6 +861,25 @@ class Stage1Trainer_Bonn(pl.LightningModule):
                 self.visualize_brdf_lobe(output_dir=output_dir, num_latents=10, resolution=64)
 
         return loss
+
+    def on_validation_epoch_end(self):
+        # Convert pooled SSE/element-count into a single combined PSNR/MSE
+        # across all data types (poly + gray). Each (pixel × channel)
+        # counted as one observation in ``validation_step``, so poly's
+        # 3-channel comparison and gray's 1-channel comparison are
+        # implicitly weighted by the number of measurements they
+        # contribute. The peak is the same one ``_compute_psnr_mse`` uses
+        # (cfg.model.psnr.peak, default 1.0) — that fixed reference is
+        # what makes this combined metric well-defined.
+        n = getattr(self, '_val_n_total', 0)
+        if n == 0:
+            return
+        psnr_cfg = getattr(self.hparams.model, 'psnr', None)
+        peak = float(getattr(psnr_cfg, 'peak', 1.0)) if psnr_cfg is not None else 1.0
+        combined_mse  = self._val_sse_total / n
+        combined_psnr = 10.0 * math.log10(peak ** 2 / max(combined_mse, 1e-10))
+        self.log('val/all_psnr', combined_psnr, prog_bar=True)
+        self.log('val/all_mse',  combined_mse)
 
     # -----------------------------------------------------------------
     # Tone mapping for display
@@ -762,54 +966,72 @@ class Stage1Trainer_Bonn(pl.LightningModule):
             plt.close()
 
         # ---- Visualization 2: Fix wo, vary wi  (BRDF × cos_theta_i) ----------
+        # Slice across multiple wi-azimuth planes and wo-azimuth values so the
+        # zero-grazing constraint can be inspected at all angles, not just the
+        # wi_phi=0 / wo_phi=0 plane that was the only one previously plotted.
         theta_o_values = [15.0, 30.0, 45.0, 60.0]
+        wi_phi_values  = [0.0, 45.0, 90.0, 135.0, 180.0]   # 5 wi azimuth slices
+        wo_phi_values  = [0.0, 90.0, 180.0, 270.0]         # 4 wo azimuth values
 
         for latent_idx in range(num_latents):
             latent = brdf_latents[latent_idx:latent_idx + 1]
-            fig, ax = plt.subplots(figsize=(8, 8), subplot_kw={'projection': 'polar'})
+            for wi_phi_deg in wi_phi_values:
+                for wo_phi_deg in wo_phi_values:
+                    wi_phi = np.radians(wi_phi_deg)
+                    wo_phi = np.radians(wo_phi_deg)
+                    fig, ax = plt.subplots(figsize=(8, 8), subplot_kw={'projection': 'polar'})
 
-            for theta_o_deg in theta_o_values:
-                theta_o = np.radians(theta_o_deg)
-                wo = torch.tensor([[np.sin(theta_o), 0.0, np.cos(theta_o)]],
-                                  device=device, dtype=torch.float32)
+                    for theta_o_deg in theta_o_values:
+                        theta_o = np.radians(theta_o_deg)
+                        wo = torch.tensor([[
+                            np.sin(theta_o) * np.cos(wo_phi),
+                            np.sin(theta_o) * np.sin(wo_phi),
+                            np.cos(theta_o),
+                        ]], device=device, dtype=torch.float32)
 
-                theta_i_range = np.linspace(-np.pi / 2 + 0.01, np.pi / 2 - 0.01, resolution * 2)
-                wi_batch = torch.zeros(len(theta_i_range), 3, device=device)
-                for j, theta_i in enumerate(theta_i_range):
-                    if theta_i >= 0:
-                        wi_batch[j, 0] = -np.sin(theta_i)
-                        wi_batch[j, 2] =  np.cos(theta_i)
-                    else:
-                        wi_batch[j, 0] =  np.sin(-theta_i)
-                        wi_batch[j, 2] =  np.cos(-theta_i)
+                        theta_i_range = np.linspace(-np.pi / 2 + 0.01,
+                                                    np.pi / 2 - 0.01, resolution * 2)
+                        ti = torch.tensor(theta_i_range, device=device, dtype=torch.float32)
+                        # wi sweeps a great-circle slice through zenith with azimuth
+                        # = wi_phi (theta_i<0 side) and wi_phi+pi (theta_i>0 side).
+                        wi_batch = torch.stack([
+                            -torch.sin(ti) * float(np.cos(wi_phi)),
+                            -torch.sin(ti) * float(np.sin(wi_phi)),
+                            torch.cos(ti),
+                        ], dim=-1)
 
-                wo_batch     = wo.expand(len(theta_i_range), -1)
-                normal_batch = local_normal.expand(len(theta_i_range), -1)
-                latent_batch = latent.expand(len(theta_i_range), -1)
+                        wo_batch     = wo.expand(len(theta_i_range), -1)
+                        normal_batch = local_normal.expand(len(theta_i_range), -1)
+                        latent_batch = latent.expand(len(theta_i_range), -1)
 
-                enc_dir = self.material.decoder.encode_directions(wi_batch, wo_batch, normal_batch)
-                with torch.no_grad():
-                    brdf = self.material.decoder(enc_dir, latent_batch)
+                        enc_dir = self.material.decoder.encode_directions(wi_batch, wo_batch, normal_batch)
+                        with torch.no_grad():
+                            brdf = self.material.decoder(enc_dir, latent_batch)
 
-                cos_theta_i = wi_batch[:, 2].clamp(min=0).cpu().numpy()
-                ax.plot(theta_i_range, brdf.mean(dim=-1).cpu().numpy() * cos_theta_i,
-                        label=f'θ_o={theta_o_deg}°')
-                ax.axvline(x=np.radians(theta_o_deg),
-                           color=ax.lines[-1].get_color(), linestyle='--', alpha=0.5)
+                        cos_theta_i = wi_batch[:, 2].clamp(min=0).cpu().numpy()
+                        ax.plot(theta_i_range, brdf.mean(dim=-1).cpu().numpy() * cos_theta_i,
+                                label=f'θ_o={theta_o_deg}°')
+                        ax.axvline(x=np.radians(theta_o_deg),
+                                   color=ax.lines[-1].get_color(), linestyle='--', alpha=0.5)
 
-            ax.set_theta_zero_location('N')
-            ax.set_theta_direction(1)
-            ax.set_thetamin(-90)
-            ax.set_thetamax(90)
-            ax.legend(loc='upper right', bbox_to_anchor=(1.3, 1.0))
-            ax.set_title(f'BRDF × cos(θ_i) Polar Plot - Point {point_indices[latent_idx].item()}\n'
-                         f'(Fixed wo, vary wi; 0°=normal, dashed=specular direction)')
-            plt.tight_layout()
-            plt.savefig(os.path.join(brdf_lobe_dir,
-                                     f'polar_brdf_vary_wi_pt_{point_indices[latent_idx].item()}.png'), dpi=150)
-            plt.close()
+                    ax.set_theta_zero_location('N')
+                    ax.set_theta_direction(1)
+                    ax.set_thetamin(-90)
+                    ax.set_thetamax(90)
+                    ax.legend(loc='upper right', bbox_to_anchor=(1.3, 1.0))
+                    ax.set_title(
+                        f'BRDF × cos(θ_i) - Point {point_indices[latent_idx].item()}\n'
+                        f'wi_φ={wi_phi_deg:.0f}°, wo_φ={wo_phi_deg:.0f}° '
+                        f'(±90° = grazing)')
+                    plt.tight_layout()
+                    plt.savefig(os.path.join(
+                        brdf_lobe_dir,
+                        f'polar_brdf_vary_wi_pt_{point_indices[latent_idx].item()}'
+                        f'_wiphi{int(wi_phi_deg):03d}_wophi{int(wo_phi_deg):03d}.png'), dpi=150)
+                    plt.close()
 
-        print(f"[BRDF Lobe Visualization] Saved {num_latents * 2} figures to {brdf_lobe_dir}")
+        n_vary_wi = num_latents * len(wi_phi_values) * len(wo_phi_values)
+        print(f"[BRDF Lobe Visualization] Saved {num_latents + n_vary_wi} figures to {brdf_lobe_dir}")
 
     def on_train_batch_start(self, batch, batch_idx):
         step = self.global_step

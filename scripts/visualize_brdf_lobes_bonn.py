@@ -220,6 +220,50 @@ def load_material_all_sources(root_folder, mat_id, svfresnel_dir=None):
             cv_parts.append(pan_cv); il_parts.append(pan_il); rot_parts.append(pan_rot)
         del pan_data
 
+    # ---- lls ---------------------------------------------------------
+    # LLS strips are extended sources; we treat the strip CENTER as the
+    # effective wi position (matches what bonn.py uses for `light_pos`).
+    # Raw values are divided by the empirical LLS↔pan scale so they sit
+    # on the same y-axis as poly/pan-equivalent grayscale.
+    lls_path = f'{prefix}_lls.exr'
+    if os.path.exists(lls_path):
+        lls_data, lls_ch_names, lHl, lWl = _read_exr(lls_path)
+        assert (lHl, lWl) == (H, W)
+        lls_angles = calib['llsAnglesDegrees']
+        lls_angle_to_idx = {float(a): i for i, a in enumerate(lls_angles)}
+        lls_name_to_idx = {n: i for i, n in enumerate(lls_ch_names)}
+        lls_images = _parse_lls_channels(lls_ch_names)
+        if lls_images:
+            n_lls = len(lls_images)
+            lls_flat = lls_data.reshape(n_pixels, -1)
+            ch_ci = np.array([lls_name_to_idx[im['channel']] for im in lls_images])
+            lls_gray = lls_flat[:, ch_ci].T.astype(np.float32)        # (K, V)
+            np.clip(lls_gray, 0, None, out=lls_gray)
+            lls_gray = lls_gray / _LLS_EMPIRICAL_SCALE                # → pan-equivalent units
+
+            center_list = []
+            for im in lls_images:
+                rd = calib[im['rotation']]
+                ai = lls_angle_to_idx[im['angle']]
+                c = rd['llsCorners'][:, :, ai].T                       # (4, 3)
+                center_list.append(c.mean(axis=0))
+            lls_light = np.array(center_list, dtype=np.float32)
+            lls_cam = np.array([
+                calib[im['rotation']][im['camera']] for im in lls_images],
+                dtype=np.float32)
+            lls_cv  = np.array([int(re.search(r'\d+', im['camera']).group())
+                                for im in lls_images], dtype=np.int32)
+            # LLS has no LED — sentinel 0 keeps the il_id key well-defined.
+            lls_il  = np.zeros(n_lls, dtype=np.int32)
+            lls_rot = np.array([int(re.search(r'\d+', im['rotation']).group())
+                                for im in lls_images], dtype=np.float32)
+            gray_parts.append(lls_gray)
+            light_parts.append(lls_light)
+            cam_parts.append(lls_cam)
+            type_parts.append(np.array(['lls'] * n_lls, dtype=object))
+            cv_parts.append(lls_cv); il_parts.append(lls_il); rot_parts.append(lls_rot)
+        del lls_data
+
     return {
         'H': H, 'W': W,
         'xyz_map': xyz_map,
@@ -718,6 +762,109 @@ def plot_brdf_vs_costhetai(mat_id, point_idx, pixel_row, pixel_col,
     plt.close()
 
 
+def plot_aggregate_with_without_cos(mat_id, mat_all, pix_indices, out_dir,
+                                    cos_bins=20):
+    """Side-by-side cosine-check across poly+pan+lls sources.
+
+    Diagnoses whether raw LLS GT already includes the cos(θ_i) factor by
+    comparing each source's lobe shape against the same cos(θ_i) axis.
+
+    LEFT  panel — raw GT vs cos(θ_i)         (no cos applied)
+    RIGHT panel — GT × cos(θ_i) vs cos(θ_i)  (cos applied a posteriori)
+
+    Reading the comparison:
+      * LLS GT *includes* cos already
+            LEFT:  lls drops to 0 at cos→0 (just like poly/pan after × cos)
+            RIGHT: lls under-shoots poly/pan (cos is now applied twice)
+      * LLS GT *does NOT* include cos
+            LEFT:  lls stays high at cos→0 like raw poly/pan
+            RIGHT: lls aligns with poly/pan
+
+    The aggregate uses the per-pixel GT normal (when available) and the
+    LLS strip CENTER as the effective wi position — same effective-direction
+    convention used by ``light_pos`` in the dataset loader.
+    """
+    H = mat_all['H']; W = mat_all['W']
+    light_pos = mat_all['light_pos']
+    src_type  = mat_all['source_type']
+    gray      = mat_all['gray_pan_equiv']
+    normals   = mat_all['normals']
+
+    cos_all, y_all, src_all = [], [], []
+    for pix_idx in pix_indices:
+        r, c = int(pix_idx) // W, int(pix_idx) % W
+        xyz = mat_all['xyz_map'][r, c]
+        n_pt = (normals[pix_idx] if normals is not None
+                else np.array([0.0, 0.0, 1.0], dtype=np.float32))
+        wi = light_pos - xyz[None, :]
+        wi /= np.maximum(np.linalg.norm(wi, axis=1, keepdims=True), 1e-8)
+        n = n_pt / max(np.linalg.norm(n_pt), 1e-8)
+        cos_t_i = np.clip(wi @ n, 0.0, None)
+        cos_all.append(cos_t_i)
+        y_all.append(gray[:, int(pix_idx)])
+        src_all.append(src_type)
+    cos_all = np.concatenate(cos_all)
+    y_all   = np.concatenate(y_all)
+    src_all = np.concatenate(src_all)
+
+    palette = {'poly': 'C0', 'pan': 'C1', 'lls': 'C2'}
+    bin_edges = np.linspace(0.0, 1.0, cos_bins + 1)
+    bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+
+    fig, axes = plt.subplots(1, 2, figsize=(16, 6), sharex=True)
+    for ax, apply_cos, label_y, panel in zip(
+            axes, [False, True],
+            ['raw GT (pan-equiv)', 'GT × cos(θ_i)'],
+            ['LEFT — raw GT (no cos applied)', 'RIGHT — GT × cos(θ_i)']):
+        # Track the largest binned-mean across sources so we can autoscale y
+        # to the lobe trend (specular outliers would otherwise flatten the
+        # binned-mean lines, which are the actual diagnostic).
+        max_binned = 0.0
+        for src in ['poly', 'pan', 'lls']:
+            mask = src_all == src
+            if not np.any(mask):
+                continue
+            x = cos_all[mask]
+            y = (y_all[mask] * x) if apply_cos else y_all[mask]
+            ax.scatter(x, y, s=8, alpha=0.15, color=palette[src],
+                       label=f'{src}  (n={int(mask.sum())})')
+            bin_idx = np.clip(np.digitize(x, bin_edges) - 1, 0, cos_bins - 1)
+            means = np.full(cos_bins, np.nan)
+            for b in range(cos_bins):
+                sel = bin_idx == b
+                if sel.sum() > 0:
+                    means[b] = y[sel].mean()
+            valid = ~np.isnan(means)
+            ax.plot(bin_centers[valid], means[valid], '-o',
+                    color=palette[src], linewidth=2.0, markersize=5,
+                    label=f'{src} binned mean')
+            if valid.any():
+                max_binned = max(max_binned, float(np.nanmax(means[valid])))
+        ax.set_xlabel('cos(θ_i)')
+        ax.set_ylabel(label_y)
+        ax.set_title(panel)
+        ax.set_xlim(0.0, 1.0)
+        # Headroom = 4× the largest binned-mean: keeps trend lines readable
+        # while still showing the spread of individual scatter points.
+        if max_binned > 0:
+            ax.set_ylim(0.0, 4.0 * max_binned)
+        ax.grid(True, alpha=0.3)
+        ax.legend(loc='best', fontsize=8)
+
+    sources = sorted(set(src_type.tolist()))
+    fig.suptitle(
+        f'mat{mat_id:04d}  ({len(pix_indices)} pts × {sources})  —  LLS cosine check\n'
+        f'lls drops to 0 in LEFT  ⇒  cos already baked into LLS GT  '
+        f'(use the existing _lls_monte_carlo, do NOT apply cos again)\n'
+        f'lls stays high in LEFT, aligns with poly/pan in RIGHT  ⇒  cos NOT baked in  '
+        f'(apply cos to BRDF inside _lls_monte_carlo)',
+        fontsize=10)
+    plt.tight_layout()
+    fname = os.path.join(out_dir, f'mat{mat_id:04d}_lls_cos_check.png')
+    plt.savefig(fname, dpi=150)
+    plt.close()
+
+
 def plot_aggregate_brdf_vs_costhetai_multisource(
         mat_id, mat_all, pix_indices, out_dir, apply_cos_wi=True,
         cos_bins=20):
@@ -897,8 +1044,9 @@ def plot_fix_wo_vary_wi_combined(mat_id, point_idx, pixel_row, pixel_col,
     ax.set_ylabel(metric)
     n_poly = int((source_type == 'poly').sum())
     n_pan  = int((source_type == 'pan').sum())
+    n_lls  = int((source_type == 'lls').sum())
     ax.set_title(f"mat{mat_id:04d}  point({pixel_row},{pixel_col})  "
-                 f"Fix wo, vary wi  [poly={n_poly}, pan={n_pan}]")
+                 f"Fix wo, vary wi  [poly={n_poly}, pan={n_pan}, lls={n_lls}]")
     ax.legend(fontsize=8, loc='best')
     ax.grid(True, alpha=0.3)
     plt.tight_layout()
@@ -1044,7 +1192,9 @@ def main():
                   f"normals={'GT' if mat_all['normals'] is not None else '+Z fallback'}")
             polypan_dir = os.path.join(args.output_dir, "fixWo_polypan",
                                         f"mat{mat_id:04d}")
+            cos_check_dir = os.path.join(args.output_dir, "lls_cos_check")
             os.makedirs(polypan_dir, exist_ok=True)
+            os.makedirs(cos_check_dir, exist_ok=True)
             pix_indices = uniform_sample_point_indices(H, W, args.num_points)
             print(f"  Sampling {len(pix_indices)} points (uniform grid)")
             for pi, pix_idx in enumerate(pix_indices):
@@ -1062,7 +1212,12 @@ def main():
                     mat_all['source_type'],
                     polypan_dir, apply_cos_wi=args.apply_cos_wi,
                     normal=normal_pt)
-            print(f"  Saved fixWo poly+pan plots to {polypan_dir}")
+            print(f"  Saved fixWo poly+pan(+lls) plots to {polypan_dir}")
+
+            # LLS cosine-check (one figure per material, all sources pooled).
+            plot_aggregate_with_without_cos(
+                mat_id, mat_all, pix_indices, cos_check_dir)
+            print(f"  Saved LLS cosine check to {cos_check_dir}")
             continue
 
         mat = load_material(args.root_folder, mat_id, svfresnel_dir=svfresnel)

@@ -7,7 +7,7 @@ BTF_NAME=${BTF_FILE%%_*}
 
 python main.py \
     dataset_folder=/media/raid/cloth/BTF \
-    output_folder=/media/raid/cloth/output/BRDF/BTF \
+    output_folder=/media/raid/cloth/output/BRDF/BTF_final \
     data=ubo \
     data.btf_filename=${BTF_FILE} \
     data.rays_num=500000 \

@@ -58,7 +58,8 @@ loss:
     name: l1 # l1 or l2 or logrel or normalized_l1
     weight: 1.0
     log_space:
-      logrel_ref: 30000
+      # logrel_ref: 30000
+      logrel_ref: 15000
       logrel_eps: 1e-3
   reg_loss:
     name: l2_smooth
@@ -70,6 +71,13 @@ loss:
   learnable_pan_weights: False  # if True, RGB->gray weights for pan/lls supervision are learnable (3D nn.Parameter)
 
 lls_spp: 16          # Monte-Carlo samples per pixel for LLS integration
+
+# Zero-grazing-angle auxiliary supervision: each training step, sample
+# int(grazing_ratio * batch_size) latents uniformly from the entire latent
+# bank and supervise the decoder to output BRDF=0 at synthetic wi with
+# cos(wi, N) = 0. Training-only; bypasses frame transform, renderer, and MC.
+# 0.0 disables.
+grazing_ratio: 0.0
 
 # Linear fitting options for radiance-camera calibration
 linear_fitting:

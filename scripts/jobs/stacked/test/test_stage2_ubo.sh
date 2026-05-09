@@ -12,16 +12,16 @@ MATERIAL="${2:?Usage: $0 <source: bonn|ours> <material> <gpu>}"
 GPU="${3:?Usage: $0 <source: bonn|ours> <material> <gpu>}"
 
 case "$SOURCE" in
-    bonn) SOURCE_TAG="from-Bonn-Epoch-60" ;;
-    ours) SOURCE_TAG="from-Real-442"      ;;
+    bonn) SOURCE_TAG="from-Bonn_cosine" ;;
+    ours) SOURCE_TAG="from-Real-500-cosine"      ;;
     *) echo "Error: source must be 'bonn' or 'ours' (got '$SOURCE')" >&2; exit 1 ;;
 esac
 
-EXP_BASE="Stage-2_UBO_${MATERIAL}_${SOURCE_TAG}_Subsample-0.1"
+EXP_BASE="Stage-2_UBO_${MATERIAL}_${SOURCE_TAG}"
 RUN_EXP="${EXP_BASE}_run_1"
-TEST_EXP="${EXP_BASE}_test_1"
+TEST_EXP="${EXP_BASE}_test-on-train_1"
 BTF="${MATERIAL}_W400xH400_L151xV151.btf"
-CKPT="/media/raid/cloth/output/BRDF/BTF/Bonn-Theia2/${RUN_EXP}/training/model_0.20_0.20/last.ckpt"
+CKPT="/media/raid/cloth/output/BRDF/BTF_final/Bonn-Theia2/${RUN_EXP}/training/model_0.20_0.20/last.ckpt"
 
 if [ ! -f "$CKPT" ]; then
     echo "Error: checkpoint not found: $CKPT" >&2
@@ -32,7 +32,7 @@ export CUDA_VISIBLE_DEVICES=$GPU
 
 python test.py \
     dataset_folder=/media/raid/cloth/BTF \
-    output_folder=/media/raid/cloth/output/BRDF/BTF \
+    output_folder=/media/raid/cloth/output/BRDF/BTF_final \
     data=ubo \
     data.btf_filename=$BTF \
     data.rays_num=500000 \
@@ -53,6 +53,7 @@ python test.py \
     model.optimizer.lr=0.002 \
     model.optimizer.decoder_lr=2e-4 \
     model.loss.recon_loss.name=logrel \
+    model.apply_cosine_weight=True \
     model.loss.recon_loss.log_space.logrel_ref=0.05 \
     model.loss.reg_loss.weight=0.0 \
     model.stage=2 \

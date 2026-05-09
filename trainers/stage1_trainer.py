@@ -25,7 +25,7 @@ class Stage1Trainer(pl.LightningModule):
 
         self.material = material
         self.freeze_decoder = cfg.model.freeze_decoder
-        self.more_visualizations = False
+        self.more_visualizations = True
         self._opt_name = getattr(cfg.model.optimizer, 'name', 'Adam')
         self.reset_latent_momentum = getattr(cfg.model.optimizer, 'reset_latent_momentum_on_chunk_switch', False)
         self.gt_material = gt_material
@@ -65,6 +65,7 @@ class Stage1Trainer(pl.LightningModule):
         self.inference_lr = cfg.model.optimizer.inference_lr
         self.inference_steps = cfg.model.optimizer.inference_steps
         self.is_graypatch = material.__class__.__name__ == 'GreyPatchBRDF'
+        self.grazing_ratio = getattr(cfg.model, 'grazing_ratio', 0.0)
         print("after latent reg weight")
         self.renderer = ForwardRenderer(cfg, self.material)
         self.gt_renderer = ForwardRenderer(cfg, self.gt_material)
@@ -457,9 +458,62 @@ class Stage1Trainer(pl.LightningModule):
         
         # Add regularizer
         loss = recon_loss
-        
+
         return loss
-    
+
+    def _zero_angle_aux_predictions(self, point_ids, material_ids):
+        """Build (pred, target, camera_factor) for grazing-incidence augmentation.
+
+        Bypasses the renderer / MC / predicted frame: draws ``n_grazing``
+        global point ids uniformly from the **entire latent bank** (not just
+        the current batch), builds local-frame wi at z=0 (random azimuth)
+        and wo on the upper hemisphere (uniform), calls the decoder directly.
+        material_id is recovered from each global_pid via searchsorted on
+        material_offset_tensor so the per-material ``camera_factor`` lookup
+        still works. ``pred`` is already scaled by camera_factor.
+        """
+        n_total = point_ids.shape[1]
+        n_grazing = int(self.grazing_ratio * n_total)
+        if n_grazing <= 0:
+            return None
+
+        device = point_ids.device
+
+        # Build sorted (offset, material_id) lookup once for global_pid -> material_id.
+        # material_offset_tensor has zero-padding at gap material_ids, so we
+        # use only the actually-present materials from metadata.
+        if not hasattr(self, '_grazing_offsets_sorted'):
+            mats = sorted(self.material.metadata['materials'],
+                          key=lambda m: m['point_range'][0])
+            self._grazing_offsets_sorted = torch.tensor(
+                [m['point_range'][0] for m in mats], dtype=torch.long, device=device)
+            self._grazing_mat_ids_sorted = torch.tensor(
+                [m['material_id'] for m in mats], dtype=torch.long, device=device)
+
+        total_latents = self.material.point_latent_bank.num_embeddings
+        global_pids = torch.randint(0, total_latents, (n_grazing,), device=device)
+        idx = torch.searchsorted(self._grazing_offsets_sorted, global_pids, right=True) - 1
+        mids = self._grazing_mat_ids_sorted[idx]
+
+        phi_i = torch.rand(n_grazing, device=device) * (2 * math.pi)
+        wi_local = torch.stack([torch.cos(phi_i), torch.sin(phi_i),
+                                torch.zeros_like(phi_i)], dim=-1)
+        z_o = torch.rand(n_grazing, device=device)
+        phi_o = torch.rand(n_grazing, device=device) * (2 * math.pi)
+        sin_t_o = torch.sqrt((1 - z_o ** 2).clamp(min=0))
+        wo_local = torch.stack([sin_t_o * torch.cos(phi_o),
+                                sin_t_o * torch.sin(phi_o), z_o], dim=-1)
+        normal_local = torch.zeros_like(wi_local)
+        normal_local[..., 2] = 1.0
+
+        latent = self.material.point_latent_bank(global_pids)
+        enc_dir = self.material.decoder.encode_directions(wi_local, wo_local, normal_local)
+        brdf = self.material.decoder(enc_dir, latent[:, :self.material.latent_dim])
+
+        cf = self.camera_factor_by_id[mids]
+        pred = brdf * cf.unsqueeze(-1)
+        return pred, torch.zeros_like(pred), cf
+
     def training_step(self, batch, batch_idx):
         """
         with importance sampling
@@ -476,6 +530,21 @@ class Stage1Trainer(pl.LightningModule):
         # Per-material camera factor (lookup table — see __init__ for source).
         camera_factor = self.camera_factor_by_id[material_ids]
         rgbs = rgbs * camera_factor.squeeze(0).unsqueeze(-1)
+
+        # --- Grazing augmentation: concat synthetic rays into the batch so
+        # the loss/PSNR is computed once over a single combined set. ---
+        grazing_aug = self._zero_angle_aux_predictions(point_ids, material_ids)
+        grazing_loss_log = torch.tensor(0.0, device=rays.device)
+        if grazing_aug is not None:
+            g_pred, g_gt, g_cf = grazing_aug
+            g_vis = torch.ones(g_pred.shape[0], dtype=torch.bool, device=rays.device)
+            grazing_loss_log = self.loss_function(           # monitoring only
+                g_pred, g_gt.unsqueeze(0), g_vis, camera_factor=g_cf.unsqueeze(0))
+            rgbs = torch.cat([rgbs, g_pred], dim=0)
+            rgbs_gt = torch.cat([rgbs_gt.squeeze(0), g_gt], dim=0).unsqueeze(0)
+            vis = torch.cat([vis, g_vis], dim=0)
+            camera_factor = torch.cat([camera_factor.squeeze(0), g_cf], dim=0).unsqueeze(0)
+
         loss = self.loss_function(rgbs, rgbs_gt, vis, camera_factor=camera_factor)
 
         # Add L2 gradient smoothness regularization
@@ -498,6 +567,7 @@ class Stage1Trainer(pl.LightningModule):
             'train/recon_loss':   loss,
             'train/total_loss':   total_loss,
             'train/smooth_loss':  smooth_loss,
+            'train/grazing_loss': grazing_loss_log,
             'train/psnr':         psnr,
         }, prog_bar=True, batch_size=rays.shape[0])
 
@@ -662,61 +732,69 @@ class Stage1Trainer(pl.LightningModule):
 
         # =====================================================================
         # Visualization 2: Polar plot – Fix wo, vary wi  (BRDF * cos theta_i)
+        # Slice across multiple wi-azimuth and wo-azimuth values so the
+        # zero-grazing constraint can be inspected at all angles, not just
+        # the wi_phi=0 / wo_phi=0 plane that was the only one previously plotted.
         # =====================================================================
         theta_o_values = [15.0, 30.0, 45.0, 60.0]
+        wi_phi_values  = [0.0, 45.0, 90.0, 135.0, 180.0]
+        wo_phi_values  = [0.0, 90.0, 180.0, 270.0]
 
         for latent_idx in range(num_latents):
             latent = brdf_latents[latent_idx:latent_idx+1]
+            for wi_phi_deg in wi_phi_values:
+                for wo_phi_deg in wo_phi_values:
+                    wi_phi = np.radians(wi_phi_deg)
+                    wo_phi = np.radians(wo_phi_deg)
 
-            fig, ax = plt.subplots(figsize=(8, 8), subplot_kw={'projection': 'polar'})
+                    fig, ax = plt.subplots(figsize=(8, 8), subplot_kw={'projection': 'polar'})
 
-            for theta_o_deg in theta_o_values:
-                theta_o = np.radians(theta_o_deg)
+                    for theta_o_deg in theta_o_values:
+                        theta_o = np.radians(theta_o_deg)
+                        wo = torch.tensor([[
+                            np.sin(theta_o) * np.cos(wo_phi),
+                            np.sin(theta_o) * np.sin(wo_phi),
+                            np.cos(theta_o),
+                        ]], device=device, dtype=torch.float32)
 
-                wo = torch.tensor([[
-                    np.sin(theta_o),
-                    0.0,
-                    np.cos(theta_o)
-                ]], device=device, dtype=torch.float32)
+                        theta_i_range = np.linspace(-np.pi/2 + 0.01, np.pi/2 - 0.01, resolution * 2)
+                        ti = torch.tensor(theta_i_range, device=device, dtype=torch.float32)
+                        wi_batch = torch.stack([
+                            -torch.sin(ti) * float(np.cos(wi_phi)),
+                            -torch.sin(ti) * float(np.sin(wi_phi)),
+                            torch.cos(ti),
+                        ], dim=-1)
 
-                theta_i_range = np.linspace(-np.pi/2 + 0.01, np.pi/2 - 0.01, resolution * 2)
+                        wo_batch = wo.expand(len(theta_i_range), -1)
+                        normal_batch = local_normal.expand(len(theta_i_range), -1)
+                        latent_batch = latent.expand(len(theta_i_range), -1)
 
-                wi_batch = torch.zeros(len(theta_i_range), 3, device=device)
-                for j, theta_i in enumerate(theta_i_range):
-                    if theta_i >= 0:
-                        wi_batch[j, 0] = -np.sin(theta_i)
-                        wi_batch[j, 2] = np.cos(theta_i)
-                    else:
-                        wi_batch[j, 0] = np.sin(-theta_i)
-                        wi_batch[j, 2] = np.cos(-theta_i)
+                        enc_dir = self.material.decoder.encode_directions(wi_batch, wo_batch, normal_batch)
+                        with torch.no_grad():
+                            brdf = self.material.decoder(enc_dir, latent_batch)
 
-                wo_batch = wo.expand(len(theta_i_range), -1)
-                normal_batch = local_normal.expand(len(theta_i_range), -1)
-                latent_batch = latent.expand(len(theta_i_range), -1)
+                        cos_theta_i = wi_batch[:, 2].clamp(min=0).cpu().numpy()
+                        brdf_polar = brdf.mean(dim=-1).cpu().numpy() * cos_theta_i
 
-                enc_dir = self.material.decoder.encode_directions(wi_batch, wo_batch, normal_batch)
+                        ax.plot(theta_i_range, brdf_polar, label=f'θ_o={theta_o_deg}°')
+                        ax.axvline(x=np.radians(theta_o_deg),
+                                   color=ax.lines[-1].get_color(), linestyle='--', alpha=0.5)
 
-                with torch.no_grad():
-                    brdf = self.material.decoder(enc_dir, latent_batch)
+                    ax.set_theta_zero_location('N')
+                    ax.set_theta_direction(1)
+                    ax.set_thetamin(-90)
+                    ax.set_thetamax(90)
+                    ax.legend(loc='upper right', bbox_to_anchor=(1.3, 1.0))
+                    ax.set_title(
+                        f'BRDF × cos(θ_i) - Point {point_indices[latent_idx].item()}\n'
+                        f'wi_φ={wi_phi_deg:.0f}°, wo_φ={wo_phi_deg:.0f}° '
+                        f'(±90° = grazing)')
+                    plt.tight_layout()
+                    plt.savefig(os.path.join(
+                        brdf_lobe_dir,
+                        f'polar_brdf_vary_wi_pt_{point_indices[latent_idx].item()}'
+                        f'_wiphi{int(wi_phi_deg):03d}_wophi{int(wo_phi_deg):03d}.png'), dpi=150)
+                    plt.close()
 
-                cos_theta_i = wi_batch[:, 2].clamp(min=0).cpu().numpy()
-                brdf_polar = brdf.mean(dim=-1).cpu().numpy() * cos_theta_i
-
-                polar_angles = theta_i_range
-                ax.plot(polar_angles, brdf_polar, label=f'θ_o={theta_o_deg}°')
-
-                specular_angle = np.radians(theta_o_deg)
-                ax.axvline(x=specular_angle, color=ax.lines[-1].get_color(), linestyle='--', alpha=0.5)
-
-            ax.set_theta_zero_location('N')
-            ax.set_theta_direction(1)
-            ax.set_thetamin(-90)
-            ax.set_thetamax(90)
-            ax.legend(loc='upper right', bbox_to_anchor=(1.3, 1.0))
-            ax.set_title(f'BRDF × cos(θ_i) Polar Plot - Point {point_indices[latent_idx].item()}\n'
-                         f'(Fixed wo, vary wi; 0°=normal, dashed=specular direction)')
-            plt.tight_layout()
-            plt.savefig(os.path.join(brdf_lobe_dir, f'polar_brdf_vary_wi_pt_{point_indices[latent_idx].item()}.png'), dpi=150)
-            plt.close()
-
-        print(f"[BRDF Lobe Visualization] Saved {num_latents * 2} figures to {brdf_lobe_dir}")
+        n_vary_wi = num_latents * len(wi_phi_values) * len(wo_phi_values)
+        print(f"[BRDF Lobe Visualization] Saved {num_latents + n_vary_wi} figures to {brdf_lobe_dir}")

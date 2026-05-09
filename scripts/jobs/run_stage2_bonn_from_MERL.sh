@@ -3,13 +3,15 @@
 export CUDA_VISIBLE_DEVICES=1
 
 DATASET_FOLDER=/media/raid/cloth/Bonn_val
-MAT_ID=3
+MAT_ID=318
 
 python main.py \
     dataset_folder=${DATASET_FOLDER} \
+    output_folder=/media/raid/cloth/output/BRDF/Bonn \
     data=bonn \
     data.overfit_mat_id=${MAT_ID} \
     data.rays_num=500000 \
+    data.valid_num=20 \
     renderer=multiarea_emitter \
     material=bonn_latent \
     material.learnable_factor=True \
@@ -30,9 +32,9 @@ python main.py \
     model.optimizer.lr=0.002 \
     model.optimizer.reset_latent_momentum_on_chunk_switch=False \
     model.loss.recon_loss.name=logrel \
-    model.loss.recon_loss.log_space.logrel_ref=0.05 \
+    model.loss.recon_loss.log_space.logrel_ref=0.02 \
     model.loss.reg_loss.weight=0.0 \
-    model.trainer.max_epochs=100 \
-    model.trainer.check_val_every_n_epoch=4 \
-    model.trainer.limit_train_batches=8000 \
+    model.trainer.max_epochs=40 \
+    model.trainer.check_val_every_n_epoch=2 \
+    model.trainer.limit_train_batches=1000 \
     model.ckpt_path=/media/raid/cloth/output/BRDF/Stage-1-Finals/MERL_480K.ckpt

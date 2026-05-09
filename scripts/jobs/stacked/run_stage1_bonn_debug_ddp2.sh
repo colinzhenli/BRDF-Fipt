@@ -28,7 +28,8 @@ python main.py \
     model.optimizer.reset_latent_momentum_on_chunk_switch=False \
     model.optimizer.name=Adam8bit \
     model.loss.recon_loss.name=logrel \
-    model.loss.recon_loss.log_space.logrel_ref=0.05 \
+    # model.loss.recon_loss.log_space.logrel_ref=0.05 \
+    model.loss.recon_loss.log_space.logrel_ref=0.02 \
     model.loss.reg_loss.weight=0.0 \
     model.loss.pan_weight=1.0 \
     model.loss.lls_weight=1.0 \
