@@ -732,18 +732,20 @@ class Stage1Trainer(pl.LightningModule):
 
         # =====================================================================
         # Visualization 2: Polar plot – Fix wo, vary wi  (BRDF * cos theta_i)
-        # Slice across multiple wi-azimuth and wo-azimuth values so the
-        # zero-grazing constraint can be inspected at all angles, not just
-        # the wi_phi=0 / wo_phi=0 plane that was the only one previously plotted.
+        # Original (wi_phi=0, wo_phi=0) plus 4 azimuth variations per latent.
         # =====================================================================
         theta_o_values = [15.0, 30.0, 45.0, 60.0]
-        wi_phi_values  = [0.0, 45.0, 90.0, 135.0, 180.0]
-        wo_phi_values  = [0.0, 90.0, 180.0, 270.0]
+        phi_configs = [
+            (0.0,   0.0),
+            (90.0,  0.0),
+            (180.0, 0.0),
+            (0.0,   90.0),
+            (90.0,  90.0),
+        ]
 
         for latent_idx in range(num_latents):
             latent = brdf_latents[latent_idx:latent_idx+1]
-            for wi_phi_deg in wi_phi_values:
-                for wo_phi_deg in wo_phi_values:
+            for wi_phi_deg, wo_phi_deg in phi_configs:
                     wi_phi = np.radians(wi_phi_deg)
                     wo_phi = np.radians(wo_phi_deg)
 
@@ -796,5 +798,5 @@ class Stage1Trainer(pl.LightningModule):
                         f'_wiphi{int(wi_phi_deg):03d}_wophi{int(wo_phi_deg):03d}.png'), dpi=150)
                     plt.close()
 
-        n_vary_wi = num_latents * len(wi_phi_values) * len(wo_phi_values)
+        n_vary_wi = num_latents * len(phi_configs)
         print(f"[BRDF Lobe Visualization] Saved {num_latents + n_vary_wi} figures to {brdf_lobe_dir}")

@@ -542,14 +542,19 @@ class Stage1Trainer_MERL(pl.LightningModule):
             plt.close()
 
         # ---- Visualization 2: Fix wo, vary wi  (BRDF × cos_theta_i) ----------
+        # Original (wi_phi=0, wo_phi=0) plus 4 azimuth variations per material.
         theta_o_values = [15.0, 30.0, 45.0, 60.0]
-        wi_phi_values  = [0.0, 45.0, 90.0, 135.0, 180.0]
-        wo_phi_values  = [0.0, 90.0, 180.0, 270.0]
+        phi_configs = [
+            (0.0,   0.0),
+            (90.0,  0.0),
+            (180.0, 0.0),
+            (0.0,   90.0),
+            (90.0,  90.0),
+        ]
 
         for mat_idx in range(num_materials):
             mid = material_indices[mat_idx:mat_idx + 1]
-            for wi_phi_deg in wi_phi_values:
-                for wo_phi_deg in wo_phi_values:
+            for wi_phi_deg, wo_phi_deg in phi_configs:
                     wi_phi = np.radians(wi_phi_deg)
                     wo_phi = np.radians(wo_phi_deg)
                     fig, ax = plt.subplots(figsize=(8, 8), subplot_kw={'projection': 'polar'})
@@ -598,7 +603,7 @@ class Stage1Trainer_MERL(pl.LightningModule):
                         f'_wiphi{int(wi_phi_deg):03d}_wophi{int(wo_phi_deg):03d}.png'), dpi=150)
                     plt.close()
 
-        n_vary_wi = num_materials * len(wi_phi_values) * len(wo_phi_values)
+        n_vary_wi = num_materials * len(phi_configs)
         print(f"[BRDF Lobe Visualization] Saved {num_materials + n_vary_wi} figures to {brdf_lobe_dir}")
 
     def on_train_batch_start(self, batch, batch_idx):
