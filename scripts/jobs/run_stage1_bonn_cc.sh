@@ -13,7 +13,7 @@ python main.py \
     data.point_subsample_ratio=0.1 \
     renderer=multiarea_emitter \
     material=bonn_latent \
-    experiment_name=Fir_Stage-1_Bonn-Cosine_Grazing-ratio-0.05_Logref-0.02_run_1 \
+    experiment_name=Fir_Stage-1_Bonn_LLS-factor-1-Cosine_Grazing-ratio-0.0_Logref-0.02_run_1 \
     model.optimizer.reset_latent_momentum_on_chunk_switch=False \
     model.optimizer.name=Adam8bit \
     model.loss.recon_loss.name=logrel \
@@ -21,6 +21,7 @@ python main.py \
     model.loss.reg_loss.weight=0.0 \
     model.loss.pan_weight=1.0 \
     model.loss.lls_weight=1.0 \
+    model.psnr.global_psnr=False \
     model.lls_spp=4 \
     model.stage=1 \
     model.test=False \
@@ -31,7 +32,7 @@ python main.py \
     model.optimizer.decoder_lr=2e-4 \
     model.trainer.limit_train_batches=8000 \
     model.trainer.check_val_every_n_epoch=5 \
-    model.grazing_ratio=0.05 \
+    model.grazing_ratio=0.0 \
     material.decoder.use_skip_connection=True \
     material.decoder.use_film=False \
     material.decoder.use_color_decomp=False \

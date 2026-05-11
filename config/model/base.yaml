@@ -72,12 +72,36 @@ loss:
 
 lls_spp: 16          # Monte-Carlo samples per pixel for LLS integration
 
-# Zero-grazing-angle auxiliary supervision: each training step, sample
+# Grazing-incidence auxiliary supervision: each training step, sample
 # int(grazing_ratio * batch_size) latents uniformly from the entire latent
-# bank and supervise the decoder to output BRDF=0 at synthetic wi with
-# cos(wi, N) = 0. Training-only; bypasses frame transform, renderer, and MC.
-# 0.0 disables.
+# bank, then synthesize wi/wo. Training-only; bypasses frame transform,
+# renderer, and MC. ``grazing_ratio: 0.0`` disables.
+#
+# Modes (set via grazing_mode):
+#   - "zero_exact":         Pseudo-observation. wi.z = 0; target = 0 raw BRDF.
+#                           Concatenated into the real batch — shares the
+#                           reconstruction loss; effective weight is
+#                           controlled by grazing_ratio (no extra weight).
+#   - "near_zero_brdf":     Pseudo-observation. c ~ U(grazing_cos_min,
+#                           grazing_cos_max), wi.z = c; target = 0 raw BRDF.
+#                           Same concat path as zero_exact.
+#   - "contribution_decay": BRDF-shape regularizer (NOT an observation).
+#                           Decode two wi (c_high, c_low = alpha*c_high) with
+#                           shared wo / latent / azimuth and apply a one-sided
+#                           log-ratio hinge on q = brdf * cos:
+#                               excess = log(clamp(q_low,0)+eps)
+#                                      - log(clamp(alpha*detach(q_high),0)+eps)
+#                               loss   = grazing_decay_weight
+#                                      * relu(excess).mean(-1).sum() / B
+#                           No camera_factor here — the hinge is scale-relative.
 grazing_ratio: 0.0
+grazing_mode: zero_exact            # "zero_exact" | "near_zero_brdf" | "contribution_decay"
+grazing_cos_min: 0.005              # near_zero_brdf: lower bound of c
+grazing_cos_max: 0.03               # near_zero_brdf: upper bound of c
+grazing_decay_cos_min: 0.005        # contribution_decay: lower bound of c_high
+grazing_decay_cos_max: 0.2          # contribution_decay: upper bound of c_high
+grazing_decay_weight: 1.0           # contribution_decay: scalar weight on the hinge term
+grazing_decay_eps: null             # contribution_decay: null -> falls back to loss.recon_loss.log_space.logrel_eps, else 1e-4
 
 # Linear fitting options for radiance-camera calibration
 linear_fitting:

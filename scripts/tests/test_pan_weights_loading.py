@@ -12,7 +12,7 @@ Verifies:
          poly (il026/027/028/031/032) → per-(cv, il) entry,
          poly (other LEDs)            → global_avg,
          pan                          → global_avg,
-         lls                          → global_avg × _LLS_EMPIRICAL_SCALE.
+         lls                          → global_avg (no empirical scale).
   4. A `_sample_batch` draws include pan_weights matching the chosen image.
   5. BonnSingleMaterialDataset and its val counterpart also expose
      pan_weights of the right shape.
@@ -34,7 +34,6 @@ from utils.dataset.bonn import (
     _parse_poly2pan_weights,
     _pan_weights_for_image,
     _DEFAULT_PAN_WEIGHTS,
-    _LLS_EMPIRICAL_SCALE,
     BonnDataset,
     BonnValDataset,
     BonnSingleMaterialDataset,
@@ -164,7 +163,6 @@ def test_bonn_dataset_loads_pan_weights():
     raw = spio.loadmat(f'{DATA_ROOT}/mat{mat_id:04d}_calibration.mat')
     w = _parse_poly2pan_weights(raw)
     global_avg = w['global_avg']
-    lls_expected = (global_avg * _LLS_EMPIRICAL_SCALE).astype(np.float32)
 
     # Confirm first poly image: parse its (cv, il) from channel order in
     # _parse_poly_channels — use the same code path to rebuild labels.
@@ -183,7 +181,7 @@ def test_bonn_dataset_loads_pan_weights():
         assert np.allclose(got, expected, atol=1e-6), \
             f'poly img {ki} ({cv}, {il}) pan_weights mismatch: got {got}, expected {expected}'
 
-    # Confirm pan rays use global_avg, lls rays use global_avg × scale
+    # Pan and LLS rays both use global_avg (no empirical scale).
     if K_gray > 0:
         dtypes = mat['data_type']
         pan_inds = np.where(dtypes == DTYPE_PAN)[0]
@@ -194,8 +192,8 @@ def test_bonn_dataset_loads_pan_weights():
         lls_inds = np.where(dtypes == DTYPE_LLS)[0]
         if lls_inds.size > 0:
             ki = int(lls_inds[0])
-            assert np.allclose(mat['pan_weights'][ki], lls_expected, atol=1e-6), \
-                f'lls img {ki} weights {mat["pan_weights"][ki]} != global_avg*{_LLS_EMPIRICAL_SCALE} = {lls_expected}'
+            assert np.allclose(mat['pan_weights'][ki], global_avg, atol=1e-6), \
+                f'lls img {ki} weights {mat["pan_weights"][ki]} != global_avg {global_avg}'
     print('[PASS] test_bonn_dataset_loads_pan_weights')
 
 
@@ -267,11 +265,10 @@ def test_lookup_helper():
     got = _pan_weights_for_image(calib, 'rot000', 'cv03', led=None, is_poly=False)
     assert np.allclose(got, global_avg, atol=1e-6), (got, global_avg)
 
-    # LLS lookup — global_avg × empirical scale
+    # LLS lookup — global_avg (no empirical scale).
     got = _pan_weights_for_image(calib, 'rot000', 'cv03', led=None,
                                  is_poly=False, is_lls=True)
-    exp = (global_avg * _LLS_EMPIRICAL_SCALE).astype(np.float32)
-    assert np.allclose(got, exp, atol=1e-6), (got, exp)
+    assert np.allclose(got, global_avg, atol=1e-6), (got, global_avg)
 
     # Poly lookup with uncalibrated LED — fallback to global_avg
     got = _pan_weights_for_image(calib, 'rot000', 'cv01', 'il999', is_poly=True)
@@ -281,11 +278,10 @@ def test_lookup_helper():
     got = _pan_weights_for_image({}, 'rot000', 'cv99', led=None, is_poly=False)
     assert np.allclose(got, _DEFAULT_PAN_WEIGHTS, atol=1e-6)
 
-    # Empty calib — LLS returns default × scale
+    # Empty calib — LLS also returns the default (no empirical scale).
     got = _pan_weights_for_image({}, 'rot000', 'cv99', led=None,
                                  is_poly=False, is_lls=True)
-    exp = (_DEFAULT_PAN_WEIGHTS * _LLS_EMPIRICAL_SCALE).astype(np.float32)
-    assert np.allclose(got, exp, atol=1e-6)
+    assert np.allclose(got, _DEFAULT_PAN_WEIGHTS, atol=1e-6)
     print('[PASS] test_lookup_helper')
 
 

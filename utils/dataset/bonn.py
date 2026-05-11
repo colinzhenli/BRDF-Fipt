@@ -105,11 +105,12 @@ def _parse_lls_channels(channel_names):
 # global mean across the per-camera poly→pan coefficients, ~[0.35, 0.36, 0.28]).
 _DEFAULT_PAN_WEIGHTS = np.array([0.34, 0.36, 0.28], dtype=np.float32)
 
-# Empirical LLS↔(pan+poly) radiometric scale: observed ratio lls_GT / pan_GT at
-# matched (L, V). Drives by the missing pan2lls calibration coefficients in the
-# released Bonn .mat / .axf files (the linear-light spectrum is not shipped).
-# Measured from check_brdf_consistency_across_sources.py on mat0001.
-_LLS_EMPIRICAL_SCALE = 0.75
+# Note: a single-scalar LLS empirical scale was previously applied here
+# (0.75, fit from one pixel of mat0001). A population sweep across 25
+# materials × 200 pixels (≈1.3M KNN matches) showed the true median
+# `ref/lls` ratio is ~0.98 — i.e. essentially 1.0 — and varies per LLS
+# la_angle (0.75–1.05). The single constant was wrong and is removed.
+# See scripts/tests/compute_lls_factors_dataset.py for the diagnostic.
 
 
 def _parse_poly2pan_weights(raw_mat):
@@ -182,9 +183,9 @@ def _pan_weights_for_image(calib, rot, camera, led=None,
                  is returned; otherwise we fall back to the global mean
                  across all 20 calibrated entries.
         is_lls:  True iff this is a linear-light-source capture.  LLS has
-                 no dedicated radiometric calibration, so we apply the
-                 global mean scaled by ``_LLS_EMPIRICAL_SCALE`` to bring
-                 LLS predictions onto the same scale as pan / poly.
+                 no dedicated radiometric calibration in the released
+                 dataset; the global pan weights are used as-is (no
+                 empirical scaling — see the comment above).
 
     Returns: (3,) float32 vector.
     """
@@ -197,7 +198,7 @@ def _pan_weights_for_image(calib, rot, camera, led=None,
         # poly under il01–il24 (no per-(cv, il) calibration).
         return global_avg.copy()
     if is_lls:
-        return (global_avg * _LLS_EMPIRICAL_SCALE).astype(np.float32)
+        return global_avg.copy()
     # Pan: use global average of the 5 calibrated filter LEDs × 4 cameras.
     return global_avg.copy()
 

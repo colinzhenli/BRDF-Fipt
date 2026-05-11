@@ -54,6 +54,22 @@ class Stage1Trainer_MERL(pl.LightningModule):
         self.inference_steps = cfg.model.optimizer.inference_steps
         self.is_graypatch = material.__class__.__name__ == 'GreyPatchBRDF'
         self.grazing_ratio = getattr(cfg.model, 'grazing_ratio', 0.0)
+        # Grazing mode: 'zero_exact' (legacy), 'near_zero_brdf', 'contribution_decay'.
+        self.grazing_mode = getattr(cfg.model, 'grazing_mode', 'zero_exact')
+        # near_zero_brdf concat-mode: c ~ U(cos_min, cos_max).
+        self.grazing_cos_min = float(getattr(cfg.model, 'grazing_cos_min', 0.005))
+        self.grazing_cos_max = float(getattr(cfg.model, 'grazing_cos_max', 0.03))
+        # contribution_decay regularizer: separate knobs from the concat modes.
+        self.grazing_decay_cos_min = float(getattr(cfg.model, 'grazing_decay_cos_min', 0.005))
+        self.grazing_decay_cos_max = float(getattr(cfg.model, 'grazing_decay_cos_max', 0.2))
+        self.grazing_decay_weight = float(getattr(cfg.model, 'grazing_decay_weight', 1.0))
+        _decay_eps = getattr(cfg.model, 'grazing_decay_eps', None)
+        if _decay_eps is None:
+            try:
+                _decay_eps = float(cfg.model.loss.recon_loss.log_space.logrel_eps)
+            except Exception:
+                _decay_eps = 1e-4
+        self.grazing_decay_eps = float(_decay_eps)
         print("after latent reg weight")
         self.renderer = ForwardRenderer(cfg, self.material)
         self.gt_renderer = ForwardRenderer(cfg, self.gt_material)
@@ -347,12 +363,38 @@ class Stage1Trainer_MERL(pl.LightningModule):
         return loss
 
     def _zero_angle_aux_predictions(self, material_id):
-        """Build (pred, target) for grazing-incidence augmentation.
+        """Build a grazing-incidence augmentation in one of three modes.
 
-        Bypasses the renderer; draws ``n_grazing`` material ids uniformly
-        from the **entire material set** (not just the current batch), builds
-        local-frame wi at z=0 (random azimuth) and wo on the upper hemisphere
-        (uniform), calls eval_brdf directly. Returns None when disabled.
+        Modes (selected by ``cfg.model.grazing_mode``):
+          * ``'zero_exact'`` / ``'near_zero_brdf'``  (pseudo-observations).
+              wi.z = 0  (or c ~ U(cos_min, cos_max) for near_zero_brdf);
+              target = 0 raw BRDF. ``pred`` is concatenated into the real
+              batch so the existing reconstruction loss handles it (effective
+              weight is controlled by ``grazing_ratio``).
+          * ``'contribution_decay'``  (BRDF-shape regularizer — NOT an
+              observation). Sample c_high ~ U(grazing_decay_cos_min,
+              grazing_decay_cos_max), alpha ~ U(0,1), c_low = alpha * c_high.
+              Decode q_high = brdf(wi_high, wo) * c_high and
+              q_low = brdf(wi_low, wo) * c_low with the same material id, the
+              same wo and the same azimuth. The loss is a one-sided log-ratio
+              hinge that only penalizes q_low > alpha * q_high:
+                  excess     = log(clamp(q_low,0)  + eps)
+                             - log(clamp(target,0) + eps)
+                  per_sample = relu(excess).mean(dim=-1)
+                  decay_loss = grazing_decay_weight * per_sample.sum() / B
+              with B the real batch size so the regularizer grows with
+              ``grazing_ratio`` instead of being averaged away.
+
+        Returns
+        -------
+        None when disabled.
+        For 'zero_exact' / 'near_zero_brdf':
+            ``{'kind': 'concat', 'pred': brdf [N,3], 'target': zeros [N,3]}``.
+        For 'contribution_decay':
+            ``{'kind': 'loss', 'loss': scalar tensor, 'diagnostics': {...}}``.
+
+        Material ids are drawn uniformly from the **entire material set**;
+        wo is uniform on the upper hemisphere.
         """
         n_total = material_id.shape[0]
         n_grazing = int(self.grazing_ratio * n_total)
@@ -362,17 +404,65 @@ class Stage1Trainer_MERL(pl.LightningModule):
         device = material_id.device
         mids = torch.randint(0, self.material.num_materials, (n_grazing,), device=device)
 
-        phi_i = torch.rand(n_grazing, device=device) * (2 * math.pi)
-        wi_local = torch.stack([torch.cos(phi_i), torch.sin(phi_i),
-                                torch.zeros_like(phi_i)], dim=-1)
+        # Shared sampling: wo on upper hemisphere; azimuth phi_i for wi.
         z_o = torch.rand(n_grazing, device=device)
         phi_o = torch.rand(n_grazing, device=device) * (2 * math.pi)
         sin_t_o = torch.sqrt((1 - z_o ** 2).clamp(min=0))
         wo_local = torch.stack([sin_t_o * torch.cos(phi_o),
                                 sin_t_o * torch.sin(phi_o), z_o], dim=-1)
+        phi_i = torch.rand(n_grazing, device=device) * (2 * math.pi)
+        cos_phi_i, sin_phi_i = torch.cos(phi_i), torch.sin(phi_i)
 
-        brdf = self.material.eval_brdf(wi_local, wo_local, mids)
-        return brdf, torch.zeros_like(brdf)
+        mode = self.grazing_mode
+
+        if mode in ('zero_exact', 'near_zero_brdf'):
+            if mode == 'zero_exact':
+                c = torch.zeros(n_grazing, device=device)
+            else:
+                c = (torch.rand(n_grazing, device=device)
+                     * (self.grazing_cos_max - self.grazing_cos_min)
+                     + self.grazing_cos_min)
+            r = torch.sqrt((1 - c ** 2).clamp(min=0))
+            wi_local = torch.stack([r * cos_phi_i, r * sin_phi_i, c], dim=-1)
+            brdf = self.material.eval_brdf(wi_local, wo_local, mids)
+            return {'kind': 'concat', 'pred': brdf, 'target': torch.zeros_like(brdf)}
+
+        if mode == 'contribution_decay':
+            c_high = (torch.rand(n_grazing, device=device)
+                      * (self.grazing_decay_cos_max - self.grazing_decay_cos_min)
+                      + self.grazing_decay_cos_min)
+            alpha = torch.rand(n_grazing, device=device)
+            c_low = alpha * c_high
+            r_high = torch.sqrt((1 - c_high ** 2).clamp(min=0))
+            r_low = torch.sqrt((1 - c_low ** 2).clamp(min=0))
+            wi_high = torch.stack([r_high * cos_phi_i, r_high * sin_phi_i, c_high], dim=-1)
+            wi_low = torch.stack([r_low * cos_phi_i, r_low * sin_phi_i, c_low], dim=-1)
+
+            brdf_high = self.material.eval_brdf(wi_high, wo_local, mids)
+            brdf_low = self.material.eval_brdf(wi_low, wo_local, mids)
+
+            q_high = brdf_high * c_high.unsqueeze(-1)
+            q_low = brdf_low * c_low.unsqueeze(-1)
+            target = alpha.unsqueeze(-1) * q_high.detach()
+
+            eps = self.grazing_decay_eps
+            q_low_pos = q_low.clamp(min=0)
+            target_pos = target.clamp(min=0)
+            excess = torch.log(q_low_pos + eps) - torch.log(target_pos + eps)
+            per_sample = NF.relu(excess).mean(dim=-1)        # [n_grazing]
+            decay_loss = self.grazing_decay_weight * per_sample.sum() / n_total
+
+            diagnostics = {
+                'q_low_mean':  q_low.detach().mean(),
+                'q_low_max':   q_low.detach().max(),
+                'q_high_mean': q_high.detach().mean(),
+                'q_high_max':  q_high.detach().max(),
+                'excess_mean': excess.detach().mean(),
+                'excess_max':  excess.detach().max(),
+            }
+            return {'kind': 'loss', 'loss': decay_loss, 'diagnostics': diagnostics}
+
+        raise ValueError(f"Unknown grazing_mode: {mode!r}")
 
     def training_step(self, batch, batch_idx):
 
@@ -393,19 +483,29 @@ class Stage1Trainer_MERL(pl.LightningModule):
         # forward renders
         rgbs = self.material.eval_brdf(wi, wo, material_id)
 
-        # --- Grazing augmentation: concat synthetic rays into the batch so
-        # the loss/PSNR is computed once over a single combined set. ---
+        # --- Grazing augmentation: 'concat' modes add synthetic rays to the
+        # batch so they share the main loss; 'loss' mode (contribution_decay)
+        # returns its own scalar that is added to the total loss separately. ---
         grazing_aug = self._zero_angle_aux_predictions(material_id)
         grazing_loss_log = torch.tensor(0.0, device=rgbs.device)
+        grazing_extra_loss = torch.tensor(0.0, device=rgbs.device)
+        grazing_diag = {}
         if grazing_aug is not None:
-            g_pred, g_gt = grazing_aug
-            g_vis = torch.ones_like(g_pred, dtype=torch.bool)
-            grazing_loss_log = self.loss_function(g_pred, g_gt, g_vis)  # monitoring only
-            rgbs = torch.cat([rgbs, g_pred], dim=0)
-            rgbs_gt = torch.cat([rgbs_gt, g_gt], dim=0)
+            if grazing_aug['kind'] == 'concat':
+                g_pred = grazing_aug['pred']
+                g_gt = grazing_aug['target']
+                g_vis = torch.ones_like(g_pred, dtype=torch.bool)
+                grazing_loss_log = self.loss_function(g_pred, g_gt, g_vis)  # monitoring only
+                rgbs = torch.cat([rgbs, g_pred], dim=0)
+                rgbs_gt = torch.cat([rgbs_gt, g_gt], dim=0)
+            else:  # 'loss'
+                grazing_extra_loss = grazing_aug['loss']
+                grazing_loss_log = grazing_extra_loss.detach()
+                grazing_diag = grazing_aug['diagnostics']
 
         vis = torch.ones_like(rgbs, dtype=torch.bool)
         loss = self.loss_function(rgbs, rgbs_gt, vis)
+        total_loss = loss + grazing_extra_loss
 
         psnr_loss  = torch.nn.functional.mse_loss(rgbs[vis], rgbs_gt.squeeze(0)[vis], reduction='mean')
         if torch.isnan(psnr_loss).any():
@@ -416,14 +516,17 @@ class Stage1Trainer_MERL(pl.LightningModule):
         # ------------------------------------------------------------------
         # 7.  Logging  (now includes diagnostics)
         # ------------------------------------------------------------------
-        self.log_dict({
+        log_dict = {
             'train/recon_loss':   loss,
-            'train/total_loss':   loss,
+            'train/total_loss':   total_loss,
             'train/grazing_loss': grazing_loss_log,
             'train/psnr':         psnr,
-        }, prog_bar=True, batch_size=rgbs.shape[0])
+        }
+        for k, v in grazing_diag.items():
+            log_dict[f'train/grazing_{k}'] = v
+        self.log_dict(log_dict, prog_bar=True, batch_size=rgbs.shape[0])
 
-        return loss
+        return total_loss
 
     # def on_after_backward(self):
     #     """Called after loss.backward() and before optimizers step."""

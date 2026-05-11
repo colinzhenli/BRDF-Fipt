@@ -9,7 +9,7 @@ python main.py \
     data.point_subsample_ratio=0.1 \
     renderer=multiarea_emitter \
     material=multi_material_latent \
-    experiment_name=Stage1_Fir_Our-500_Grazing-ratio-0.05_NearZeroBRDF_Log-ref-15000_run_1 \
+    experiment_name=Stage1_Fir_Our-500_Grazing-ratio-0.05_ContributionDecay_Log-ref-15000_run_1 \
     model.optimizer.name=Adam8bit \
     model.continue_training=False \
     model.optimizer.reset_latent_momentum_on_chunk_switch=False \
@@ -23,7 +23,7 @@ python main.py \
     model.trainer.check_val_every_n_epoch=5 \
     model.trainer.limit_train_batches=8000 \
     model.grazing_ratio=0.05 \
-    model.grazing_mode=near_zero_brdf \
+    model.grazing_mode=contribution_decay \
     material.decoder.use_skip_connection=True \
     material.latent_dim=24 \
     material.decoder.degree=3 \

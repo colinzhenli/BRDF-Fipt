@@ -31,7 +31,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from utils.dataset.bonn import (
     _read_exr, _read_xyz_map, _parse_poly_channels, _read_gt_normal_map,
     _parse_pan_channels, _parse_lls_channels, _parse_poly2pan_weights,
-    _pan_weights_for_image, _LLS_EMPIRICAL_SCALE,
+    _pan_weights_for_image,
 )
 
 # ======================================================================
@@ -139,7 +139,7 @@ def load_material_all_sources(root_folder, mat_id, svfresnel_dir=None):
     For each source the per-view pan-equivalent value is:
       poly: rgb · per_il_weights        (3-vector dot product)
       pan : scalar (already pan-equivalent)
-      lls : scalar / _LLS_EMPIRICAL_SCALE  (rescale onto pan units)
+      lls : scalar (no empirical rescale — see bonn.py comment)
 
     Returns dict with concatenated arrays (K = K_poly + K_pan + K_lls):
       H, W, normals (HW,3)|None,
@@ -223,8 +223,8 @@ def load_material_all_sources(root_folder, mat_id, svfresnel_dir=None):
     # ---- lls ---------------------------------------------------------
     # LLS strips are extended sources; we treat the strip CENTER as the
     # effective wi position (matches what bonn.py uses for `light_pos`).
-    # Raw values are divided by the empirical LLS↔pan scale so they sit
-    # on the same y-axis as poly/pan-equivalent grayscale.
+    # Raw LLS values are used directly — no empirical scale (the previous
+    # 0.75 factor was a single-pixel fit; population median is ~1.0).
     lls_path = f'{prefix}_lls.exr'
     if os.path.exists(lls_path):
         lls_data, lls_ch_names, lHl, lWl = _read_exr(lls_path)
@@ -239,7 +239,8 @@ def load_material_all_sources(root_folder, mat_id, svfresnel_dir=None):
             ch_ci = np.array([lls_name_to_idx[im['channel']] for im in lls_images])
             lls_gray = lls_flat[:, ch_ci].T.astype(np.float32)        # (K, V)
             np.clip(lls_gray, 0, None, out=lls_gray)
-            lls_gray = lls_gray / _LLS_EMPIRICAL_SCALE                # → pan-equivalent units
+            # No empirical rescale — the previous _LLS_EMPIRICAL_SCALE = 0.75
+            # was a single-pixel fit and the population median is ~1.0.
 
             center_list = []
             for im in lls_images:
@@ -253,8 +254,15 @@ def load_material_all_sources(root_folder, mat_id, svfresnel_dir=None):
                 dtype=np.float32)
             lls_cv  = np.array([int(re.search(r'\d+', im['camera']).group())
                                 for im in lls_images], dtype=np.int32)
-            # LLS has no LED — sentinel 0 keeps the il_id key well-defined.
-            lls_il  = np.zeros(n_lls, dtype=np.int32)
+            # Composite key per (strip, la_angle) so each unique LLS light
+            # position gets its own ``il_id``. Stored in the same slot as
+            # poly/pan il_ids; downstream code filters source-scoped so the
+            # numeric ranges don't have to be disjoint. Encoded as
+            # ``strip_idx * 1000 + la_angle_idx``.
+            lls_il  = np.array([
+                int(re.search(r'lls(\d+)', im['channel']).group(1)) * 1000
+                + lls_angle_to_idx[im['angle']]
+                for im in lls_images], dtype=np.int32)
             lls_rot = np.array([int(re.search(r'\d+', im['rotation']).group())
                                 for im in lls_images], dtype=np.float32)
             gray_parts.append(lls_gray)
@@ -762,6 +770,378 @@ def plot_brdf_vs_costhetai(mat_id, point_idx, pixel_row, pixel_col,
     plt.close()
 
 
+def plot_phi_binned_slices_per_pixel(mat_id, mat_all, pix_indices, out_dir,
+                                     theta_o_centers=(15.0, 45.0, 75.0),
+                                     phi_i_tol=45.0,
+                                     theta_o_tol=10.0,
+                                     n_theta_i_bins=18):
+    """Per-pixel θ_i lobe slices, controlled for anisotropy (φ_i) and view (θ_o).
+
+    1×3 grid per pixel: three θ_o panels at the *dominant* φ_i for this
+    pixel (the φ_i window with the most views across all three sources).
+    Within each panel: views are filtered to that (φ_i, θ_o) cell, signed
+    θ_i is computed, and binned along θ_i so each colored line is a clean
+    aggregated lobe slice — no raw-scatter dots so the figure stays
+    readable.
+
+    φ_i / φ_o use the per-pixel surface-local frame: GT normal + projected
+    world +X as tangent.
+    """
+    H = mat_all['H']; W = mat_all['W']
+    light_pos = mat_all['light_pos']
+    cam_pos   = mat_all['cam_pos']
+    src_type  = mat_all['source_type']
+    gray      = mat_all['gray_pan_equiv']
+    normals   = mat_all['normals']
+
+    palette = {'poly': 'C0', 'pan': 'C1', 'lls': 'C2'}
+    N_theta = len(theta_o_centers)
+
+    theta_edges   = np.linspace(-np.pi / 2, np.pi / 2, n_theta_i_bins + 1)
+    theta_centers_rad = 0.5 * (theta_edges[:-1] + theta_edges[1:])
+
+    world_x = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+    world_y = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+
+    # Probe these φ_i centers, then auto-select the one with most data.
+    phi_i_probe = (0.0, 45.0, 90.0, 135.0, 180.0, 225.0, 270.0, 315.0)
+
+    for pix_idx in pix_indices:
+        r, c = int(pix_idx) // W, int(pix_idx) % W
+        xyz_pt = mat_all['xyz_map'][r, c]
+        n_pt = (normals[pix_idx] if normals is not None else
+                np.array([0.0, 0.0, 1.0], dtype=np.float32))
+        if np.linalg.norm(n_pt) < 1e-8:
+            n_pt = np.array([0.0, 0.0, 1.0], dtype=np.float32)
+        n = n_pt / np.linalg.norm(n_pt)
+
+        t = world_x - (world_x @ n) * n
+        if np.linalg.norm(t) < 1e-6:
+            t = world_y - (world_y @ n) * n
+        t = t / np.linalg.norm(t)
+        b = np.cross(n, t)
+
+        wi = light_pos - xyz_pt[None, :]
+        wi /= np.maximum(np.linalg.norm(wi, axis=1, keepdims=True), 1e-8)
+        wo = cam_pos - xyz_pt[None, :]
+        wo /= np.maximum(np.linalg.norm(wo, axis=1, keepdims=True), 1e-8)
+
+        wi_phi = np.degrees(np.arctan2(wi @ b, wi @ t)) % 360.0
+        wo_theta = np.degrees(np.arccos(np.clip(wo @ n, -1, 1)))
+        y_all = gray[:, int(pix_idx)]
+
+        # Auto-pick the φ_i window with most total views, summed across
+        # θ_o panels & sources. Keeps the plot informative pixel-by-pixel
+        # without burying the user in a 4×3 grid most cells of which are
+        # sparse.
+        def _coverage(phi_c):
+            d_phi = np.abs(((wi_phi - phi_c + 180.0) % 360.0) - 180.0)
+            n = 0
+            for tc in theta_o_centers:
+                n += int(((d_phi <= phi_i_tol) &
+                          (np.abs(wo_theta - tc) <= theta_o_tol)).sum())
+            return n
+        phi_c = max(phi_i_probe, key=_coverage)
+
+        fig, axes = plt.subplots(
+            1, N_theta, figsize=(7.0 * N_theta, 7.0),
+            subplot_kw={'projection': 'polar'},
+            squeeze=False)
+        axes = axes[0]
+
+        for i_theta, theta_c in enumerate(theta_o_centers):
+            ax = axes[i_theta]
+            d_phi = np.abs(((wi_phi - phi_c + 180.0) % 360.0) - 180.0)
+            cell_mask = (d_phi <= phi_i_tol) & \
+                        (np.abs(wo_theta - theta_c) <= theta_o_tol)
+
+            for src in ['poly', 'pan', 'lls']:
+                bin_mask = (src_type == src) & cell_mask
+                if not np.any(bin_mask):
+                    continue
+                wi_g = wi[bin_mask]
+                wo_g = wo[bin_mask]
+                y_g  = y_all[bin_mask]
+                signed_theta = compute_signed_theta_pairwise(wi_g, wo_g)
+                idx = np.clip(np.digitize(signed_theta, theta_edges) - 1,
+                              0, n_theta_i_bins - 1)
+                means = np.full(n_theta_i_bins, np.nan)
+                for bb in range(n_theta_i_bins):
+                    sel = idx == bb
+                    if sel.sum() > 0:
+                        means[bb] = y_g[sel].mean()
+                valid = ~np.isnan(means)
+                if valid.any():
+                    ax.plot(theta_centers_rad[valid], means[valid], 'o-',
+                            linewidth=2.0, markersize=6,
+                            color=palette[src], alpha=0.95,
+                            label=f'{src} (n={int(bin_mask.sum())})')
+
+            ax.set_theta_zero_location('N'); ax.set_theta_direction(1)
+            ax.set_thetamin(-90); ax.set_thetamax(90)
+            ax.set_title(
+                f'θ_o = {theta_c:.0f}° ± {theta_o_tol:.0f}°',
+                fontsize=14, pad=10)
+            ax.legend(loc='upper right', bbox_to_anchor=(1.30, 1.05),
+                      fontsize=11)
+            ax.tick_params(labelsize=10)
+
+        fig.suptitle(
+            f'mat{mat_id:04d}  pixel ({r}, {c})   '
+            f'φ_i = {phi_c:.0f}° ± {phi_i_tol:.0f}°  '
+            f'→ sweep signed θ_i (scalar, pan-equiv)',
+            fontsize=14)
+        plt.tight_layout()
+        plt.savefig(os.path.join(out_dir,
+            f'mat{mat_id:04d}_pt{r:04d}x{c:04d}_phi_binned.png'),
+            dpi=180, bbox_inches='tight')
+        plt.close()
+
+
+def plot_strict_slices_per_pixel(mat_id, mat_all, pix_indices, out_dir,
+                                 ref_cv=1, ref_rot=0.0):
+    """True per-pixel slices: every dot is a single view, no aggregation.
+
+    Two figures per pixel, both polar:
+      A) light-sweep — fix cv=ref_cv and rot=ref_rot; vary the light index
+         (LED id for poly/pan, strip id for LLS). One curve per source.
+         Each dot is one observation; line connects dots sorted by signed
+         θ_i (wi projected into the fixed-wo plane).
+      B) view-sweep  — for each source, pick the light index whose median
+         wi-elevation at this pixel is closest to 45°; fix that light and
+         rot=ref_rot; vary cv (1–4). 4 dots per source-curve. Signed θ_o
+         (wo projected into the fixed-wi plane).
+
+    These are sparse but every dot is a single view at the same pixel —
+    no projection collision from mixing different φ. If a curve is spiky
+    here, the GT really is spiky.
+    """
+    H = mat_all['H']; W = mat_all['W']
+    light_pos = mat_all['light_pos']
+    cam_pos   = mat_all['cam_pos']
+    src_type  = mat_all['source_type']
+    cv_ids    = mat_all['cv_ids']
+    il_ids    = mat_all['il_ids']
+    rot_azims = mat_all['rot_azims']
+    gray      = mat_all['gray_pan_equiv']
+    normals   = mat_all['normals']
+
+    palette = {'poly': 'C0', 'pan': 'C1', 'lls': 'C2'}
+
+    for pix_idx in pix_indices:
+        r, c = int(pix_idx) // W, int(pix_idx) % W
+        xyz_pt = mat_all['xyz_map'][r, c]
+        n_pt = (normals[pix_idx] if normals is not None
+                else np.array([0.0, 0.0, 1.0], dtype=np.float32))
+        n = n_pt / max(np.linalg.norm(n_pt), 1e-8)
+
+        wi = light_pos - xyz_pt[None, :]
+        wi /= np.maximum(np.linalg.norm(wi, axis=1, keepdims=True), 1e-8)
+        wo = cam_pos - xyz_pt[None, :]
+        wo /= np.maximum(np.linalg.norm(wo, axis=1, keepdims=True), 1e-8)
+        wi_elev = np.degrees(np.arccos(np.clip(wi @ n, -1, 1)))
+        y_all = gray[:, int(pix_idx)]
+
+        # ---- Figure A: light sweep (fix cv+rot, vary light index) ----
+        fig, ax = plt.subplots(figsize=(7.5, 7),
+                               subplot_kw={'projection': 'polar'})
+        for src in ['poly', 'pan', 'lls']:
+            mask = ((src_type == src) & (cv_ids == ref_cv) &
+                    (rot_azims == ref_rot))
+            if not np.any(mask):
+                continue
+            wi_g = wi[mask]
+            wo_g = wo[mask]
+            y_g  = y_all[mask]
+            signed_theta = compute_signed_theta_pairwise(wi_g, wo_g)
+            order = np.argsort(signed_theta)
+            ax.plot(signed_theta[order], y_g[order], 'o-',
+                    markersize=6, linewidth=1.5,
+                    color=palette[src], alpha=0.95,
+                    label=f'{src} (n={int(mask.sum())})')
+        ax.set_theta_zero_location('N'); ax.set_theta_direction(1)
+        ax.set_thetamin(-90); ax.set_thetamax(90)
+        ax.set_title(
+            f'mat{mat_id:04d} pixel ({r},{c}) — light sweep\n'
+            f'fix cv={ref_cv:02d}, rot={ref_rot:.0f}°; vary LED / LLS strip; '
+            f'x = signed θ_i, y = scalar (pan-equiv)',
+            fontsize=10)
+        ax.legend(loc='upper right', bbox_to_anchor=(1.40, 1.05), fontsize=8)
+        plt.tight_layout()
+        plt.savefig(os.path.join(out_dir,
+            f'mat{mat_id:04d}_pt{r:04d}x{c:04d}_strict_lightsweep.png'), dpi=140)
+        plt.close()
+
+        # ---- Figure B: view sweep (fix il+rot, vary cv) ----
+        fig, ax = plt.subplots(figsize=(7.5, 7),
+                               subplot_kw={'projection': 'polar'})
+        for src in ['poly', 'pan', 'lls']:
+            src_rot_mask = (src_type == src) & (rot_azims == ref_rot)
+            if not np.any(src_rot_mask):
+                continue
+            # Choose the per-source light index whose median wi-elevation
+            # at this pixel is closest to 45° (mid-hemisphere).
+            il_pool = []
+            for ll in np.unique(il_ids[src_rot_mask]):
+                mm = src_rot_mask & (il_ids == ll)
+                if mm.any():
+                    il_pool.append((int(ll), float(np.median(wi_elev[mm]))))
+            if not il_pool:
+                continue
+            il_pool.sort(key=lambda t: abs(t[1] - 45.0))
+            chosen_il, chosen_il_elev = il_pool[0]
+            mask = src_rot_mask & (il_ids == chosen_il)
+            if not np.any(mask):
+                continue
+            wi_g = wi[mask]
+            wo_g = wo[mask]
+            y_g  = y_all[mask]
+            signed_theta = compute_signed_theta_pairwise(wo_g, wi_g)
+            order = np.argsort(signed_theta)
+            ax.plot(signed_theta[order], y_g[order], 'o-',
+                    markersize=7, linewidth=1.7,
+                    color=palette[src], alpha=0.95,
+                    label=f'{src} (light_id={chosen_il}, θ_i≈{chosen_il_elev:.0f}°, n={int(mask.sum())})')
+        ax.set_theta_zero_location('N'); ax.set_theta_direction(1)
+        ax.set_thetamin(-90); ax.set_thetamax(90)
+        ax.set_title(
+            f'mat{mat_id:04d} pixel ({r},{c}) — view sweep\n'
+            f'fix rot={ref_rot:.0f}°, fix per-source mid-elevation LED; vary cv (1–4); '
+            f'x = signed θ_o, y = scalar (pan-equiv)',
+            fontsize=10)
+        ax.legend(loc='upper right', bbox_to_anchor=(1.50, 1.05), fontsize=8)
+        plt.tight_layout()
+        plt.savefig(os.path.join(out_dir,
+            f'mat{mat_id:04d}_pt{r:04d}x{c:04d}_strict_viewsweep.png'), dpi=140)
+        plt.close()
+
+
+def plot_lobe_alignment_per_pixel(mat_id, mat_all, pix_indices, out_dir,
+                                  elev_targets=(15.0, 30.0, 45.0, 60.0, 75.0),
+                                  elev_tol=7.5):
+    """Per-pixel polar lobe slices overlaid for poly/pan/lls.
+
+    Mirrors the trainer's ``visualize_brdf_lobe`` convention — fix wi at a
+    sequence of θ_i targets (default {15,30,45,60,75}°), and within each
+    target's elevation band plot scalar response vs *signed* θ_o (wo
+    projected into the per-view wi-incidence plane via
+    ``compute_signed_theta_pairwise``). Then the dual: fix wo at the same
+    θ_o targets and sweep wi. Each panel overlays the three source curves
+    in colour:
+        poly=C0, pan=C1, lls=C2 (pan-equivalent grayscale).
+
+    No binning of the scalar — each marker is a raw view, ordered along
+    signed-θ. If the three colours trace the same curve in each slice, the
+    poly→pan weights put the sources on a single lobe. Vertical offsets
+    between colours are the residual calibration gap.
+
+    Two PNGs per pixel:
+      mat{ID}_pt{R}x{C}_fixWi_slices.png  (fix wi, vary wo;  1×N polar grid)
+      mat{ID}_pt{R}x{C}_fixWo_slices.png  (fix wo, vary wi;  1×N polar grid)
+    """
+    H = mat_all['H']; W = mat_all['W']
+    light_pos = mat_all['light_pos']
+    cam_pos   = mat_all['cam_pos']
+    src_type  = mat_all['source_type']
+    gray      = mat_all['gray_pan_equiv']
+    normals   = mat_all['normals']
+
+    palette = {'poly': 'C0', 'pan': 'C1', 'lls': 'C2'}
+    N = len(elev_targets)
+
+    # Number of bins along the sweep axis (signed-θ). The trainer's
+    # ``visualize_brdf_lobe`` queries the decoder at 128 evenly spaced θ_o
+    # values to draw a smooth curve; for discrete GT we do the analogous
+    # thing — aggregate within each Δθ slice WITHIN the fixed-elevation
+    # band so the curve traces the lobe shape instead of zig-zagging
+    # between adjacent same-angle observations.
+    n_theta_bins = 12
+    theta_edges = np.linspace(-np.pi / 2, np.pi / 2, n_theta_bins + 1)
+    theta_centers = 0.5 * (theta_edges[:-1] + theta_edges[1:])
+
+    def _draw_grid(fixed_elev, sweep_elev, fixed_dirs, sweep_dirs,
+                   y, sources_present, axes, fixed_label):
+        """Populate a 1×N polar grid with one panel per elev_target."""
+        for axi, target in enumerate(elev_targets):
+            ax = axes[axi] if N > 1 else axes
+            for src in ['poly', 'pan', 'lls']:
+                src_mask = src_type == src
+                bin_mask = src_mask & (np.abs(fixed_elev - target) <= elev_tol)
+                if not np.any(bin_mask):
+                    continue
+                signed_theta = compute_signed_theta_pairwise(
+                    sweep_dirs[bin_mask], fixed_dirs[bin_mask])
+                y_g = y[bin_mask]
+                # Raw observations (faint scatter for transparency).
+                ax.scatter(signed_theta, y_g, s=6, alpha=0.18,
+                           color=palette[src])
+                # Aggregate along signed-θ to recover a smooth lobe curve.
+                idx = np.clip(np.digitize(signed_theta, theta_edges) - 1,
+                              0, n_theta_bins - 1)
+                means = np.full(n_theta_bins, np.nan)
+                for b in range(n_theta_bins):
+                    sel = idx == b
+                    if sel.sum() > 0:
+                        means[b] = y_g[sel].mean()
+                valid = ~np.isnan(means)
+                if valid.any():
+                    ax.plot(theta_centers[valid], means[valid], 'o-',
+                            markersize=4, linewidth=1.6,
+                            color=palette[src], alpha=0.95,
+                            label=f'{src} n={int(bin_mask.sum())}')
+            ax.axvline(x=np.deg2rad(target), color='k', linestyle='--', alpha=0.35)
+            ax.set_theta_zero_location('N')
+            ax.set_theta_direction(1)
+            ax.set_thetamin(-90); ax.set_thetamax(90)
+            ax.set_title(f'{fixed_label}={target:.0f}° ± {elev_tol:.0f}°',
+                         fontsize=10)
+            ax.legend(loc='upper right', bbox_to_anchor=(1.45, 1.05),
+                      fontsize=7)
+
+    for pix_idx in pix_indices:
+        r, c = int(pix_idx) // W, int(pix_idx) % W
+        xyz_pt = mat_all['xyz_map'][r, c]
+        n_pt = (normals[pix_idx] if normals is not None
+                else np.array([0.0, 0.0, 1.0], dtype=np.float32))
+        n = n_pt / max(np.linalg.norm(n_pt), 1e-8)
+
+        wi = light_pos - xyz_pt[None, :]
+        wi /= np.maximum(np.linalg.norm(wi, axis=1, keepdims=True), 1e-8)
+        wo = cam_pos - xyz_pt[None, :]
+        wo /= np.maximum(np.linalg.norm(wo, axis=1, keepdims=True), 1e-8)
+        wi_elev = np.degrees(np.arccos(np.clip(wi @ n, -1, 1)))
+        wo_elev = np.degrees(np.arccos(np.clip(wo @ n, -1, 1)))
+        y_all = gray[:, int(pix_idx)]
+
+        sources = sorted(set(src_type.tolist()))
+
+        # ---- Fix wi, vary wo ----
+        fig, axes = plt.subplots(1, N, figsize=(4.2 * N, 4.7),
+                                 subplot_kw={'projection': 'polar'})
+        _draw_grid(wi_elev, wo_elev, wi, wo, y_all, sources, axes, 'θ_i')
+        fig.suptitle(
+            f'mat{mat_id:04d}  pixel ({r}, {c})   Fix wi → vary wo   '
+            f'(signed θ_o; scalar in pan-equiv units; sources={sources})',
+            fontsize=11)
+        plt.tight_layout()
+        plt.savefig(os.path.join(out_dir,
+            f'mat{mat_id:04d}_pt{r:04d}x{c:04d}_fixWi_slices.png'), dpi=140)
+        plt.close()
+
+        # ---- Fix wo, vary wi ----
+        fig, axes = plt.subplots(1, N, figsize=(4.2 * N, 4.7),
+                                 subplot_kw={'projection': 'polar'})
+        _draw_grid(wo_elev, wi_elev, wo, wi, y_all, sources, axes, 'θ_o')
+        fig.suptitle(
+            f'mat{mat_id:04d}  pixel ({r}, {c})   Fix wo → vary wi   '
+            f'(signed θ_i; scalar in pan-equiv units; sources={sources})',
+            fontsize=11)
+        plt.tight_layout()
+        plt.savefig(os.path.join(out_dir,
+            f'mat{mat_id:04d}_pt{r:04d}x{c:04d}_fixWo_slices.png'), dpi=140)
+        plt.close()
+
+
 def plot_aggregate_with_without_cos(mat_id, mat_all, pix_indices, out_dir,
                                     cos_bins=20):
     """Side-by-side cosine-check across poly+pan+lls sources.
@@ -1193,8 +1573,17 @@ def main():
             polypan_dir = os.path.join(args.output_dir, "fixWo_polypan",
                                         f"mat{mat_id:04d}")
             cos_check_dir = os.path.join(args.output_dir, "lls_cos_check")
+            align_dir = os.path.join(args.output_dir, "lobe_alignment",
+                                     f"mat{mat_id:04d}")
+            strict_dir = os.path.join(args.output_dir, "lobe_strict",
+                                      f"mat{mat_id:04d}")
+            phibin_dir = os.path.join(args.output_dir, "lobe_phi_binned",
+                                      f"mat{mat_id:04d}")
             os.makedirs(polypan_dir, exist_ok=True)
             os.makedirs(cos_check_dir, exist_ok=True)
+            os.makedirs(align_dir, exist_ok=True)
+            os.makedirs(strict_dir, exist_ok=True)
+            os.makedirs(phibin_dir, exist_ok=True)
             pix_indices = uniform_sample_point_indices(H, W, args.num_points)
             print(f"  Sampling {len(pix_indices)} points (uniform grid)")
             for pi, pix_idx in enumerate(pix_indices):
@@ -1218,6 +1607,21 @@ def main():
             plot_aggregate_with_without_cos(
                 mat_id, mat_all, pix_indices, cos_check_dir)
             print(f"  Saved LLS cosine check to {cos_check_dir}")
+
+            # Per-pixel poly/pan/lls overlay — diagnoses radiometric alignment.
+            plot_lobe_alignment_per_pixel(
+                mat_id, mat_all, pix_indices, align_dir)
+            print(f"  Saved per-pixel lobe alignment to {align_dir}")
+
+            # Strict slices — each dot is one view, no aggregation.
+            plot_strict_slices_per_pixel(
+                mat_id, mat_all, pix_indices, strict_dir)
+            print(f"  Saved strict per-view slices to {strict_dir}")
+
+            # (φ_i, θ_o)-binned θ_i sweep — controls for anisotropy AND view.
+            plot_phi_binned_slices_per_pixel(
+                mat_id, mat_all, pix_indices, phibin_dir)
+            print(f"  Saved φ-binned θ_i sweeps to {phibin_dir}")
             continue
 
         mat = load_material(args.root_folder, mat_id, svfresnel_dir=svfresnel)

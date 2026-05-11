@@ -84,6 +84,22 @@ class Stage1Trainer_Bonn(pl.LightningModule):
         self.latent_reg_weight = getattr(cfg.model, 'latent_reg_weight', 1e-4)
         self.smooth_reg_weight = getattr(cfg.model, 'smooth_reg_weight', 1e-3)
         self.grazing_ratio = getattr(cfg.model, 'grazing_ratio', 0.0)
+        # Grazing mode: 'zero_exact' (legacy), 'near_zero_brdf', 'contribution_decay'.
+        self.grazing_mode = getattr(cfg.model, 'grazing_mode', 'zero_exact')
+        # near_zero_brdf concat-mode: c ~ U(cos_min, cos_max).
+        self.grazing_cos_min = float(getattr(cfg.model, 'grazing_cos_min', 0.005))
+        self.grazing_cos_max = float(getattr(cfg.model, 'grazing_cos_max', 0.03))
+        # contribution_decay regularizer: separate knobs from the concat modes.
+        self.grazing_decay_cos_min = float(getattr(cfg.model, 'grazing_decay_cos_min', 0.005))
+        self.grazing_decay_cos_max = float(getattr(cfg.model, 'grazing_decay_cos_max', 0.2))
+        self.grazing_decay_weight = float(getattr(cfg.model, 'grazing_decay_weight', 1.0))
+        _decay_eps = getattr(cfg.model, 'grazing_decay_eps', None)
+        if _decay_eps is None:
+            try:
+                _decay_eps = float(cfg.model.loss.recon_loss.log_space.logrel_eps)
+            except Exception:
+                _decay_eps = 1e-4
+        self.grazing_decay_eps = float(_decay_eps)
         self.reset_latent_momentum = getattr(cfg.model.optimizer, 'reset_latent_momentum_on_chunk_switch', False)
         self._opt_name = getattr(cfg.model.optimizer, 'name', 'SparseAdam')
 
@@ -407,13 +423,39 @@ class Stage1Trainer_Bonn(pl.LightningModule):
         return per_pix.mean()
 
     def _zero_angle_aux_predictions(self, point_ids, material_ids):
-        """Build (pred, target) for grazing-incidence augmentation.
+        """Build a grazing-incidence augmentation in one of three modes.
 
-        Bypasses frame transform / LLS MC: draws ``n_grazing`` global point
-        ids uniformly from the **entire latent bank** (not just the current
-        batch), builds local-frame wi at z=0 (random azimuth) and wo on the
-        upper hemisphere (uniform), calls the decoder directly with
-        normal=(0,0,1). No cosine multiplication. Returns None when disabled.
+        Modes (selected by ``cfg.model.grazing_mode``):
+          * ``'zero_exact'`` / ``'near_zero_brdf'``  (pseudo-observations).
+              wi.z = 0  (or c ~ U(cos_min, cos_max) for near_zero_brdf);
+              target = 0 raw BRDF. ``pred`` is concatenated into the real
+              batch so the existing reconstruction loss handles it (effective
+              weight is controlled by ``grazing_ratio``).
+          * ``'contribution_decay'``  (BRDF-shape regularizer — NOT an
+              observation). Sample c_high ~ U(grazing_decay_cos_min,
+              grazing_decay_cos_max), alpha ~ U(0,1), c_low = alpha * c_high.
+              Decode q_high = brdf(wi_high, wo) * c_high and
+              q_low = brdf(wi_low, wo) * c_low with the same latent / wo /
+              azimuth. The loss is a one-sided log-ratio hinge that only
+              penalizes q_low > alpha * q_high:
+                  excess     = log(clamp(q_low,0)  + eps)
+                             - log(clamp(target,0) + eps)
+                  per_sample = relu(excess).mean(dim=-1)
+                  decay_loss = grazing_decay_weight * per_sample.sum() / B
+              with B the real batch size so the regularizer grows with
+              ``grazing_ratio`` instead of being averaged away.
+
+        Returns
+        -------
+        None when disabled.
+        For 'zero_exact' / 'near_zero_brdf':
+            ``{'kind': 'concat', 'pred': brdf [N,3], 'target': zeros [N,3]}``.
+        For 'contribution_decay':
+            ``{'kind': 'loss', 'loss': scalar tensor, 'diagnostics': {...}}``.
+
+        Common to all modes: latents are drawn uniformly from the **entire
+        latent bank**, wo uniform on upper hemisphere, normal=(0,0,1), no
+        frame transform / LLS MC, no cosine multiplication for concat modes.
         """
         n_total = point_ids.shape[0]
         n_grazing = int(self.grazing_ratio * n_total)
@@ -423,23 +465,72 @@ class Stage1Trainer_Bonn(pl.LightningModule):
         device = point_ids.device
         total_latents = self.material.point_latent_bank.num_embeddings
         global_pids = torch.randint(0, total_latents, (n_grazing,), device=device)
+        latent = self.material.point_latent_bank(global_pids)[:, :self.material.latent_dim]
 
-        phi_i = torch.rand(n_grazing, device=device) * (2 * math.pi)
-        wi_local = torch.stack([torch.cos(phi_i), torch.sin(phi_i),
-                                torch.zeros_like(phi_i)], dim=-1)
+        # Shared sampling: wo on upper hemisphere; azimuth phi_i for wi.
         z_o = torch.rand(n_grazing, device=device)
         phi_o = torch.rand(n_grazing, device=device) * (2 * math.pi)
         sin_t_o = torch.sqrt((1 - z_o ** 2).clamp(min=0))
         wo_local = torch.stack([sin_t_o * torch.cos(phi_o),
                                 sin_t_o * torch.sin(phi_o), z_o], dim=-1)
-        normal_local = torch.zeros_like(wi_local)
+        normal_local = torch.zeros(n_grazing, 3, device=device)
         normal_local[..., 2] = 1.0
+        phi_i = torch.rand(n_grazing, device=device) * (2 * math.pi)
+        cos_phi_i, sin_phi_i = torch.cos(phi_i), torch.sin(phi_i)
 
-        latent = self.material.point_latent_bank(global_pids)
-        enc_dir = self.material.decoder.encode_directions(wi_local, wo_local, normal_local)
-        brdf = self.material.decoder(enc_dir, latent[:, :self.material.latent_dim])
+        mode = self.grazing_mode
 
-        return brdf, torch.zeros_like(brdf)
+        if mode in ('zero_exact', 'near_zero_brdf'):
+            if mode == 'zero_exact':
+                c = torch.zeros(n_grazing, device=device)
+            else:
+                c = (torch.rand(n_grazing, device=device)
+                     * (self.grazing_cos_max - self.grazing_cos_min)
+                     + self.grazing_cos_min)
+            r = torch.sqrt((1 - c ** 2).clamp(min=0))
+            wi_local = torch.stack([r * cos_phi_i, r * sin_phi_i, c], dim=-1)
+            enc_dir = self.material.decoder.encode_directions(wi_local, wo_local, normal_local)
+            brdf = self.material.decoder(enc_dir, latent)
+            return {'kind': 'concat', 'pred': brdf, 'target': torch.zeros_like(brdf)}
+
+        if mode == 'contribution_decay':
+            c_high = (torch.rand(n_grazing, device=device)
+                      * (self.grazing_decay_cos_max - self.grazing_decay_cos_min)
+                      + self.grazing_decay_cos_min)
+            alpha = torch.rand(n_grazing, device=device)
+            c_low = alpha * c_high
+            r_high = torch.sqrt((1 - c_high ** 2).clamp(min=0))
+            r_low = torch.sqrt((1 - c_low ** 2).clamp(min=0))
+            wi_high = torch.stack([r_high * cos_phi_i, r_high * sin_phi_i, c_high], dim=-1)
+            wi_low = torch.stack([r_low * cos_phi_i, r_low * sin_phi_i, c_low], dim=-1)
+
+            enc_high = self.material.decoder.encode_directions(wi_high, wo_local, normal_local)
+            enc_low = self.material.decoder.encode_directions(wi_low, wo_local, normal_local)
+            brdf_high = self.material.decoder(enc_high, latent)
+            brdf_low = self.material.decoder(enc_low, latent)
+
+            q_high = brdf_high * c_high.unsqueeze(-1)
+            q_low = brdf_low * c_low.unsqueeze(-1)
+            target = alpha.unsqueeze(-1) * q_high.detach()
+
+            eps = self.grazing_decay_eps
+            q_low_pos = q_low.clamp(min=0)
+            target_pos = target.clamp(min=0)
+            excess = torch.log(q_low_pos + eps) - torch.log(target_pos + eps)
+            per_sample = NF.relu(excess).mean(dim=-1)        # [n_grazing]
+            decay_loss = self.grazing_decay_weight * per_sample.sum() / n_total
+
+            diagnostics = {
+                'q_low_mean':  q_low.detach().mean(),
+                'q_low_max':   q_low.detach().max(),
+                'q_high_mean': q_high.detach().mean(),
+                'q_high_max':  q_high.detach().max(),
+                'excess_mean': excess.detach().mean(),
+                'excess_max':  excess.detach().max(),
+            }
+            return {'kind': 'loss', 'loss': decay_loss, 'diagnostics': diagnostics}
+
+        raise ValueError(f"Unknown grazing_mode: {mode!r}")
 
     # ------------------------------------------------------------------
     # Training
@@ -476,21 +567,30 @@ class Stage1Trainer_Bonn(pl.LightningModule):
         pan_loss_raw  = zero
         lls_loss_raw  = zero
 
-        # --- Zero-angle (grazing) augmentation rays (generated once, attached
-        # to all three paths so the grazing constraint reaches all latents
-        # regardless of which data type appears in this batch). ---
+        # --- Grazing augmentation. Latents are drawn uniformly from the whole
+        # bank so a single supervision reaches every latent — poly, pan and
+        # lls all share the same latent bank + decoder. ---
+        #   'concat' modes (zero_exact / near_zero_brdf): synthetic BRDFs are
+        #     attached to the poly path's 3-channel loss.
+        #   'loss'   mode  (contribution_decay):  the function returns its own
+        #     scalar loss added directly to total_loss below.
         grazing_aug = self._zero_angle_aux_predictions(point_ids, material_ids)
         grazing_loss_log = zero
+        grazing_extra_loss = zero
+        grazing_diag = {}
+        brdf_g = gt_g_3ch = conf_g = None
         if grazing_aug is not None:
-            brdf_g, gt_g_3ch = grazing_aug                       # (n_g, 3), zeros
-            n_g = brdf_g.shape[0]
-            # Gray projection (matches pan/lls real-data forward).
-            pan_w_g = self.pan_weights.view(1, 3).expand(n_g, 3)
-            pred_gray_g = (brdf_g * pan_w_g).sum(-1, keepdim=True)
-            gt_g_gray = torch.zeros_like(pred_gray_g)
-            conf_g = torch.ones(n_g, device=xyz.device)
-            # Monitoring-only metric (does not enter the gradient).
-            grazing_loss_log = self._compute_loss(brdf_g, gt_g_3ch)
+            if grazing_aug['kind'] == 'concat':
+                brdf_g = grazing_aug['pred']                     # (n_g, 3)
+                gt_g_3ch = grazing_aug['target']                 # zeros
+                n_g = brdf_g.shape[0]
+                conf_g = torch.ones(n_g, device=xyz.device)
+                # Monitoring-only metric (does not enter the gradient).
+                grazing_loss_log = self._compute_loss(brdf_g, gt_g_3ch)
+            else:  # 'loss'
+                grazing_extra_loss = grazing_aug['loss']
+                grazing_loss_log = grazing_extra_loss.detach()
+                grazing_diag = grazing_aug['diagnostics']
 
         # --- polychromatic (RGB) loss (real poly + grazing) ---
         if poly_mask.any():
@@ -512,8 +612,9 @@ class Stage1Trainer_Bonn(pl.LightningModule):
         else:
             real_pred = real_gt = real_conf = None
 
-        if grazing_aug is not None or poly_mask.any():
-            if grazing_aug is None:
+        concat_grazing = brdf_g is not None
+        if concat_grazing or poly_mask.any():
+            if not concat_grazing:
                 pred, gt_, conf = real_pred, real_gt, real_conf
             elif real_pred is None:
                 pred, gt_, conf = brdf_g, gt_g_3ch, conf_g
@@ -527,7 +628,8 @@ class Stage1Trainer_Bonn(pl.LightningModule):
         else:
             poly_combined_pred = poly_combined_gt = poly_combined_conf = None
 
-        # --- panchromatic (grayscale) loss (real pan + grazing-as-gray) ---
+        # --- panchromatic (grayscale) loss (real pan only; grazing is folded
+        # into the poly path above) ---
         if pan_mask.any():
             pan_normals = gt_normals[pan_mask] if gt_normals is not None else None
             if self.apply_cosine_weight:
@@ -541,53 +643,31 @@ class Stage1Trainer_Bonn(pl.LightningModule):
                     xyz[pan_mask], wi[pan_mask], wo[pan_mask],
                     point_ids[pan_mask], material_ids[pan_mask],
                     normals=pan_normals)
-            smooth_total = smooth_total + sm
-            real_pred = (brdf_pan * ray_pan_w[pan_mask]).sum(-1, keepdim=True)
-            real_gt   = rgbs_gt[pan_mask][:, :1]
-            real_conf = confidence[pan_mask]
-        else:
-            real_pred = real_gt = real_conf = None
-
-        if grazing_aug is not None or pan_mask.any():
-            if grazing_aug is None:
-                pred, gt_, conf = real_pred, real_gt, real_conf
-            elif real_pred is None:
-                pred, gt_, conf = pred_gray_g, gt_g_gray, conf_g
-            else:
-                pred = torch.cat([real_pred, pred_gray_g], dim=0)
-                gt_  = torch.cat([real_gt, gt_g_gray], dim=0)
-                conf = torch.cat([real_conf, conf_g], dim=0)
-            pan_loss_raw = self._compute_loss(pred, gt_, conf)
+            pred_gray = (brdf_pan * ray_pan_w[pan_mask]).sum(-1, keepdim=True)
+            gt_gray   = rgbs_gt[pan_mask][:, :1]
+            pan_loss_raw = self._compute_loss(
+                pred_gray, gt_gray, confidence[pan_mask])
             total_loss = total_loss + self.pan_loss_weight * pan_loss_raw
+            smooth_total = smooth_total + sm
 
-        # --- LLS (Monte-Carlo) loss (real lls + grazing-as-gray) ---
+        # --- LLS (Monte-Carlo) loss (real lls only) ---
         if lls_mask.any():
             lls_normals = gt_normals[lls_mask] if gt_normals is not None else None
             lls_pred = self._lls_monte_carlo(
                 xyz[lls_mask], wo[lls_mask], lls_corners[lls_mask],
                 point_ids[lls_mask], material_ids[lls_mask], self.lls_spp,
                 normals=lls_normals)
-            real_pred = (lls_pred * ray_pan_w[lls_mask]).sum(-1, keepdim=True)
-            real_gt   = rgbs_gt[lls_mask][:, :1]
-            real_conf = confidence[lls_mask]
-        else:
-            real_pred = real_gt = real_conf = None
-
-        if grazing_aug is not None or lls_mask.any():
-            if grazing_aug is None:
-                pred, gt_, conf = real_pred, real_gt, real_conf
-            elif real_pred is None:
-                pred, gt_, conf = pred_gray_g, gt_g_gray, conf_g
-            else:
-                pred = torch.cat([real_pred, pred_gray_g], dim=0)
-                gt_  = torch.cat([real_gt, gt_g_gray], dim=0)
-                conf = torch.cat([real_conf, conf_g], dim=0)
-            lls_loss_raw = self._compute_loss(pred, gt_, conf)
+            pred_gray = (lls_pred * ray_pan_w[lls_mask]).sum(-1, keepdim=True)
+            gt_gray   = rgbs_gt[lls_mask][:, :1]
+            lls_loss_raw = self._compute_loss(
+                pred_gray, gt_gray, confidence[lls_mask])
             total_loss = total_loss + self.lls_loss_weight * lls_loss_raw
 
         # Smoothness regularisation (from poly+pan branches only to avoid
         # double-counting; grazing skips eval_brdf so contributes nothing)
         total_loss = total_loss + self.smooth_reg_weight * smooth_total
+        # contribution_decay grazing loss (zero for the concat modes).
+        total_loss = total_loss + grazing_extra_loss
 
         # PSNR — over the combined poly path (real poly + grazing). The peak
         # is unaffected by zero-target grazing samples.
@@ -596,7 +676,7 @@ class Stage1Trainer_Bonn(pl.LightningModule):
             psnr, _ = self._compute_psnr_mse(
                 poly_combined_pred, poly_combined_gt, valid=poly_combined_conf > 0)
 
-        self.log_dict({
+        log_dict = {
             'train/total_loss': total_loss,
             'train/poly_loss':  poly_loss_raw,
             'train/pan_loss':   pan_loss_raw,
@@ -605,7 +685,10 @@ class Stage1Trainer_Bonn(pl.LightningModule):
             'train/psnr':       psnr,
             'train/poly_pred_mean': poly_pred.mean() if poly_pred is not None else 0.0,
             'train/poly_gt_mean':   rgbs_gt[poly_mask].mean() if poly_mask.any() else 0.0,
-        }, prog_bar=True, batch_size=xyz.shape[0])
+        }
+        for k, v in grazing_diag.items():
+            log_dict[f'train/grazing_{k}'] = v
+        self.log_dict(log_dict, prog_bar=True, batch_size=xyz.shape[0])
 
         opts = self.optimizers()
         if not isinstance(opts, list):
