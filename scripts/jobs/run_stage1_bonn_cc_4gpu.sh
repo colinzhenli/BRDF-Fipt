@@ -4,7 +4,7 @@ python main.py \
     dataset_folder=/home/zla247/scratch/data/Bonn/train  \
     output_folder=/home/zla247/scratch/output/BRDF \
     data=bonn \
-    data.num_load_workers=4 \
+    data.num_load_workers=2 \
     data.use_pan=True \
     data.use_lls=True \
     data.debug=False \
@@ -13,7 +13,7 @@ python main.py \
     data.point_subsample_ratio=0.1 \
     renderer=multiarea_emitter \
     material=bonn_latent \
-    experiment_name=Fir_Stage-1_Bonn-Cosine_Grazing-ratio-0.05_Logref-0.02_4GPU_run_1 \
+    experiment_name=Fir_Stage-1_Bonn_LLS-factor-1-Cosine_Grazing-ratio-0.05_ContributionDecay_Logref-0.02_4GPU_run_1 \
     model.optimizer.reset_latent_momentum_on_chunk_switch=False \
     model.optimizer.name=Adam8bit \
     model.loss.recon_loss.name=logrel \
@@ -21,9 +21,11 @@ python main.py \
     model.loss.reg_loss.weight=0.0 \
     model.loss.pan_weight=1.0 \
     model.loss.lls_weight=1.0 \
+    model.psnr.global_psnr=False \
     model.lls_spp=4 \
     model.stage=1 \
     model.test=False \
+    model.apply_cosine_weight=True \
     model.continue_training=False \
     model.trainer.max_epochs=100 \
     model.trainer.devices=4 \
@@ -33,6 +35,7 @@ python main.py \
     model.trainer.limit_train_batches=8000 \
     model.trainer.check_val_every_n_epoch=5 \
     model.grazing_ratio=0.05 \
+    model.grazing_mode=contribution_decay \
     material.decoder.use_skip_connection=True \
     material.decoder.use_film=False \
     material.decoder.use_color_decomp=False \

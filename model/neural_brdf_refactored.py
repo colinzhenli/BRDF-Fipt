@@ -2043,8 +2043,222 @@ class MultiMaterialLatentBRDF(LightningModule):
         
         # BRDF weight = BRDF / pdf (for Monte Carlo integration)
         brdf_weight = brdf / pdf.clamp(min=1e-6)
-        
+
         return wi, pdf, brdf_weight
+
+
+# ============================================================================
+# MULTI-MATERIAL PBR LATENT BRDF — PBR sanity-check sibling of
+# MultiMaterialLatentBRDF. Identical metadata loader (training_list +
+# point_metadata.json per material) but swaps the learned BRDFDecoder for an
+# analytical PBRDecoder. Latents now directly parameterize PBR channels.
+# ============================================================================
+class MultiMaterialPBRLatentBRDF(LightningModule):
+    """PBR sanity-check variant of MultiMaterialLatentBRDF.
+
+    Same per-material training-list metadata + per-point latent bank, but the
+    decoder is the analytical PBRDecoder instead of a learned MLP.
+
+    Latent layout (per point):
+        [brdf_params(brdf_latent_dim), normal(3), tangent(3)]
+    where brdf_latent_dim is fixed by the (anisotropic, disney) flags:
+        isotropic  -> 6  [color(3), albedo(1), roughness(1), metallic(1)]
+        anisotropic-> 9  + [ior(1), aniso_strength(1), aniso_rot(1)]
+        disney     -> 12 + [specularTint(1), sheen(1), sheenTint(1)]
+    """
+
+    def __init__(self, cfg):
+        super().__init__()
+
+        self.cfg = cfg
+        data_folder = getattr(cfg, 'data_folder', None)
+
+        # Read training list from txt file
+        self.training_list_path = getattr(cfg, 'training_list_path', None)
+
+        # PBR flags
+        self.anisotropic = getattr(cfg, 'anisotropic', False)
+        self.disney = getattr(cfg, 'disney', False)
+        self.soft_constraint = getattr(cfg, 'soft_constraint', True)
+        self.predict_frame = getattr(cfg, 'predict_frame', True)
+
+        # PBR latent dim is fixed by model type
+        if self.disney:
+            self.brdf_latent_dim = 12
+        elif self.anisotropic:
+            self.brdf_latent_dim = 9
+        else:
+            self.brdf_latent_dim = 6
+
+        # Always reserve 6 dims for normal+tangent (multi-material has no GT
+        # frame, so predict_frame is effectively required).
+        self.total_latent_dim = self.brdf_latent_dim + 6
+
+        # Expose latent_dim to be compatible with trainer code that slices
+        # latents as [:, :material.latent_dim].
+        self.latent_dim = self.brdf_latent_dim
+
+        # Optimizer / sparse-embedding config (mirrors MultiMaterialLatentBRDF)
+        self.optimizer_name = getattr(cfg, 'optimizer', {}).get('name', 'Adam')
+        # PBR always dense — the latent dims are small (6/9/12) and there is
+        # no encode_directions path, so sparse embeddings buy nothing.
+        is_sparse = False
+
+        # Point subsampling ratio — must match cfg.data.point_subsample_ratio
+        self.point_subsample_ratio = float(getattr(cfg, 'point_subsample_ratio', 1.0))
+
+        self.learnable_factor = getattr(cfg, 'learnable_factor', False)
+        if self.learnable_factor:
+            self.factor = nn.Parameter(torch.ones(3))
+
+        # Load point metadata from material subfolders
+        print(f"Loading point metadata from {data_folder}...")
+        self.metadata = self._load_point_metadata(data_folder)
+
+        num_materials = self.metadata['num_materials']
+        total_points = self.metadata['total_points']
+        print(f"Loaded {num_materials} materials with {total_points:,} total points")
+
+        self.point_latent_bank = nn.Embedding(
+            num_embeddings=total_points,
+            embedding_dim=self.total_latent_dim,
+            sparse=is_sparse,
+        )
+        nn.init.normal_(self.point_latent_bank.weight, mean=0.0, std=cfg.init_std)
+
+        # Initialize frame slots: normal=(0,0,1), tangent=(0,1,0)
+        with torch.no_grad():
+            self.point_latent_bank.weight[:, -6:-3] = torch.tensor([0.0, 0.0, 1.0])
+            self.point_latent_bank.weight[:, -3:]   = torch.tensor([0.0, 1.0, 0.0])
+
+        # PBRDecoder is analytical — no trainable parameters
+        self.decoder = PBRDecoder(
+            cfg=cfg,
+            soft_constraint=self.soft_constraint,
+        )
+
+        # No smooth_reg for analytical PBR
+        self.smooth_reg = False
+
+        print("MultiMaterialPBRLatentBRDF initialization complete!")
+
+    # Reuse MultiMaterialLatentBRDF's metadata loader verbatim (training_list
+    # + per-material point_metadata.json + optional legacy_swap_indexing).
+    _load_point_metadata = MultiMaterialLatentBRDF._load_point_metadata
+
+    def get_global_point_id(self, material_id, local_point_id):
+        offsets = self.material_offset_tensor[material_id]
+        return local_point_id + offsets
+
+    def extract_frame_from_latent(self, latent: torch.Tensor):
+        predicted_normal = NF.normalize(latent[..., -6:-3], dim=-1)
+        predicted_tangent = NF.normalize(latent[..., -3:], dim=-1)
+
+        # Gram-Schmidt
+        predicted_tangent = predicted_tangent - \
+            torch.sum(predicted_tangent * predicted_normal, dim=-1, keepdim=True) * predicted_normal
+        predicted_tangent = NF.normalize(predicted_tangent, dim=-1)
+        return predicted_normal, predicted_tangent
+
+    def world_to_local(self, v, normal, tangent=None):
+        if tangent is None:
+            up = torch.tensor([0.0, 1.0, 0.0], device=normal.device).expand_as(normal)
+            tangent = torch.cross(up, normal)
+            tangent_len = tangent.norm(dim=-1, keepdim=True)
+            collinear_mask = tangent_len.squeeze(-1) < 1e-6
+            if collinear_mask.any():
+                right = torch.tensor([1.0, 0.0, 0.0], device=normal.device).expand_as(normal)
+                tangent[collinear_mask] = torch.cross(right[collinear_mask], normal[collinear_mask])
+                tangent_len = tangent.norm(dim=-1, keepdim=True)
+        else:
+            tangent_len = tangent.norm(dim=-1, keepdim=True)
+
+        tangent = tangent / (tangent_len + 1e-8)
+        bitangent = torch.cross(normal, tangent)
+
+        return torch.stack([
+            (v * tangent).sum(dim=-1),
+            (v * bitangent).sum(dim=-1),
+            (v * normal).sum(dim=-1),
+        ], dim=-1)
+
+    def eval_brdf(
+        self,
+        pos,
+        wi,
+        wo,
+        normal,
+        latent=None,
+        point_ids=None,
+        material_ids=None,
+    ):
+        if point_ids is None or material_ids is None:
+            raise ValueError("point_ids and material_ids must be provided (from dataloader)")
+
+        global_point_ids = self.get_global_point_id(material_ids, point_ids)
+        latent = self.point_latent_bank(global_point_ids)
+
+        predicted_normal, predicted_tangent = self.extract_frame_from_latent(latent)
+
+        wi_local = self.world_to_local(wi, predicted_normal, predicted_tangent)
+        wo_local = self.world_to_local(wo, predicted_normal, predicted_tangent)
+
+        brdf_lat = latent[:, :self.brdf_latent_dim]
+        brdf, pdf = self.decoder(wi_local, wo_local, brdf_lat)
+
+        if self.learnable_factor:
+            brdf = brdf * self.factor
+
+        smooth_loss = torch.tensor(0.0, device=wi.device)
+
+        if torch.isnan(brdf).any():
+            print("brdf is nan")
+        if torch.isnan(predicted_normal).any():
+            print("predicted_normal is nan")
+
+        return brdf, predicted_normal, pdf, smooth_loss
+
+    def sample_brdf(
+        self,
+        params,
+        pos,
+        sample1,
+        sample2,
+        wo,
+        normal,
+        latent=None,
+        batch_mask=None,
+        point_ids=None,
+        material_ids=None,
+    ):
+        # Cosine-weighted hemisphere sampling in world frame (same placeholder
+        # as MultiMaterialLatentBRDF; brdf_sampling branch isn't exercised in
+        # the points_dense stage-1 path).
+        theta = torch.asin(torch.sqrt(sample2[..., 0]))
+        phi = 2 * math.pi * sample2[..., 1]
+
+        wi_local = torch.stack([
+            torch.sin(theta) * torch.cos(phi),
+            torch.sin(theta) * torch.sin(phi),
+            torch.cos(theta),
+        ], dim=-1)
+
+        up = torch.tensor([0.0, 1.0, 0.0], device=normal.device).expand_as(normal)
+        tangent = torch.cross(up, normal)
+        tangent = tangent / (tangent.norm(dim=-1, keepdim=True) + 1e-8)
+        bitangent = torch.cross(normal, tangent)
+
+        wi = (wi_local[..., 0:1] * tangent +
+              wi_local[..., 1:2] * bitangent +
+              wi_local[..., 2:3] * normal)
+
+        brdf, _, pdf, _ = self.eval_brdf(
+            pos, wi, wo, normal,
+            point_ids=point_ids, material_ids=material_ids,
+        )
+        brdf_weight = brdf / pdf.clamp(min=1e-6)
+        return wi, pdf, brdf_weight
+
 
 # 7. BONN LATENT BRDF - Auto-decoder for Bonn SVBRDF dataset
 # ============================================================================

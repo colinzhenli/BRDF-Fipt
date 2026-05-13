@@ -819,10 +819,13 @@ class Stage1Trainer(pl.LightningModule):
                 normal_batch = local_normal.expand(len(theta_o_range), -1)
                 latent_batch = latent.expand(len(theta_o_range), -1)
 
-                enc_dir = self.material.decoder.encode_directions(wi_batch, wo_batch, normal_batch)
-
                 with torch.no_grad():
-                    brdf = self.material.decoder(enc_dir, latent_batch)
+                    if hasattr(self.material.decoder, 'encode_directions'):
+                        enc_dir = self.material.decoder.encode_directions(wi_batch, wo_batch, normal_batch)
+                        brdf = self.material.decoder(enc_dir, latent_batch)
+                    else:
+                        # PBRDecoder takes (wi, wo, latent) directly in local frame
+                        brdf, _ = self.material.decoder(wi_batch, wo_batch, latent_batch)
 
                 brdf_polar = brdf.mean(dim=-1).cpu().numpy()
 
@@ -884,9 +887,13 @@ class Stage1Trainer(pl.LightningModule):
                         normal_batch = local_normal.expand(len(theta_i_range), -1)
                         latent_batch = latent.expand(len(theta_i_range), -1)
 
-                        enc_dir = self.material.decoder.encode_directions(wi_batch, wo_batch, normal_batch)
                         with torch.no_grad():
-                            brdf = self.material.decoder(enc_dir, latent_batch)
+                            if hasattr(self.material.decoder, 'encode_directions'):
+                                enc_dir = self.material.decoder.encode_directions(wi_batch, wo_batch, normal_batch)
+                                brdf = self.material.decoder(enc_dir, latent_batch)
+                            else:
+                                # PBRDecoder takes (wi, wo, latent) directly in local frame
+                                brdf, _ = self.material.decoder(wi_batch, wo_batch, latent_batch)
 
                         cos_theta_i = wi_batch[:, 2].clamp(min=0).cpu().numpy()
                         brdf_polar = brdf.mean(dim=-1).cpu().numpy() * cos_theta_i
