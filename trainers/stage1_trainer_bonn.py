@@ -367,42 +367,89 @@ class Stage1Trainer_Bonn(pl.LightningModule):
     # ------------------------------------------------------------------
     # PSNR / MSE  (stable, comparable across batches when global_psnr=True)
     # ------------------------------------------------------------------
-    def _compute_psnr_mse(self, pred, gt, valid=None):
+    def _ddp_is_active(self):
+        return torch.distributed.is_available() and torch.distributed.is_initialized()
+
+    def _all_reduce_metric(self, value, op=None):
+        """Return a DDP-reduced copy of a scalar tensor, or the input in single GPU."""
+        if not torch.is_tensor(value):
+            value = torch.as_tensor(value, dtype=torch.float32, device=self.device)
+        if self._ddp_is_active():
+            value = value.clone()
+            if op is None:
+                op = torch.distributed.ReduceOp.SUM
+            torch.distributed.all_reduce(value, op=op)
+        return value
+
+    def _psnr_config(self):
+        psnr_cfg = getattr(self.hparams.model, 'psnr', None)
+        use_global = bool(getattr(psnr_cfg, 'global_psnr', True)) if psnr_cfg is not None else True
+        peak = float(getattr(psnr_cfg, 'peak', 1.0)) if psnr_cfg is not None else 1.0
+        return use_global, peak
+
+    def _compute_psnr_mse(self, pred, gt, valid=None, sync_dist=False):
         """Compute (psnr, mse) over valid (non-occluded) pixels.
 
         When ``cfg.model.psnr.global_psnr`` is True the PSNR uses a fixed
         ``peak`` (stable across batches/runs); otherwise it falls back to the
-        legacy per-batch ``gt[valid].max()``. MSE is always over valid pixels
-        only, never clamped or tone-mapped (HDR BRDF data).
+        legacy ``gt[valid].max()``. If ``sync_dist=True``, SSE, element count,
+        and non-global peak are reduced across DDP ranks before PSNR is
+        computed, so the returned value is the true global metric rather than
+        a per-rank metric.
         """
-        psnr_cfg = getattr(self.hparams.model, 'psnr', None)
-        use_global = bool(getattr(psnr_cfg, 'global_psnr', True)) if psnr_cfg is not None else True
-        peak       = float(getattr(psnr_cfg, 'peak', 1.0))        if psnr_cfg is not None else 1.0
+        use_global, peak = self._psnr_config()
 
         if valid is not None:
-            if not valid.any():
-                mse = torch.tensor(1.0, device=pred.device)
-                max_val = torch.tensor(1.0, device=pred.device)
-                psnr = 10.0 * torch.log10(max_val ** 2 / mse.clamp_min(1e-10))
-                return psnr, mse
-            pred_v = pred[valid]
-            gt_v   = gt[valid]
+            if valid.any():
+                pred_v = pred[valid]
+                gt_v = gt[valid]
+            else:
+                pred_v = pred.new_empty((0,) + pred.shape[1:])
+                gt_v = gt.new_empty((0,) + gt.shape[1:])
         else:
             pred_v = pred
-            gt_v   = gt
+            gt_v = gt
 
-        mse = ((pred_v - gt_v) ** 2).mean()
+        if pred_v.numel() == 0:
+            sse = torch.zeros((), dtype=pred.dtype, device=pred.device)
+            n = torch.zeros((), dtype=pred.dtype, device=pred.device)
+            gt_max = torch.zeros((), dtype=gt.dtype, device=gt.device)
+        else:
+            diff = pred_v - gt_v
+            sse = diff.pow(2).sum()
+            n = torch.as_tensor(diff.numel(), dtype=pred.dtype, device=pred.device)
+            gt_max = gt_v.max()
+
+        if sync_dist:
+            sse = self._all_reduce_metric(sse, op=torch.distributed.ReduceOp.SUM)
+            n = self._all_reduce_metric(n, op=torch.distributed.ReduceOp.SUM)
+            if not use_global:
+                gt_max = self._all_reduce_metric(gt_max, op=torch.distributed.ReduceOp.MAX)
+
+        if n.item() <= 0:
+            mse = torch.tensor(1.0, dtype=pred.dtype, device=pred.device)
+            max_val = torch.tensor(1.0, dtype=pred.dtype, device=pred.device)
+            psnr = 10.0 * torch.log10(max_val ** 2 / mse.clamp_min(1e-10))
+            return psnr, mse
+
+        mse = sse / n.clamp_min(1.0)
         if use_global:
             max_val = torch.as_tensor(peak, dtype=pred.dtype, device=pred.device)
         else:
-            max_val = gt_v.max().clamp_min(1e-8)
+            max_val = gt_max.clamp_min(1e-8).to(dtype=pred.dtype, device=pred.device)
         psnr = 10.0 * torch.log10(max_val ** 2 / mse.clamp_min(1e-10))
         return psnr, mse
 
     # ------------------------------------------------------------------
     # Loss
     # ------------------------------------------------------------------
-    def _compute_loss(self, pred, gt, confidence=None):
+    def _loss_per_pixel(self, pred, gt):
+        """Return the unreduced per-pixel reconstruction loss.
+
+        This keeps the original loss definition, but exposes the per-pixel
+        terms so DDP can normalize each branch using the global count across
+        all ranks.
+        """
         loss_cfg = self.hparams.model.loss.recon_loss
         name = loss_cfg.name
 
@@ -414,13 +461,54 @@ class Stage1Trainer_Bonn(pl.LightningModule):
             rho_ref = getattr(loss_cfg.log_space, 'logrel_ref', 0.5)
             eps     = getattr(loss_cfg.log_space, 'logrel_eps', 1e-3)
             ref = torch.as_tensor(rho_ref, dtype=pred.dtype, device=pred.device)
+
             def lm(x):
                 return torch.log((x + eps) / (ref + eps) + 1.0)
+
             per_pix = (lm(pred) - lm(gt)).abs().mean(dim=-1)
+
+        return per_pix
+
+    def _compute_loss(self, pred, gt, confidence=None):
+        """Original local mean loss, kept for validation and monitoring."""
+        per_pix = self._loss_per_pixel(pred, gt)
 
         if confidence is not None:
             per_pix = per_pix * confidence
+
         return per_pix.mean()
+
+    def _compute_loss_ddp_global(self, pred, gt, confidence=None):
+        """DDP-correct global mean loss for one supervision branch.
+
+        In DDP, the old objective was:
+            mean over ranks of local branch means.
+
+        This function instead gives the gradient of:
+            global branch sum / global branch count.
+
+        Since DDP averages gradients across ranks, each rank backprops:
+            world_size * local_sum / global_count.
+
+        On single GPU, this reduces exactly to the original local mean.
+        """
+        per_pix = self._loss_per_pixel(pred, gt)
+
+        if confidence is not None:
+            per_pix = per_pix * confidence
+
+        local_sum = per_pix.sum()
+        local_count = torch.as_tensor(
+            per_pix.numel(), dtype=pred.dtype, device=pred.device)
+
+        if not self._ddp_is_active():
+            return local_sum / local_count.clamp_min(1.0)
+
+        global_count = local_count.detach().clone()
+        torch.distributed.all_reduce(global_count, op=torch.distributed.ReduceOp.SUM)
+
+        world_size = torch.distributed.get_world_size()
+        return float(world_size) * local_sum / global_count.clamp_min(1.0)
 
     def _zero_angle_aux_predictions(self, point_ids, material_ids):
         """Build a grazing-incidence augmentation in one of three modes.
@@ -622,7 +710,7 @@ class Stage1Trainer_Bonn(pl.LightningModule):
                 pred = torch.cat([real_pred, brdf_g], dim=0)
                 gt_  = torch.cat([real_gt, gt_g_3ch], dim=0)
                 conf = torch.cat([real_conf, conf_g], dim=0)
-            poly_loss_raw = self._compute_loss(pred, gt_, conf)
+            poly_loss_raw = self._compute_loss_ddp_global(pred, gt_, conf)
             total_loss = total_loss + poly_loss_raw
             poly_combined_pred, poly_combined_gt, poly_combined_conf = pred, gt_, conf
         else:
@@ -645,7 +733,7 @@ class Stage1Trainer_Bonn(pl.LightningModule):
                     normals=pan_normals)
             pred_gray = (brdf_pan * ray_pan_w[pan_mask]).sum(-1, keepdim=True)
             gt_gray   = rgbs_gt[pan_mask][:, :1]
-            pan_loss_raw = self._compute_loss(
+            pan_loss_raw = self._compute_loss_ddp_global(
                 pred_gray, gt_gray, confidence[pan_mask])
             total_loss = total_loss + self.pan_loss_weight * pan_loss_raw
             smooth_total = smooth_total + sm
@@ -659,7 +747,7 @@ class Stage1Trainer_Bonn(pl.LightningModule):
                 normals=lls_normals)
             pred_gray = (lls_pred * ray_pan_w[lls_mask]).sum(-1, keepdim=True)
             gt_gray   = rgbs_gt[lls_mask][:, :1]
-            lls_loss_raw = self._compute_loss(
+            lls_loss_raw = self._compute_loss_ddp_global(
                 pred_gray, gt_gray, confidence[lls_mask])
             total_loss = total_loss + self.lls_loss_weight * lls_loss_raw
 
@@ -674,7 +762,9 @@ class Stage1Trainer_Bonn(pl.LightningModule):
         psnr = torch.tensor(0.0, device=xyz.device)
         if poly_combined_pred is not None and poly_combined_pred.numel() > 0:
             psnr, _ = self._compute_psnr_mse(
-                poly_combined_pred, poly_combined_gt, valid=poly_combined_conf > 0)
+                poly_combined_pred, poly_combined_gt,
+                valid=poly_combined_conf > 0,
+                sync_dist=True)
 
         log_dict = {
             'train/total_loss': total_loss,
@@ -688,7 +778,7 @@ class Stage1Trainer_Bonn(pl.LightningModule):
         }
         for k, v in grazing_diag.items():
             log_dict[f'train/grazing_{k}'] = v
-        self.log_dict(log_dict, prog_bar=True, batch_size=xyz.shape[0])
+        self.log_dict(log_dict, prog_bar=True, batch_size=xyz.shape[0], sync_dist=True)
 
         opts = self.optimizers()
         if not isinstance(opts, list):
@@ -762,10 +852,14 @@ class Stage1Trainer_Bonn(pl.LightningModule):
         # ``on_validation_epoch_end``. Each (pixel × channel) counts as one
         # observation: poly contributes 3 elements per pixel, gray
         # contributes 1, matching the per-element MSE convention used by
-        # ``_compute_psnr_mse``. The shared ``peak`` (=1.0 by default) is
-        # what makes the combined metric well-defined across modalities.
-        self._val_sse_total = 0.0
-        self._val_n_total   = 0
+        # ``_compute_psnr_mse``.
+        #
+        # Keep these as tensors so DDP validation can reduce them across
+        # ranks. ``_val_gt_max_total`` is used only when
+        # cfg.model.psnr.global_psnr=False, matching ``_compute_psnr_mse``.
+        self._val_sse_total = torch.tensor(0.0, dtype=torch.float32, device=self.device)
+        self._val_n_total = torch.tensor(0.0, dtype=torch.float32, device=self.device)
+        self._val_gt_max_total = torch.tensor(0.0, dtype=torch.float32, device=self.device)
 
     def validation_step(self, batch, batch_idx):
         xyz          = batch['xyz'].squeeze(0)
@@ -847,8 +941,12 @@ class Stage1Trainer_Bonn(pl.LightningModule):
         valid_mask = confidence > 0
         if valid_mask.any():
             diff = pred_for_metric[valid_mask] - gt_for_metric[valid_mask]
-            self._val_sse_total += diff.pow(2).sum().item()
-            self._val_n_total   += diff.numel()
+            self._val_sse_total = self._val_sse_total + diff.pow(2).sum().detach().float()
+            self._val_n_total = self._val_n_total + torch.as_tensor(
+                diff.numel(), dtype=torch.float32, device=pred_for_metric.device)
+            self._val_gt_max_total = torch.maximum(
+                self._val_gt_max_total,
+                gt_for_metric[valid_mask].max().detach().float())
 
         if hasattr(self.material, 'learnable_factor') and self.material.learnable_factor:
             factor_val = self.material.factor.detach()
@@ -950,19 +1048,33 @@ class Stage1Trainer_Bonn(pl.LightningModule):
         # across all data types (poly + gray). Each (pixel × channel)
         # counted as one observation in ``validation_step``, so poly's
         # 3-channel comparison and gray's 1-channel comparison are
-        # implicitly weighted by the number of measurements they
-        # contribute. The peak is the same one ``_compute_psnr_mse`` uses
-        # (cfg.model.psnr.peak, default 1.0) — that fixed reference is
-        # what makes this combined metric well-defined.
-        n = getattr(self, '_val_n_total', 0)
-        if n == 0:
+        # implicitly weighted by the number of measurements they contribute.
+        #
+        # DDP-safe: reduce SSE, count, and optional non-global peak across all
+        # ranks before computing PSNR.
+        sse = getattr(self, '_val_sse_total', None)
+        n = getattr(self, '_val_n_total', None)
+        gt_max = getattr(self, '_val_gt_max_total', None)
+        if sse is None or n is None or gt_max is None:
             return
-        psnr_cfg = getattr(self.hparams.model, 'psnr', None)
-        peak = float(getattr(psnr_cfg, 'peak', 1.0)) if psnr_cfg is not None else 1.0
-        combined_mse  = self._val_sse_total / n
-        combined_psnr = 10.0 * math.log10(peak ** 2 / max(combined_mse, 1e-10))
-        self.log('val/all_psnr', combined_psnr, prog_bar=True)
-        self.log('val/all_mse',  combined_mse)
+
+        sse = self._all_reduce_metric(sse, op=torch.distributed.ReduceOp.SUM)
+        n = self._all_reduce_metric(n, op=torch.distributed.ReduceOp.SUM)
+        gt_max = self._all_reduce_metric(gt_max, op=torch.distributed.ReduceOp.MAX)
+
+        if n.item() <= 0:
+            return
+
+        use_global, peak = self._psnr_config()
+        combined_mse = sse / n.clamp_min(1.0)
+        if use_global:
+            max_val = torch.as_tensor(peak, dtype=combined_mse.dtype, device=combined_mse.device)
+        else:
+            max_val = gt_max.clamp_min(1e-8).to(dtype=combined_mse.dtype, device=combined_mse.device)
+
+        combined_psnr = 10.0 * torch.log10(max_val ** 2 / combined_mse.clamp_min(1e-10))
+        self.log('val/all_psnr', combined_psnr, prog_bar=True, rank_zero_only=True)
+        self.log('val/all_mse', combined_mse, rank_zero_only=True)
 
     # -----------------------------------------------------------------
     # Tone mapping for display
@@ -1049,16 +1161,19 @@ class Stage1Trainer_Bonn(pl.LightningModule):
             plt.close()
 
         # ---- Visualization 2: Fix wo, vary wi  (BRDF × cos_theta_i) ----------
-        # Original (wi_phi=0, wo_phi=0) plus 4 azimuth variations per latent
-        # so the zero-grazing constraint can be inspected at non-zero
-        # azimuths too, not just the wi_phi=0 / wo_phi=0 plane.
+        # 5 azimuth configs per latent. wo_phi values are restricted to {90°,
+        # 180°} because the Bonn rig's 4 cameras × 5 turntable rotations only
+        # cover wo_phi ∈ {90, 135, 180, 225, 270}; wo_phi=0° has no GT
+        # coverage so a decoder lobe at (·, 0°) cannot be checked against
+        # real measurements. wi_phi stays at cardinals — the 29 LEDs span
+        # all 360° so any wi azimuth is reachable in GT.
         theta_o_values = [15.0, 30.0, 45.0, 60.0]
         phi_configs = [
-            (0.0,   0.0),    # original (wi/wo coplanar in phi=0 plane)
-            (90.0,  0.0),    # wi azimuth 90°
-            (180.0, 0.0),    # wi flipped to azimuth 180°
-            (0.0,   90.0),   # wo azimuth 90°
-            (90.0,  90.0),   # both azimuths 90°
+            (0.0,    90.0),   # wo at +y axis, wi in x-z plane
+            (90.0,   90.0),   # both azimuths 90°
+            (180.0,  90.0),   # wi flipped, wo at +y
+            (0.0,   180.0),   # wo at -x axis, wi in x-z plane
+            (90.0,  180.0),   # wi at +y, wo at -x
         ]
 
         for latent_idx in range(num_latents):

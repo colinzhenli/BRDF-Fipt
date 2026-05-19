@@ -29,7 +29,6 @@ python main.py \
     model.optimizer.lr=0.002 \
     model.optimizer.reset_latent_momentum_on_chunk_switch=False \
     model.loss.recon_loss.name=logrel \
-    # model.loss.recon_loss.log_space.logrel_ref=0.05 \
     model.loss.recon_loss.log_space.logrel_ref=0.02 \
     model.loss.reg_loss.weight=0.0 \
     model.trainer.max_epochs=40 \

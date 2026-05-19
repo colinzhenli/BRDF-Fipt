@@ -72,28 +72,7 @@ loss:
 
 lls_spp: 16          # Monte-Carlo samples per pixel for LLS integration
 
-# Grazing-incidence auxiliary supervision: each training step, sample
-# int(grazing_ratio * batch_size) latents uniformly from the entire latent
-# bank, then synthesize wi/wo. Training-only; bypasses frame transform,
-# renderer, and MC. ``grazing_ratio: 0.0`` disables.
-#
-# Modes (set via grazing_mode):
-#   - "zero_exact":         Pseudo-observation. wi.z = 0; target = 0 raw BRDF.
-#                           Concatenated into the real batch — shares the
-#                           reconstruction loss; effective weight is
-#                           controlled by grazing_ratio (no extra weight).
-#   - "near_zero_brdf":     Pseudo-observation. c ~ U(grazing_cos_min,
-#                           grazing_cos_max), wi.z = c; target = 0 raw BRDF.
-#                           Same concat path as zero_exact.
-#   - "contribution_decay": BRDF-shape regularizer (NOT an observation).
-#                           Decode two wi (c_high, c_low = alpha*c_high) with
-#                           shared wo / latent / azimuth and apply a one-sided
-#                           log-ratio hinge on q = brdf * cos:
-#                               excess = log(clamp(q_low,0)+eps)
-#                                      - log(clamp(alpha*detach(q_high),0)+eps)
-#                               loss   = grazing_decay_weight
-#                                      * relu(excess).mean(-1).sum() / B
-#                           No camera_factor here — the hinge is scale-relative.
+# Grazing-incidence auxiliary supervision:
 grazing_ratio: 0.0
 grazing_mode: zero_exact            # "zero_exact" | "near_zero_brdf" | "contribution_decay"
 grazing_cos_min: 0.005              # near_zero_brdf: lower bound of c

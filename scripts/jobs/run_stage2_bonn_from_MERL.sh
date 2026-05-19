@@ -22,7 +22,7 @@ python main.py \
     material.decoder.use_color_decomp=False \
     material.decoder.degree=3 \
     material.decoder.smooth_reg=False \
-    experiment_name=Stage2_Adam8bit_Bonn${MAT_ID}_from_MERL_run_1 \
+    experiment_name=Stage2_Adam8bit_Bonn${MAT_ID}_from_MERL_Grazing-angle_run_1 \
     model.stage=2 \
     model.test=False \
     model.apply_cosine_weight=True \
@@ -37,4 +37,4 @@ python main.py \
     model.trainer.max_epochs=40 \
     model.trainer.check_val_every_n_epoch=2 \
     model.trainer.limit_train_batches=1000 \
-    model.ckpt_path=/media/raid/cloth/output/BRDF/Stage-1-Finals/MERL_480K.ckpt
+    model.ckpt_path=/media/raid/cloth/output/BRDF/Stage-1-Finals/MERL.ckpt

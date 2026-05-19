@@ -1,6 +1,6 @@
 #!/bin/bash
 
-export CUDA_VISIBLE_DEVICES=1
+export CUDA_VISIBLE_DEVICES=2
 
 DATASET_FOLDER=/media/raid/cloth/Bonn_val
 MAT_ID=318
@@ -22,7 +22,7 @@ python main.py \
     material.decoder.use_color_decomp=False \
     material.decoder.degree=3 \
     material.decoder.smooth_reg=False \
-    experiment_name=Stage2_Adam8bit_Bonn${MAT_ID}_Cosine_from_Ours_run_1 \
+    experiment_name=Stage2_Adam8bit_Bonn${MAT_ID}_from_Ours_Grazing-angle_run_1 \
     model.stage=2 \
     model.apply_cosine_weight=True \
     model.test=False \
@@ -32,10 +32,9 @@ python main.py \
     model.optimizer.lr=0.002 \
     model.optimizer.reset_latent_momentum_on_chunk_switch=False \
     model.loss.recon_loss.name=logrel \
-    # model.loss.recon_loss.log_space.logrel_ref=0.05 \
     model.loss.recon_loss.log_space.logrel_ref=0.02 \
     model.loss.reg_loss.weight=0.0 \
     model.trainer.max_epochs=40 \
     model.trainer.check_val_every_n_epoch=2 \
     model.trainer.limit_train_batches=1000 \
-    model.ckpt_path=/media/raid/cloth/output/BRDF/Stage-1-Finals/Ours_480K.ckpt
+    model.ckpt_path=/media/raid/cloth/output/BRDF/Stage-1-Finals/Ours.ckpt

@@ -28,7 +28,7 @@ python main.py \
     material.neural_geometry.factor=0.08 \
     material.decoder.use_skip_connection=True \
     material.decoder.degree=3 \
-    experiment_name=Stage2_Adam8bit_Ours${MAT_ID}_from_Ours_dense_run_1 \
+    experiment_name=Stage2_Adam8bit_Ours${MAT_ID}_from_Ours_Grazing-angle_run_1 \
     model.stage=2 \
     model.test=False \
     model.continue_training=False \
@@ -40,4 +40,4 @@ python main.py \
     model.trainer.max_epochs=100 \
     model.trainer.check_val_every_n_epoch=2 \
     model.trainer.limit_train_batches=8000 \
-    model.ckpt_path=/home/zla247/scratch/checkpoints/Ours-442_480K.ckpt
+    model.ckpt_path=/home/zla247/scratch/checkpoints/Ours.ckpt
