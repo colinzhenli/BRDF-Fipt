@@ -3,7 +3,7 @@
 export CUDA_VISIBLE_DEVICES=2
 
 DATASET_FOLDER=/media/raid/cloth/Bonn_val
-MAT_ID=318
+MAT_ID=288
 
 python main.py \
     dataset_folder=${DATASET_FOLDER} \
@@ -22,7 +22,7 @@ python main.py \
     material.decoder.use_color_decomp=False \
     material.decoder.degree=3 \
     material.decoder.smooth_reg=False \
-    experiment_name=Stage2_Adam8bit_Bonn${MAT_ID}_from_Ours_Grazing-angle_run_1 \
+    experiment_name=Stage2_Batch-500K_Adam8bit_Bonn${MAT_ID}_from_Ours_Grazing-angle_run_1 \
     model.stage=2 \
     model.apply_cosine_weight=True \
     model.test=False \

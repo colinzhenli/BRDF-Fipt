@@ -3,14 +3,14 @@
 export CUDA_VISIBLE_DEVICES=1
 
 DATASET_FOLDER=/media/raid/cloth/Bonn_val
-MAT_ID=318
+MAT_ID=288
 
 python main.py \
     dataset_folder=${DATASET_FOLDER} \
     output_folder=/media/raid/cloth/output/BRDF/Bonn \
     data=bonn \
     data.overfit_mat_id=${MAT_ID} \
-    data.rays_num=500000 \
+    data.rays_num=300000 \
     data.valid_num=20 \
     renderer=multiarea_emitter \
     material=bonn_latent \
@@ -22,7 +22,7 @@ python main.py \
     material.decoder.use_color_decomp=False \
     material.decoder.degree=3 \
     material.decoder.smooth_reg=False \
-    experiment_name=Stage2_Adam8bit_Bonn${MAT_ID}_from_Bonn_Grazing-angle_run_1 \
+    experiment_name=Stage2_Batch-500K_Adam8bit_Bonn${MAT_ID}_from_Bonn_Grazing-angle_run_1 \
     model.stage=2 \
     model.test=False \
     model.apply_cosine_weight=True \

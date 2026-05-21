@@ -1,8 +1,8 @@
 #!/bin/bash
 
-export CUDA_VISIBLE_DEVICES=1
+export CUDA_VISIBLE_DEVICES=3
 
-BTF_FILE=felt09_W400xH400_L151xV151.btf
+BTF_FILE=felt01_W400xH400_L151xV151.btf
 BTF_NAME=${BTF_FILE%%_*}
 
 python main.py \

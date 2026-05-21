@@ -1,9 +1,9 @@
 #!/bin/bash
 
-export CUDA_VISIBLE_DEVICES=2
+export CUDA_VISIBLE_DEVICES=3
 
 DATASET_FOLDER=/media/raid/cloth/Bonn_val
-MAT_ID=318
+MAT_ID=288
 
 python main.py \
     dataset_folder=${DATASET_FOLDER} \
@@ -19,7 +19,7 @@ python main.py \
     material.disney=True \
     material.anisotropic=True \
     material.soft_constraint=True \
-    experiment_name=Stage2_Adam8bit_Bonn${MAT_ID}_PBR_run_1 \
+    experiment_name=Stage2_Batch-500K_Adam8bit_Bonn${MAT_ID}_PBR_run_1 \
     model.stage=2 \
     model.test=False \
     model.apply_cosine_weight=True \

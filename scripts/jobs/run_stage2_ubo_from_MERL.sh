@@ -15,7 +15,7 @@ python main.py \
     renderer=multiarea_emitter \
     material=ubo_latent \
     material.learnable_factor=True \
-    model.factor_init=0.01 \
+    model.factor_init=0.1 \
     material.predict_frame=True \
     material.latent_dim=24 \
     material.different_decoder=False \
@@ -24,7 +24,7 @@ python main.py \
     material.decoder.use_color_decomp=False \
     material.decoder.degree=3 \
     material.decoder.smooth_reg=False \
-    experiment_name=Stage-2_UBO_${BTF_NAME}_from-MERL_Grazing-angle-init-0.01_run_1 \
+    experiment_name=Stage-2_UBO_${BTF_NAME}_from-MERL_Grazing-angle-init-0.1_run_1 \
     model.optimizer.name=Adam \
     model.optimizer.lr=0.002 \
     model.optimizer.decoder_lr=2e-4 \

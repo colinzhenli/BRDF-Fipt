@@ -36,24 +36,29 @@ class MERLInterface:
     GREEN_SCALE = 1.15 / 1500.0
     BLUE_SCALE = 1.66 / 1500.0
     
-    def __init__(self, brdf_dir, device='cuda'):
+    def __init__(self, brdf_dir, device='cuda', material_names=None):
         """
         Initialize MERL BRDF interface and load all materials from directory.
-        
+
         Args:
             brdf_dir: Path to directory containing .binary BRDF files
             device: Device to store tensors ('cuda' or 'cpu')
+            material_names: Optional iterable of material stem names (without
+                ".binary"). When provided, only those materials are loaded and
+                material indices map 0..len(material_names)-1 in the order the
+                filtered .binary files appear after sorting.
         """
         self.device = torch.device(device)
         self.brdf_dir = Path(brdf_dir)
-        
+
         if not self.brdf_dir.exists():
             raise FileNotFoundError(f"BRDF directory not found: {brdf_dir}")
-        
+
         if not self.brdf_dir.is_dir():
             raise ValueError(f"Path is not a directory: {brdf_dir}")
-        
+
         # Load all BRDF materials
+        self._material_filter = set(material_names) if material_names is not None else None
         self.brdf_data, self.material_names, self.material_ids = self._load_all_brdfs()
         
         print(f"[MERLInterface] Loaded {len(self.material_names)} materials from {self.brdf_dir}")
@@ -73,9 +78,23 @@ class MERLInterface:
         """
         # Find all .binary files
         brdf_files = sorted(self.brdf_dir.glob("*.binary"))
-        
+
         if len(brdf_files) == 0:
             raise ValueError(f"No .binary files found in {self.brdf_dir}")
+
+        if self._material_filter is not None:
+            requested = self._material_filter
+            brdf_files = [f for f in brdf_files if f.stem in requested]
+            missing = requested - {f.stem for f in brdf_files}
+            if missing:
+                raise ValueError(
+                    f"Requested materials not found in {self.brdf_dir}: "
+                    f"{sorted(missing)}"
+                )
+            if len(brdf_files) == 0:
+                raise ValueError(
+                    f"Material filter matched no .binary files in {self.brdf_dir}"
+                )
         
         material_names = []
         material_data_list = []
