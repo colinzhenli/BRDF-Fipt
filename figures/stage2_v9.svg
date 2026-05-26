@@ -1,0 +1,378 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1500 800" font-family="Helvetica Neue, Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#52606D"/>
+    </marker>
+    <marker id="arL" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#9AA5B1"/>
+    </marker>
+    <marker id="arRed" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#C0392B"/>
+    </marker>
+    <marker id="arOrange" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#E27D60"/>
+    </marker>
+    <marker id="arGreen" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#70AD47"/>
+    </marker>
+    <marker id="arYel" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#D89B00"/>
+    </marker>
+    <marker id="arDark" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#2F3640"/>
+    </marker>
+    <marker id="arBlue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#3672B0"/>
+    </marker>
+    <marker id="arGrey" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#7C8087"/>
+    </marker>
+
+    <linearGradient id="texGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%"  stop-color="#FBD8B2"/>
+      <stop offset="50%" stop-color="#D88A6B"/>
+      <stop offset="100%" stop-color="#7A4F46"/>
+    </linearGradient>
+
+    <radialGradient id="shRed" cx="50%" cy="35%" r="70%">
+      <stop offset="0%"  stop-color="#FF9886"/>
+      <stop offset="100%" stop-color="#B02B1A"/>
+    </radialGradient>
+    <linearGradient id="shVCR" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%"  stop-color="#3FB8D4"/>
+      <stop offset="40%" stop-color="#BEE8EF"/>
+      <stop offset="60%" stop-color="#F2A48E"/>
+      <stop offset="100%" stop-color="#A82B1A"/>
+    </linearGradient>
+    <linearGradient id="shHCR" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%"  stop-color="#3FB8D4"/>
+      <stop offset="40%" stop-color="#BEE8EF"/>
+      <stop offset="60%" stop-color="#F2A48E"/>
+      <stop offset="100%" stop-color="#A82B1A"/>
+    </linearGradient>
+    <linearGradient id="shBands" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%"   stop-color="#3FB8D4"/>
+      <stop offset="25%"  stop-color="#BEE8EF"/>
+      <stop offset="45%"  stop-color="#E58671"/>
+      <stop offset="55%"  stop-color="#A82B1A"/>
+      <stop offset="65%"  stop-color="#E58671"/>
+      <stop offset="80%"  stop-color="#BEE8EF"/>
+      <stop offset="100%" stop-color="#3FB8D4"/>
+    </linearGradient>
+    <linearGradient id="shBandsV" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%"   stop-color="#3FB8D4"/>
+      <stop offset="25%"  stop-color="#BEE8EF"/>
+      <stop offset="45%"  stop-color="#E58671"/>
+      <stop offset="55%"  stop-color="#A82B1A"/>
+      <stop offset="65%"  stop-color="#E58671"/>
+      <stop offset="80%"  stop-color="#BEE8EF"/>
+      <stop offset="100%" stop-color="#3FB8D4"/>
+    </linearGradient>
+    <radialGradient id="shConc" cx="50%" cy="50%" r="60%">
+      <stop offset="0%"   stop-color="#A82B1A"/>
+      <stop offset="55%"  stop-color="#F2A48E"/>
+      <stop offset="100%" stop-color="#3FB8D4"/>
+    </radialGradient>
+
+    <!-- subtle grid pattern for the structured-grid images -->
+    <pattern id="imgGrid" x="0" y="0" width="8" height="8" patternUnits="userSpaceOnUse">
+      <rect x="0" y="0" width="8" height="8" fill="#F4ECDF"/>
+      <path d="M 8 0 L 0 0 0 8" fill="none" stroke="#B5A487" stroke-width="0.3"/>
+    </pattern>
+  </defs>
+
+  <style>
+    .title  { font-size: 22px; font-weight: 700; fill: #1F2933; }
+    .colhd  { font-size: 13px; font-weight: 600; fill: #1F2933; text-anchor: middle; }
+    .lbl    { font-size: 12px; fill: #1F2933; text-anchor: middle; }
+    .small  { font-size: 10.5px; fill: #52606D; text-anchor: middle; }
+    .smallL { font-size: 10.5px; fill: #52606D; text-anchor: start; }
+    .math   { font-style: italic; font-family: Cambria, Georgia, serif; fill: #1F2933; }
+    .mathmid{ font-size: 13px; font-style: italic; font-family: Cambria, Georgia, serif; fill: #1F2933; text-anchor: middle; }
+    .mathsm { font-size: 11px; font-style: italic; font-family: Cambria, Georgia, serif; fill: #1F2933; text-anchor: middle; }
+    .mathL  { font-size: 12px; font-style: italic; font-family: Cambria, Georgia, serif; fill: #1F2933; text-anchor: start; }
+    .callouttitle { font-size: 13px; font-weight: 700; fill: #1F2933; text-anchor: middle; }
+  </style>
+<text x="750.0" y="34" class="title" text-anchor="middle">Stage 2  ·  Dense Per-Material Reconstruction</text>
+
+  <text x="155.0" y="78" class="colhd">forward renderer</text>
+  <rect x="30" y="90" width="250" height="260" rx="10" fill="#FAFBFC" stroke="#52606D" stroke-width="1.1"/>
+  <rect x="40" y="106" width="76" height="56" rx="3" fill="url(#imgGrid)" stroke="#9AA5B1" stroke-width="0.6"/>
+  <polygon points="52,136 100,128 112,144 48,152" fill="rgba(196, 142, 92, 0.40)" stroke="#7A4F46" stroke-width="1.0"/>
+  <circle cx="78" cy="140" r="3" fill="#C0392B" stroke="#FFFFFF" stroke-width="0.8"/>
+  <text x="78.0" y="103" class="small" text-anchor="middle">view k = 1</text>
+  <rect x="40" y="176" width="76" height="56" rx="3" fill="url(#imgGrid)" stroke="#9AA5B1" stroke-width="0.6"/>
+  <polygon points="56,198 100,198 102,220 54,220" fill="rgba(196, 142, 92, 0.40)" stroke="#7A4F46" stroke-width="1.0"/>
+  <circle cx="80" cy="208" r="3" fill="#C0392B" stroke="#FFFFFF" stroke-width="0.8"/>
+  <text x="78.0" y="173" class="small" text-anchor="middle">view k = 2</text>
+  <rect x="40" y="246" width="76" height="56" rx="3" fill="url(#imgGrid)" stroke="#9AA5B1" stroke-width="0.6"/>
+  <polygon points="48,270 100,278 106,292 56,286" fill="rgba(196, 142, 92, 0.40)" stroke="#7A4F46" stroke-width="1.0"/>
+  <circle cx="74" cy="282" r="3" fill="#C0392B" stroke="#FFFFFF" stroke-width="0.8"/>
+  <text x="78.0" y="243" class="small" text-anchor="middle">view k = N</text>
+  <rect x="230" y="128" width="38" height="10" fill="#F2C200" stroke="#A38400" stroke-width="0.8"/>
+  <text x="248" y="124" class="small" fill="#A38400">emitter</text>
+  <polygon points="126,210 126,228 140,219" fill="#52606D"/>
+  <rect x="120" y="213" width="6" height="12" fill="#52606D"/>
+  <polygon points="142,320 262,320 274,300 154,300" fill="#EEE6DD" stroke="#9AA5B1"/>
+  <circle cx="204" cy="310" r="5" fill="#C0392B" stroke="#FFFFFF" stroke-width="0.8"/>
+  <text x="212" y="314" class="mathsm" text-anchor="start" font-weight="700">x</text>
+  <line x1="204" y1="310" x2="252" y2="140" stroke="#D89B00" stroke-width="1.6" marker-end="url(#arYel)"/>
+  <text x="230" y="184" class="mathsm" text-anchor="start" fill="#A38400">ω<tspan baseline-shift="sub" font-size="9">i</tspan></text>
+  <line x1="204" y1="310" x2="140" y2="220" stroke="#2F3640" stroke-width="1.6" marker-end="url(#arDark)"/>
+  <text x="152" y="232" class="mathsm" text-anchor="start">ω<tspan baseline-shift="sub" font-size="9">o</tspan></text>
+  <path d="M 78 140 C 141.0 221.0, 194 308, 204 310" fill="none" stroke="#9AA5B1" stroke-width="0.7" stroke-dasharray="2 2" opacity="0.7"/>
+  <path d="M 80 208 C 142.0 255.0, 194 308, 204 310" fill="none" stroke="#9AA5B1" stroke-width="0.7" stroke-dasharray="2 2" opacity="0.7"/>
+  <path d="M 74 282 C 139.0 292.0, 194 308, 204 310" fill="none" stroke="#9AA5B1" stroke-width="0.7" stroke-dasharray="2 2" opacity="0.7"/>
+  <text x="155.0" y="344" class="small">(world frame)</text>
+  <text x="405.0" y="78" class="colhd">texture latent grid  T<tspan class="math" baseline-shift="sub" font-size="10">z</tspan></text>
+  <rect x="305" y="90" width="200" height="200" rx="6" fill="url(#texGrad)" stroke="#C0392B" stroke-width="1.6"/>
+  <g transform="translate(405.0,84) scale(1.0)">
+    <path d="M 0 -10 C -7 -3, -8 4, -4 9 C -2 6, 0 4, 1 6 C 3 4, 4 2, 4 -1 C 6 1, 7 4, 4 9 C 8 6, 8 -2, 4 -7 C 3 -5, 2 -5, 1 -7 C 0 -10, -1 -10, -3 -7 C -3 -5, -4 -5, -5 -3 Z"
+          fill="#E74C3C" stroke="#C0392B" stroke-width="0.6" stroke-linejoin="round"/>
+    <path d="M 0 -4 C -3 0, -3 5, 0 7 C 3 5, 3 0, 0 -4 Z" fill="#F39C12" opacity="0.9"/>
+  </g>
+  <line x1="325.0" y1="90" x2="325.0" y2="290" stroke="rgba(0,0,0,0.08)" stroke-width="0.5"/>
+  <line x1="305" y1="110.0" x2="505" y2="110.0" stroke="rgba(0,0,0,0.08)" stroke-width="0.5"/>
+  <line x1="345.0" y1="90" x2="345.0" y2="290" stroke="rgba(0,0,0,0.08)" stroke-width="0.5"/>
+  <line x1="305" y1="130.0" x2="505" y2="130.0" stroke="rgba(0,0,0,0.08)" stroke-width="0.5"/>
+  <line x1="365.0" y1="90" x2="365.0" y2="290" stroke="rgba(0,0,0,0.08)" stroke-width="0.5"/>
+  <line x1="305" y1="150.0" x2="505" y2="150.0" stroke="rgba(0,0,0,0.08)" stroke-width="0.5"/>
+  <line x1="385.0" y1="90" x2="385.0" y2="290" stroke="rgba(0,0,0,0.08)" stroke-width="0.5"/>
+  <line x1="305" y1="170.0" x2="505" y2="170.0" stroke="rgba(0,0,0,0.08)" stroke-width="0.5"/>
+  <line x1="405.0" y1="90" x2="405.0" y2="290" stroke="rgba(0,0,0,0.08)" stroke-width="0.5"/>
+  <line x1="305" y1="190.0" x2="505" y2="190.0" stroke="rgba(0,0,0,0.08)" stroke-width="0.5"/>
+  <line x1="425.0" y1="90" x2="425.0" y2="290" stroke="rgba(0,0,0,0.08)" stroke-width="0.5"/>
+  <line x1="305" y1="210.0" x2="505" y2="210.0" stroke="rgba(0,0,0,0.08)" stroke-width="0.5"/>
+  <line x1="445.0" y1="90" x2="445.0" y2="290" stroke="rgba(0,0,0,0.08)" stroke-width="0.5"/>
+  <line x1="305" y1="230.0" x2="505" y2="230.0" stroke="rgba(0,0,0,0.08)" stroke-width="0.5"/>
+  <line x1="465.0" y1="90" x2="465.0" y2="290" stroke="rgba(0,0,0,0.08)" stroke-width="0.5"/>
+  <line x1="305" y1="250.0" x2="505" y2="250.0" stroke="rgba(0,0,0,0.08)" stroke-width="0.5"/>
+  <line x1="485.0" y1="90" x2="485.0" y2="290" stroke="rgba(0,0,0,0.08)" stroke-width="0.5"/>
+  <line x1="305" y1="270.0" x2="505" y2="270.0" stroke="rgba(0,0,0,0.08)" stroke-width="0.5"/>
+  <circle cx="369.0" cy="170.0" r="4" fill="#FFFFFF" stroke="#1F2933" stroke-width="1.0"/>
+  <text x="361.0" y="162.0" class="mathsm" text-anchor="end">u</text>
+  <line x1="373.0" y1="174.0" x2="417.0" y2="196.0" stroke="#1F2933" stroke-width="1.2" stroke-dasharray="3 2" marker-end="url(#arDark)"/>
+  <circle cx="421.0" cy="200.0" r="5" fill="#C0392B" stroke="#FFFFFF" stroke-width="1.2"/>
+  <text x="429.0" y="192.0" class="mathsm" text-anchor="start" fill="#C0392B" font-weight="700">u<tspan baseline-shift="sub" font-size="8">new</tspan></text>
+  <line x1="421.0" y1="200.0" x2="407.0" y2="186.0" stroke="#FFFFFF" stroke-width="1.2"/>
+  <circle cx="407.0" cy="186.0" r="2.4" fill="#FFFFFF" stroke="#1F2933" stroke-width="0.6"/>
+  <line x1="421.0" y1="200.0" x2="435.0" y2="186.0" stroke="#FFFFFF" stroke-width="1.2"/>
+  <circle cx="435.0" cy="186.0" r="2.4" fill="#FFFFFF" stroke="#1F2933" stroke-width="0.6"/>
+  <line x1="421.0" y1="200.0" x2="407.0" y2="214.0" stroke="#FFFFFF" stroke-width="1.2"/>
+  <circle cx="407.0" cy="214.0" r="2.4" fill="#FFFFFF" stroke="#1F2933" stroke-width="0.6"/>
+  <line x1="421.0" y1="200.0" x2="435.0" y2="214.0" stroke="#FFFFFF" stroke-width="1.2"/>
+  <circle cx="435.0" cy="214.0" r="2.4" fill="#FFFFFF" stroke="#1F2933" stroke-width="0.6"/>
+  <text x="309" y="320" class="small" text-anchor="start" font-weight="600">interpolated:</text>
+  <rect x="383" y="308" width="11" height="18" fill="#F6B89F" stroke="#E27D60" stroke-width="0.4"/>
+  <rect x="395" y="308" width="11" height="18" fill="#F4A98E" stroke="#E27D60" stroke-width="0.4"/>
+  <rect x="407" y="308" width="11" height="18" fill="#EE9077" stroke="#E27D60" stroke-width="0.4"/>
+  <rect x="419" y="308" width="11" height="18" fill="#E27D60" stroke="#E27D60" stroke-width="0.4"/>
+  <rect x="431" y="308" width="11" height="18" fill="#F4A98E" stroke="#E27D60" stroke-width="0.4"/>
+  <text x="449" y="320" class="small" fill="#9AA5B1">…</text>
+  <rect x="461" y="308" width="10" height="18" fill="#9DC3E6" stroke="#5B9BD5" stroke-width="0.4"/>
+  <rect x="472" y="308" width="10" height="18" fill="#5B9BD5" stroke="#5B9BD5" stroke-width="0.4"/>
+  <rect x="483" y="308" width="10" height="18" fill="#9DC3E6" stroke="#5B9BD5" stroke-width="0.4"/>
+  <rect x="500" y="308" width="10" height="18" fill="#9DDFA0" stroke="#70AD47" stroke-width="0.4"/>
+  <rect x="511" y="308" width="10" height="18" fill="#70AD47" stroke="#70AD47" stroke-width="0.4"/>
+  <rect x="522" y="308" width="10" height="18" fill="#9DDFA0" stroke="#70AD47" stroke-width="0.4"/>
+  <rect x="539" y="308" width="11" height="18" fill="#D4B3D6" stroke="#7C5499" stroke-width="0.4"/>
+  <rect x="551" y="308" width="11" height="18" fill="#9C7BB2" stroke="#7C5499" stroke-width="0.4"/>
+  <rect x="563" y="308" width="11" height="18" fill="#D4B3D6" stroke="#7C5499" stroke-width="0.4"/>
+  <text x="407" y="304" class="small" font-weight="700" fill="#E27D60" text-anchor="middle">z</text>
+  <text x="472" y="304" class="small" font-weight="700" fill="#5B9BD5" text-anchor="middle">n</text>
+  <text x="511" y="304" class="small" font-weight="700" fill="#70AD47" text-anchor="middle">t</text>
+  <text x="551" y="304" class="small" font-weight="700" fill="#7C5499" text-anchor="middle">g</text>
+  <text x="580" y="200" class="lbl" font-weight="700" fill="#1F2933">Gram–Schmidt</text>
+  <g transform="translate(580,234)">
+    <line x1="0" y1="0" x2="0"  y2="-26" stroke="#C0392B" stroke-width="2.0" marker-end="url(#arRed)"/>
+    <line x1="0" y1="0" x2="22" y2="0"   stroke="#70AD47" stroke-width="2.0" marker-end="url(#arGreen)"/>
+    <line x1="0" y1="0" x2="-14" y2="14" stroke="#3672B0" stroke-width="2.0" marker-end="url(#arBlue)"/>
+    <text x="3"   y="-22" class="mathsm" text-anchor="start" fill="#C0392B">ñ</text>
+    <text x="24"  y="-2"  class="mathsm" text-anchor="start" fill="#70AD47">t̃</text>
+    <text x="-22" y="16"  class="mathsm" text-anchor="end" fill="#3672B0">b̃</text>
+  </g>
+  <text x="580" y="330" class="small" font-weight="600">local frame</text>
+  <line x1="524" y1="404" x2="636" y2="404" stroke="#9AA5B1" stroke-width="1.2"/>
+  <line x1="580" y1="400" x2="606" y2="400" stroke="#70AD47" stroke-width="1.2" marker-end="url(#arGreen)"/>
+  <line x1="580" y1="400" x2="566" y2="414" stroke="#3672B0" stroke-width="1.2" marker-end="url(#arBlue)"/>
+  <line x1="580" y1="400" x2="580" y2="350" stroke="#C0392B" stroke-width="2.2" marker-end="url(#arRed)"/>
+  <text x="586" y="356" class="mathsm" text-anchor="start" fill="#C0392B" font-weight="700">ñ</text>
+  <line x1="580" y1="400" x2="616" y2="374" stroke="#D89B00" stroke-width="1.6" marker-end="url(#arYel)"/>
+  <text x="620" y="378" class="mathsm" text-anchor="start" fill="#A38400">ω<tspan baseline-shift="sub" font-size="9">i</tspan></text>
+  <line x1="580" y1="400" x2="544" y2="368" stroke="#2F3640" stroke-width="1.6" marker-end="url(#arDark)"/>
+  <text x="540" y="372" class="mathsm" text-anchor="end">ω<tspan baseline-shift="sub" font-size="9">o</tspan></text>
+  <rect x="680" y="300" width="175" height="200" rx="10" fill="#FAFBFC" stroke="#52606D" stroke-width="1.1"/>
+  <text x="767.5" y="322" class="lbl" font-weight="600">SH encoding</text>
+  <circle cx="767.5" cy="356" r="13" fill="url(#shRed)"/>
+  <circle cx="735.5" cy="400" r="13" fill="url(#shVCR)"/>
+  <circle cx="767.5" cy="400" r="13" fill="url(#shRed)"/>
+  <circle cx="799.5" cy="400" r="13" fill="url(#shHCR)"/>
+  <circle cx="703.5" cy="444" r="13" fill="url(#shBandsV)"/>
+  <circle cx="735.5" cy="444" r="13" fill="url(#shVCR)"/>
+  <circle cx="767.5" cy="444" r="13" fill="url(#shConc)"/>
+  <circle cx="799.5" cy="444" r="13" fill="url(#shHCR)"/>
+  <circle cx="831.5" cy="444" r="13" fill="url(#shBands)"/>
+  <rect x="890" y="225" width="110" height="240" rx="8" fill="#FFFFFF" stroke="#52606D" stroke-width="1.0"/>
+  <text x="945.0" y="241" class="small" font-weight="600">concat</text>
+  <rect x="902" y="261" width="7" height="14" fill="#F6B89F" stroke="#E27D60" stroke-width="0.4"/>
+  <rect x="910" y="261" width="7" height="14" fill="#F4A98E" stroke="#E27D60" stroke-width="0.4"/>
+  <rect x="918" y="261" width="7" height="14" fill="#EE9077" stroke="#E27D60" stroke-width="0.4"/>
+  <rect x="926" y="261" width="7" height="14" fill="#E27D60" stroke="#E27D60" stroke-width="0.4"/>
+  <rect x="934" y="261" width="7" height="14" fill="#F4A98E" stroke="#E27D60" stroke-width="0.4"/>
+  <rect x="942" y="261" width="7" height="14" fill="#F6B89F" stroke="#E27D60" stroke-width="0.4"/>
+  <text x="954" y="272" class="mathsm" text-anchor="start" fill="#C0392B" font-weight="700">z</text>
+  <rect x="902" y="289" width="7" height="14" fill="#D4B3D6" stroke="#9C7BB2" stroke-width="0.4"/>
+  <rect x="910" y="289" width="7" height="14" fill="#C9A8CC" stroke="#9C7BB2" stroke-width="0.4"/>
+  <rect x="918" y="289" width="7" height="14" fill="#D4B3D6" stroke="#9C7BB2" stroke-width="0.4"/>
+  <rect x="926" y="289" width="7" height="14" fill="#BC95C0" stroke="#9C7BB2" stroke-width="0.4"/>
+  <rect x="934" y="289" width="7" height="14" fill="#D4B3D6" stroke="#9C7BB2" stroke-width="0.4"/>
+  <rect x="942" y="289" width="7" height="14" fill="#BC95C0" stroke="#9C7BB2" stroke-width="0.4"/>
+  <text x="954" y="300" class="mathsm" text-anchor="start">γ(ω<tspan baseline-shift="sub" font-size="8">i</tspan>)</text>
+  <rect x="902" y="309" width="7" height="14" fill="#D4B3D6" stroke="#9C7BB2" stroke-width="0.4"/>
+  <rect x="910" y="309" width="7" height="14" fill="#C9A8CC" stroke="#9C7BB2" stroke-width="0.4"/>
+  <rect x="918" y="309" width="7" height="14" fill="#D4B3D6" stroke="#9C7BB2" stroke-width="0.4"/>
+  <rect x="926" y="309" width="7" height="14" fill="#BC95C0" stroke="#9C7BB2" stroke-width="0.4"/>
+  <rect x="934" y="309" width="7" height="14" fill="#D4B3D6" stroke="#9C7BB2" stroke-width="0.4"/>
+  <rect x="942" y="309" width="7" height="14" fill="#BC95C0" stroke="#9C7BB2" stroke-width="0.4"/>
+  <text x="954" y="320" class="mathsm" text-anchor="start">γ(ω<tspan baseline-shift="sub" font-size="8">o</tspan>)</text>
+  <rect x="902" y="329" width="7" height="14" fill="#D4B3D6" stroke="#9C7BB2" stroke-width="0.4"/>
+  <rect x="910" y="329" width="7" height="14" fill="#C9A8CC" stroke="#9C7BB2" stroke-width="0.4"/>
+  <rect x="918" y="329" width="7" height="14" fill="#D4B3D6" stroke="#9C7BB2" stroke-width="0.4"/>
+  <rect x="926" y="329" width="7" height="14" fill="#BC95C0" stroke="#9C7BB2" stroke-width="0.4"/>
+  <rect x="934" y="329" width="7" height="14" fill="#D4B3D6" stroke="#9C7BB2" stroke-width="0.4"/>
+  <rect x="942" y="329" width="7" height="14" fill="#BC95C0" stroke="#9C7BB2" stroke-width="0.4"/>
+  <text x="954" y="340" class="mathsm" text-anchor="start">γ(ñ)</text>
+  <rect x="1020" y="180" width="440" height="300" rx="12" fill="white" stroke="#7C8087" stroke-width="1.8" stroke-dasharray="6 3"/>
+  <g transform="translate(1240.0,174) scale(1.1)">
+    <g stroke="#3498DB" stroke-width="1.6" stroke-linecap="round" fill="none">
+      <line x1="0" y1="-10" x2="0" y2="10"/>
+      <line x1="-9" y1="-5" x2="9" y2="5"/>
+      <line x1="-9" y1="5" x2="9" y2="-5"/>
+      <line x1="0" y1="-10" x2="-3" y2="-7"/>
+      <line x1="0" y1="-10" x2="3" y2="-7"/>
+      <line x1="0" y1="10" x2="-3" y2="7"/>
+      <line x1="0" y1="10" x2="3" y2="7"/>
+      <line x1="-9" y1="-5" x2="-7" y2="-2"/>
+      <line x1="-9" y1="-5" x2="-7" y2="-8"/>
+      <line x1="9" y1="5" x2="7" y2="2"/>
+      <line x1="9" y1="5" x2="7" y2="8"/>
+      <line x1="-9" y1="5" x2="-7" y2="2"/>
+      <line x1="-9" y1="5" x2="-7" y2="8"/>
+      <line x1="9" y1="-5" x2="7" y2="-2"/>
+      <line x1="9" y1="-5" x2="7" y2="-8"/>
+    </g>
+  </g>
+  <text x="1240.0" y="208" class="lbl" font-weight="700" font-size="17" fill="#3D4852">MLP decoder  D<tspan class="math" baseline-shift="sub" font-size="11">θ</tspan></text>
+  <rect x="1126" y="280" width="36" height="150" rx="18" fill="#DDE0E4" stroke="#5C636A" stroke-width="0.8"/>
+  <text x="1144.0" y="446" class="small" fill="#52606D">256</text>
+  <rect x="1190" y="280" width="36" height="150" rx="18" fill="#B7BBC1" stroke="#5C636A" stroke-width="0.8"/>
+  <text x="1208.0" y="446" class="small" fill="#52606D">256</text>
+  <rect x="1254" y="280" width="36" height="150" rx="18" fill="#7C8087" stroke="#5C636A" stroke-width="0.8"/>
+  <text x="1272.0" y="446" class="small" fill="#52606D">256</text>
+  <rect x="1318" y="280" width="36" height="150" rx="18" fill="#A7ABB1" stroke="#5C636A" stroke-width="0.8"/>
+  <text x="1336.0" y="446" class="small" fill="#52606D">256</text>
+  <line x1="1104" y1="355.0" x2="1104" y2="250" stroke="#1F2933" stroke-width="1.6"/>
+  <line x1="1104" y1="250" x2="1240.0" y2="250" stroke="#1F2933" stroke-width="1.6"/>
+  <line x1="1240.0" y1="250" x2="1240.0" y2="347.0" stroke="#1F2933" stroke-width="1.6" marker-end="url(#arDark)"/>
+  <text x="1172.0" y="244" class="small" fill="#1F2933">skip</text>
+  <text x="1240.0" y="359.0" class="lbl" font-weight="700" fill="#1F2933" text-anchor="middle">+</text>
+  <line x1="1000" y1="355.0" x2="1104" y2="355.0" stroke="#52606D" stroke-width="1.8" marker-end="url(#arL)"/>
+  <line x1="1104" y1="355.0" x2="1126" y2="355.0" stroke="#52606D" stroke-width="1.4"/>
+  <line x1="1162" y1="355.0" x2="1190" y2="355.0" stroke="#52606D" stroke-width="1.4"/>
+  <line x1="1226" y1="355.0" x2="1254" y2="355.0" stroke="#52606D" stroke-width="1.4"/>
+  <line x1="1290" y1="355.0" x2="1318" y2="355.0" stroke="#52606D" stroke-width="1.4"/>
+  <line x1="1360" y1="355.0" x2="1410" y2="355.0" stroke="#52606D" stroke-width="1.8" marker-end="url(#arL)"/>
+  <text x="1416" y="360.0" class="mathL" font-weight="700" font-size="16">f<tspan baseline-shift="sub" font-size="11">r</tspan></text>
+  <text x="1392" y="379.0" class="small">BRDF</text>
+  <rect x="310" y="590" width="760" height="180" rx="12" fill="#FBFBFD" stroke="#9AA5B1" stroke-dasharray="3 3" stroke-width="1.2"/>
+  <text x="690.0" y="612" class="callouttitle">Neural Offset Module</text>
+  <g transform="translate(690.0,584) scale(1.0)">
+    <path d="M 0 -10 C -7 -3, -8 4, -4 9 C -2 6, 0 4, 1 6 C 3 4, 4 2, 4 -1 C 6 1, 7 4, 4 9 C 8 6, 8 -2, 4 -7 C 3 -5, 2 -5, 1 -7 C 0 -10, -1 -10, -3 -7 C -3 -5, -4 -5, -5 -3 Z"
+          fill="#E74C3C" stroke="#C0392B" stroke-width="0.6" stroke-linejoin="round"/>
+    <path d="M 0 -4 C -3 0, -3 5, 0 7 C 3 5, 3 0, 0 -4 Z" fill="#F39C12" opacity="0.9"/>
+  </g>
+  <text x="360" y="652" class="small" font-weight="600" text-anchor="middle">inputs</text>
+  <rect x="332" y="662" width="9" height="14" fill="#D4B3D6" stroke="#7C5499" stroke-width="0.4"/>
+  <rect x="342" y="662" width="9" height="14" fill="#9C7BB2" stroke="#7C5499" stroke-width="0.4"/>
+  <rect x="352" y="662" width="9" height="14" fill="#D4B3D6" stroke="#7C5499" stroke-width="0.4"/>
+  <text x="368" y="673" class="mathsm" text-anchor="start" fill="#7C5499" font-weight="700">g</text>
+  <line x1="338" y1="690" x2="382" y2="690" stroke="#D89B00" stroke-width="1.6" marker-end="url(#arYel)"/>
+  <text x="388" y="694" class="mathsm" text-anchor="start" fill="#A38400">ω<tspan baseline-shift="sub" font-size="8">i</tspan></text>
+  <line x1="338" y1="712" x2="382" y2="712" stroke="#2F3640" stroke-width="1.6" marker-end="url(#arDark)"/>
+  <text x="388" y="716" class="mathsm" text-anchor="start">ω<tspan baseline-shift="sub" font-size="8">o</tspan></text>
+  <text x="510" y="646" class="small" font-weight="600">SH</text>
+  <circle cx="510" cy="660" r="7" fill="url(#shRed)"/>
+  <circle cx="492" cy="680" r="7" fill="url(#shVCR)"/>
+  <circle cx="510" cy="680" r="7" fill="url(#shRed)"/>
+  <circle cx="528" cy="680" r="7" fill="url(#shHCR)"/>
+  <circle cx="474" cy="700" r="7" fill="url(#shBandsV)"/>
+  <circle cx="492" cy="700" r="7" fill="url(#shVCR)"/>
+  <circle cx="510" cy="700" r="7" fill="url(#shConc)"/>
+  <circle cx="528" cy="700" r="7" fill="url(#shHCR)"/>
+  <circle cx="546" cy="700" r="7" fill="url(#shBands)"/>
+  <line x1="566" y1="680" x2="596" y2="680" stroke="#9AA5B1" stroke-width="1.2" marker-end="url(#arL)"/>
+  <text x="658" y="660" class="small" font-weight="600" text-anchor="middle">concat</text>
+  <rect x="630" y="666" width="6" height="12" fill="#D4B3D6" stroke="#9C7BB2" stroke-width="0.3"/>
+  <rect x="637" y="666" width="6" height="12" fill="#9C7BB2" stroke="#9C7BB2" stroke-width="0.3"/>
+  <rect x="644" y="666" width="6" height="12" fill="#D4B3D6" stroke="#9C7BB2" stroke-width="0.3"/>
+  <rect x="651" y="666" width="6" height="12" fill="#BC95C0" stroke="#9C7BB2" stroke-width="0.3"/>
+  <rect x="658" y="666" width="6" height="12" fill="#9C7BB2" stroke="#9C7BB2" stroke-width="0.3"/>
+  <rect x="665" y="666" width="6" height="12" fill="#D4B3D6" stroke="#9C7BB2" stroke-width="0.3"/>
+  <rect x="630" y="682" width="6" height="12" fill="#D4B3D6" stroke="#9C7BB2" stroke-width="0.3"/>
+  <rect x="637" y="682" width="6" height="12" fill="#C9A8CC" stroke="#9C7BB2" stroke-width="0.3"/>
+  <rect x="644" y="682" width="6" height="12" fill="#D4B3D6" stroke="#9C7BB2" stroke-width="0.3"/>
+  <rect x="651" y="682" width="6" height="12" fill="#BC95C0" stroke="#9C7BB2" stroke-width="0.3"/>
+  <rect x="658" y="682" width="6" height="12" fill="#D4B3D6" stroke="#9C7BB2" stroke-width="0.3"/>
+  <rect x="665" y="682" width="6" height="12" fill="#BC95C0" stroke="#9C7BB2" stroke-width="0.3"/>
+  <rect x="630" y="698" width="6" height="12" fill="#D4B3D6" stroke="#9C7BB2" stroke-width="0.3"/>
+  <rect x="637" y="698" width="6" height="12" fill="#C9A8CC" stroke="#9C7BB2" stroke-width="0.3"/>
+  <rect x="644" y="698" width="6" height="12" fill="#D4B3D6" stroke="#9C7BB2" stroke-width="0.3"/>
+  <rect x="651" y="698" width="6" height="12" fill="#BC95C0" stroke="#9C7BB2" stroke-width="0.3"/>
+  <rect x="658" y="698" width="6" height="12" fill="#D4B3D6" stroke="#9C7BB2" stroke-width="0.3"/>
+  <rect x="665" y="698" width="6" height="12" fill="#BC95C0" stroke="#9C7BB2" stroke-width="0.3"/>
+  <line x1="674" y1="688" x2="694" y2="688" stroke="#52606D" stroke-width="1.4" marker-end="url(#arL)"/>
+  <rect x="700" y="640" width="160" height="100" rx="10" fill="white" stroke="#6B5B95" stroke-width="1.4"/>
+  <g transform="translate(780.0,634) scale(0.8)">
+    <path d="M 0 -10 C -7 -3, -8 4, -4 9 C -2 6, 0 4, 1 6 C 3 4, 4 2, 4 -1 C 6 1, 7 4, 4 9 C 8 6, 8 -2, 4 -7 C 3 -5, 2 -5, 1 -7 C 0 -10, -1 -10, -3 -7 C -3 -5, -4 -5, -5 -3 Z"
+          fill="#E74C3C" stroke="#C0392B" stroke-width="0.6" stroke-linejoin="round"/>
+    <path d="M 0 -4 C -3 0, -3 5, 0 7 C 3 5, 3 0, 0 -4 Z" fill="#F39C12" opacity="0.9"/>
+  </g>
+  <text x="780.0" y="654" class="small" font-weight="700">Neural Geometry Decoder</text>
+  <rect x="726" y="668" width="24" height="56" rx="12" fill="#C7BAE0" stroke="#4F3F76" stroke-width="0.8"/>
+  <rect x="768" y="668" width="24" height="56" rx="12" fill="#9E89C4" stroke="#4F3F76" stroke-width="0.8"/>
+  <rect x="810" y="668" width="24" height="56" rx="12" fill="#A892C8" stroke="#4F3F76" stroke-width="0.8"/>
+  <line x1="696" y1="696.0" x2="726" y2="696.0" stroke="#52606D" stroke-width="1.4" marker-end="url(#arL)"/>
+  <line x1="750" y1="696.0" x2="768" y2="696.0" stroke="#52606D" stroke-width="1.4"/>
+  <line x1="792" y1="696.0" x2="810" y2="696.0" stroke="#52606D" stroke-width="1.4"/>
+  <line x1="834" y1="696.0" x2="896" y2="696.0" stroke="#52606D" stroke-width="1.6" marker-end="url(#arL)"/>
+  <rect x="900"     y="686.0" width="18" height="18" fill="#F6B89F" stroke="#E27D60" stroke-width="0.6"/>
+  <rect x="920" y="686.0" width="18" height="18" fill="#E27D60" stroke="#E27D60" stroke-width="0.6"/>
+  <text x="946" y="700.0" class="mathL" font-weight="700">Δu</text>
+  <rect x="401.0" y="180.0" width="40" height="40" fill="none" stroke="#1F2933" stroke-dasharray="3 2" stroke-width="0.8"/>
+  <line x1="401.0" y1="220.0" x2="350" y2="590" stroke="#1F2933" stroke-dasharray="3 2" stroke-width="0.8"/>
+  <line x1="441.0" y1="220.0" x2="1030" y2="590" stroke="#1F2933" stroke-dasharray="3 2" stroke-width="0.8"/>
+  <line x1="286" y1="170.0" x2="299" y2="170.0" stroke="#52606D" stroke-width="1.6" marker-end="url(#arL)"/>
+  <text x="292.5" y="164.0" class="mathsm">u</text>
+  <path d="M 286 272.0 C 360 272.0, 480 390, 516 392" fill="none" stroke="#52606D" stroke-width="1.6" marker-end="url(#arL)"/>
+  <text x="340" y="266.0" class="mathsm">ω<tspan baseline-shift="sub" font-size="8">i</tspan>, ω<tspan baseline-shift="sub" font-size="8">o</tspan></text>
+  <path d="M 284 311.0 C 340 550, 278 570, 334 690" fill="none" stroke="#D89B00" stroke-width="1.4" marker-end="url(#arYel)"/>
+  <path d="M 284 324.0 C 340 560, 278 580, 334 712" fill="none" stroke="#2F3640" stroke-width="1.4" marker-end="url(#arDark)"/>
+  <path d="M 497.0 317.0 L 517 317.0 L 517 192 L 532 192" fill="none" stroke="#5B9BD5" stroke-width="1.6" marker-end="url(#arBlue)"/>
+  <text x="521" y="258.5" class="mathsm" text-anchor="start" fill="#5B9BD5" font-weight="700">n, t</text>
+  <path d="M 551 329.0 C 551 517.0, 252 629, 328 669" fill="none" stroke="#7C5499" stroke-width="1.6" marker-end="url(#arRed)"/>
+  <text x="441.5" y="609" class="mathsm" text-anchor="middle" fill="#7C5499" font-weight="700">g</text>
+  <path d="M 407 317.0 C 407 52, 830 52, 886 268.0" fill="none" stroke="#E27D60" stroke-width="2.0" stroke-dasharray="6 4" marker-end="url(#arOrange)"/>
+  <text x="648.5" y="46" class="small" fill="#C0392B" font-weight="700">z (latent)</text>
+  <line x1="580" y1="260" x2="580" y2="312" stroke="#52606D" stroke-width="1.4" stroke-dasharray="3 3" marker-end="url(#arL)"/>
+  <path d="M 630 370 C 660 356, 634 356, 670 356" fill="none" stroke="#C0392B" stroke-width="1.4" marker-end="url(#arL)"/>
+  <text x="666" y="360" class="mathsm" text-anchor="end" fill="#C0392B" font-weight="700">ñ</text>
+  <path d="M 630 370 C 660 400, 634 400, 670 400" fill="none" stroke="#A38400" stroke-width="1.4" marker-end="url(#arL)"/>
+  <text x="666" y="404" class="mathsm" text-anchor="end" fill="#A38400" font-weight="700">ω<tspan baseline-shift="sub" font-size="8">i</tspan></text>
+  <path d="M 630 370 C 660 444, 634 444, 670 444" fill="none" stroke="#2F3640" stroke-width="1.4" marker-end="url(#arL)"/>
+  <text x="666" y="448" class="mathsm" text-anchor="end" fill="#2F3640" font-weight="700">ω<tspan baseline-shift="sub" font-size="8">o</tspan></text>
+  <path d="M 859 356 C 889 296.0, 860 296.0, 886 296.0" fill="none" stroke="#A38400" stroke-width="1.4" marker-end="url(#arL)"/>
+  <path d="M 859 400 C 889 316.0, 860 316.0, 886 316.0" fill="none" stroke="#2F3640" stroke-width="1.4" marker-end="url(#arL)"/>
+  <path d="M 859 444 C 889 336.0, 860 336.0, 886 336.0" fill="none" stroke="#C0392B" stroke-width="1.4" marker-end="url(#arL)"/>
+  <line x1="1002" y1="292.0" x2="1114" y2="355.0" stroke="#52606D" stroke-width="1.8" marker-end="url(#arL)"/>
+</svg>

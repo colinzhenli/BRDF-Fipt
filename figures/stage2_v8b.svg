@@ -1,0 +1,385 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1500 800" font-family="Helvetica Neue, Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#52606D"/>
+    </marker>
+    <marker id="arL" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#9AA5B1"/>
+    </marker>
+    <marker id="arRed" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#C0392B"/>
+    </marker>
+    <marker id="arOrange" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#E27D60"/>
+    </marker>
+    <marker id="arGreen" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#70AD47"/>
+    </marker>
+    <marker id="arYel" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#D89B00"/>
+    </marker>
+    <marker id="arDark" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#2F3640"/>
+    </marker>
+    <marker id="arBlue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#3672B0"/>
+    </marker>
+    <marker id="arGrey" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#7C8087"/>
+    </marker>
+
+    <linearGradient id="texGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%"  stop-color="#FBD8B2"/>
+      <stop offset="50%" stop-color="#D88A6B"/>
+      <stop offset="100%" stop-color="#7A4F46"/>
+    </linearGradient>
+
+    <!-- SH ball gradients (same as stage 1) -->
+    <radialGradient id="shRed" cx="50%" cy="35%" r="70%">
+      <stop offset="0%"  stop-color="#FF9886"/>
+      <stop offset="100%" stop-color="#B02B1A"/>
+    </radialGradient>
+    <linearGradient id="shVCR" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%"  stop-color="#3FB8D4"/>
+      <stop offset="40%" stop-color="#BEE8EF"/>
+      <stop offset="60%" stop-color="#F2A48E"/>
+      <stop offset="100%" stop-color="#A82B1A"/>
+    </linearGradient>
+    <linearGradient id="shHCR" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%"  stop-color="#3FB8D4"/>
+      <stop offset="40%" stop-color="#BEE8EF"/>
+      <stop offset="60%" stop-color="#F2A48E"/>
+      <stop offset="100%" stop-color="#A82B1A"/>
+    </linearGradient>
+    <linearGradient id="shBands" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%"   stop-color="#3FB8D4"/>
+      <stop offset="25%"  stop-color="#BEE8EF"/>
+      <stop offset="45%"  stop-color="#E58671"/>
+      <stop offset="55%"  stop-color="#A82B1A"/>
+      <stop offset="65%"  stop-color="#E58671"/>
+      <stop offset="80%"  stop-color="#BEE8EF"/>
+      <stop offset="100%" stop-color="#3FB8D4"/>
+    </linearGradient>
+    <linearGradient id="shBandsV" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%"   stop-color="#3FB8D4"/>
+      <stop offset="25%"  stop-color="#BEE8EF"/>
+      <stop offset="45%"  stop-color="#E58671"/>
+      <stop offset="55%"  stop-color="#A82B1A"/>
+      <stop offset="65%"  stop-color="#E58671"/>
+      <stop offset="80%"  stop-color="#BEE8EF"/>
+      <stop offset="100%" stop-color="#3FB8D4"/>
+    </linearGradient>
+    <radialGradient id="shConc" cx="50%" cy="50%" r="60%">
+      <stop offset="0%"   stop-color="#A82B1A"/>
+      <stop offset="55%"  stop-color="#F2A48E"/>
+      <stop offset="100%" stop-color="#3FB8D4"/>
+    </radialGradient>
+
+    <radialGradient id="patch" cx="50%" cy="40%" r="65%">
+      <stop offset="0%"  stop-color="#FBF0E1"/>
+      <stop offset="100%" stop-color="#E6D5C1"/>
+    </radialGradient>
+  </defs>
+
+  <style>
+    .title  { font-size: 22px; font-weight: 700; fill: #1F2933; }
+    .colhd  { font-size: 13px; font-weight: 600; fill: #1F2933; text-anchor: middle; }
+    .lbl    { font-size: 12px; fill: #1F2933; text-anchor: middle; }
+    .small  { font-size: 10.5px; fill: #52606D; text-anchor: middle; }
+    .smallL { font-size: 10.5px; fill: #52606D; text-anchor: start; }
+    .math   { font-style: italic; font-family: Cambria, Georgia, serif; fill: #1F2933; }
+    .mathmid{ font-size: 13px; font-style: italic; font-family: Cambria, Georgia, serif; fill: #1F2933; text-anchor: middle; }
+    .mathsm { font-size: 11px; font-style: italic; font-family: Cambria, Georgia, serif; fill: #1F2933; text-anchor: middle; }
+    .mathL  { font-size: 12px; font-style: italic; font-family: Cambria, Georgia, serif; fill: #1F2933; text-anchor: start; }
+    .badgeR { font-size: 10px; font-weight: 700; letter-spacing: 1.2px; fill: #C0392B; text-anchor: middle; }
+    .badgeG { font-size: 10px; font-weight: 700; letter-spacing: 1.4px; fill: #3D4852; text-anchor: middle; }
+    .kbatch { font-size: 11px; font-weight: 700; fill: #52606D; text-anchor: middle; font-style: italic; font-family: Cambria, Georgia, serif; }
+    .callouttitle { font-size: 14px; font-weight: 700; fill: #1F2933; text-anchor: start; }
+  </style>
+<text x="750.0" y="34" class="title" text-anchor="middle">Stage 2  ·  Dense Per-Material Reconstruction</text>
+
+  <text x="145.0" y="78" class="colhd">forward renderer</text>
+  <rect x="30" y="90" width="230" height="95" rx="8" fill="#FBF7F2" stroke="#9AA5B1" stroke-width="0.8"/>
+  <text x="145.0" y="106" class="small" font-weight="600">target views</text>
+  <rect x="46" y="114" width="56" height="44" rx="3" fill="url(#patch)" stroke="#9AA5B1" stroke-width="0.5"/>
+  <g><circle cx="78.2" cy="131.0" r="0.5" fill="#2F3640" opacity="0.85"/>
+        <circle cx="67.4" cy="146.5" r="0.7" fill="#2F3640" opacity="0.85"/>
+        <circle cx="77.4" cy="125.0" r="0.7" fill="#2F3640" opacity="0.85"/>
+        <circle cx="68.3" cy="124.3" r="0.6" fill="#2F3640" opacity="0.85"/>
+        <circle cx="56.5" cy="147.9" r="0.8" fill="#2F3640" opacity="0.85"/>
+        <circle cx="74.7" cy="144.8" r="0.8" fill="#2F3640" opacity="0.85"/>
+        <circle cx="65.2" cy="148.5" r="0.8" fill="#2F3640" opacity="0.85"/>
+        <circle cx="93.7" cy="128.7" r="0.7" fill="#2F3640" opacity="0.85"/>
+        <circle cx="55.3" cy="145.9" r="0.8" fill="#2F3640" opacity="0.85"/>
+        <circle cx="87.4" cy="132.0" r="1.0" fill="#2F3640" opacity="0.85"/>
+        <circle cx="84.9" cy="146.2" r="0.5" fill="#2F3640" opacity="0.85"/>
+        <circle cx="88.0" cy="150.7" r="0.9" fill="#2F3640" opacity="0.85"/>
+        <circle cx="71.6" cy="139.8" r="0.6" fill="#2F3640" opacity="0.85"/>
+        <circle cx="60.9" cy="148.7" r="0.8" fill="#2F3640" opacity="0.85"/>
+        <circle cx="90.2" cy="127.5" r="0.7" fill="#2F3640" opacity="0.85"/>
+        <circle cx="87.9" cy="124.4" r="0.8" fill="#2F3640" opacity="0.85"/>
+        <circle cx="72.0" cy="127.6" r="0.9" fill="#2F3640" opacity="0.85"/>
+        <circle cx="80.8" cy="132.8" r="0.9" fill="#2F3640" opacity="0.85"/>
+        <circle cx="94.6" cy="122.7" r="1.0" fill="#2F3640" opacity="0.85"/>
+        <circle cx="64.0" cy="133.8" r="0.6" fill="#2F3640" opacity="0.85"/></g>
+  <text x="74" y="170" class="small" font-weight="600">k=1</text>
+  <rect x="116" y="114" width="56" height="44" rx="3" fill="url(#patch)" stroke="#9AA5B1" stroke-width="0.5"/>
+  <g><circle cx="139.6" cy="145.7" r="0.7" fill="#2F3640" opacity="0.85"/>
+        <circle cx="142.2" cy="127.4" r="0.8" fill="#2F3640" opacity="0.85"/>
+        <circle cx="133.4" cy="151.3" r="0.6" fill="#2F3640" opacity="0.85"/>
+        <circle cx="163.9" cy="122.9" r="0.7" fill="#2F3640" opacity="0.85"/>
+        <circle cx="146.3" cy="150.6" r="0.9" fill="#2F3640" opacity="0.85"/>
+        <circle cx="135.8" cy="140.3" r="0.9" fill="#2F3640" opacity="0.85"/>
+        <circle cx="130.0" cy="146.3" r="0.9" fill="#2F3640" opacity="0.85"/>
+        <circle cx="164.1" cy="126.9" r="0.9" fill="#2F3640" opacity="0.85"/>
+        <circle cx="142.2" cy="150.8" r="0.9" fill="#2F3640" opacity="0.85"/>
+        <circle cx="123.2" cy="150.3" r="0.9" fill="#2F3640" opacity="0.85"/>
+        <circle cx="134.7" cy="151.1" r="0.6" fill="#2F3640" opacity="0.85"/>
+        <circle cx="163.0" cy="139.1" r="0.5" fill="#2F3640" opacity="0.85"/>
+        <circle cx="157.4" cy="130.1" r="0.5" fill="#2F3640" opacity="0.85"/>
+        <circle cx="129.5" cy="122.6" r="0.7" fill="#2F3640" opacity="0.85"/>
+        <circle cx="134.8" cy="149.6" r="0.7" fill="#2F3640" opacity="0.85"/>
+        <circle cx="127.0" cy="119.9" r="0.9" fill="#2F3640" opacity="0.85"/>
+        <circle cx="127.1" cy="150.8" r="0.9" fill="#2F3640" opacity="0.85"/>
+        <circle cx="147.0" cy="138.3" r="0.6" fill="#2F3640" opacity="0.85"/>
+        <circle cx="161.4" cy="129.8" r="0.6" fill="#2F3640" opacity="0.85"/>
+        <circle cx="147.4" cy="147.8" r="1.0" fill="#2F3640" opacity="0.85"/></g>
+  <text x="144" y="170" class="small" font-weight="600">k=2</text>
+  <rect x="186" y="114" width="56" height="44" rx="3" fill="url(#patch)" stroke="#9AA5B1" stroke-width="0.5"/>
+  <g><circle cx="234.1" cy="137.3" r="0.8" fill="#2F3640" opacity="0.85"/>
+        <circle cx="212.9" cy="125.9" r="0.5" fill="#2F3640" opacity="0.85"/>
+        <circle cx="209.6" cy="136.1" r="0.9" fill="#2F3640" opacity="0.85"/>
+        <circle cx="207.1" cy="151.2" r="0.6" fill="#2F3640" opacity="0.85"/>
+        <circle cx="220.8" cy="120.7" r="0.6" fill="#2F3640" opacity="0.85"/>
+        <circle cx="197.9" cy="151.5" r="0.8" fill="#2F3640" opacity="0.85"/>
+        <circle cx="216.3" cy="147.7" r="1.0" fill="#2F3640" opacity="0.85"/>
+        <circle cx="208.7" cy="147.7" r="0.6" fill="#2F3640" opacity="0.85"/>
+        <circle cx="222.8" cy="146.6" r="0.7" fill="#2F3640" opacity="0.85"/>
+        <circle cx="220.7" cy="143.4" r="0.5" fill="#2F3640" opacity="0.85"/>
+        <circle cx="225.3" cy="126.1" r="0.6" fill="#2F3640" opacity="0.85"/>
+        <circle cx="202.8" cy="129.0" r="1.0" fill="#2F3640" opacity="0.85"/>
+        <circle cx="211.1" cy="147.6" r="0.6" fill="#2F3640" opacity="0.85"/>
+        <circle cx="203.1" cy="120.2" r="0.7" fill="#2F3640" opacity="0.85"/>
+        <circle cx="233.5" cy="136.7" r="0.9" fill="#2F3640" opacity="0.85"/>
+        <circle cx="199.5" cy="121.7" r="0.6" fill="#2F3640" opacity="0.85"/>
+        <circle cx="233.6" cy="142.4" r="1.0" fill="#2F3640" opacity="0.85"/>
+        <circle cx="225.9" cy="128.3" r="0.6" fill="#2F3640" opacity="0.85"/>
+        <circle cx="218.9" cy="124.4" r="0.7" fill="#2F3640" opacity="0.85"/>
+        <circle cx="215.6" cy="128.0" r="1.0" fill="#2F3640" opacity="0.85"/></g>
+  <text x="214" y="170" class="small" font-weight="600">k=N</text>
+  <line x1="145.0" y1="187" x2="145.0" y2="201" stroke="#9AA5B1" stroke-width="1.4" marker-end="url(#arL)"/>
+  <rect x="40" y="197" width="230" height="133" rx="10" fill="#F4F6F8" stroke="#9AA5B1" stroke-width="1.1" opacity="0.85"/>
+    <rect x="35" y="202" width="230" height="133" rx="10" fill="#F4F6F8" stroke="#9AA5B1" stroke-width="1.1" opacity="0.85"/>
+  <rect x="30" y="207" width="230" height="133" rx="10" fill="#FAFBFC" stroke="#52606D" stroke-width="1.1"/>
+  <text x="145.0" y="223" class="small" font-weight="600">renderer</text>
+  <rect x="156" y="225" width="38" height="10" fill="#F2C200" stroke="#A38400" stroke-width="0.8"/>
+  <text x="174" y="221" class="small" fill="#A38400">emitter</text>
+  <polygon points="50,283 50,301 64,292" fill="#52606D"/>
+  <rect x="44" y="286" width="6" height="12" fill="#52606D"/>
+  <polygon points="74,323 194,323 206,303 86,303" fill="#EEE6DD" stroke="#9AA5B1"/>
+  <circle cx="132" cy="313" r="4" fill="#C0392B"/>
+  <text x="140" y="317" class="mathsm" text-anchor="start">x</text>
+  <line x1="132" y1="313" x2="178" y2="237" stroke="#D89B00" stroke-width="1.6" marker-end="url(#arYel)"/>
+  <text x="156" y="269" class="mathsm" text-anchor="start" fill="#A38400">ω<tspan baseline-shift="sub" font-size="9">i</tspan></text>
+  <line x1="132" y1="313" x2="64" y2="293" stroke="#2F3640" stroke-width="1.6" marker-end="url(#arDark)"/>
+  <text x="74" y="303" class="mathsm" text-anchor="start">ω<tspan baseline-shift="sub" font-size="9">o</tspan></text>
+  <text x="145.0" y="336" class="small">x, ω<tspan baseline-shift="sub" font-size="8">i</tspan>, ω<tspan baseline-shift="sub" font-size="8">o</tspan>   (world)</text>
+  <text x="145.0" y="364" class="kbatch">× K  batch</text>
+  <text x="382.0" y="78" class="colhd">texture latent grid  T<tspan class="math" baseline-shift="sub" font-size="10">z</tspan></text>
+  <rect x="282" y="90" width="200" height="200" rx="6" fill="url(#texGrad)" stroke="#C0392B" stroke-width="1.6"/>
+  <line x1="302.0" y1="90" x2="302.0" y2="290" stroke="rgba(0,0,0,0.08)" stroke-width="0.5"/>
+  <line x1="282" y1="110.0" x2="482" y2="110.0" stroke="rgba(0,0,0,0.08)" stroke-width="0.5"/>
+  <line x1="322.0" y1="90" x2="322.0" y2="290" stroke="rgba(0,0,0,0.08)" stroke-width="0.5"/>
+  <line x1="282" y1="130.0" x2="482" y2="130.0" stroke="rgba(0,0,0,0.08)" stroke-width="0.5"/>
+  <line x1="342.0" y1="90" x2="342.0" y2="290" stroke="rgba(0,0,0,0.08)" stroke-width="0.5"/>
+  <line x1="282" y1="150.0" x2="482" y2="150.0" stroke="rgba(0,0,0,0.08)" stroke-width="0.5"/>
+  <line x1="362.0" y1="90" x2="362.0" y2="290" stroke="rgba(0,0,0,0.08)" stroke-width="0.5"/>
+  <line x1="282" y1="170.0" x2="482" y2="170.0" stroke="rgba(0,0,0,0.08)" stroke-width="0.5"/>
+  <line x1="382.0" y1="90" x2="382.0" y2="290" stroke="rgba(0,0,0,0.08)" stroke-width="0.5"/>
+  <line x1="282" y1="190.0" x2="482" y2="190.0" stroke="rgba(0,0,0,0.08)" stroke-width="0.5"/>
+  <line x1="402.0" y1="90" x2="402.0" y2="290" stroke="rgba(0,0,0,0.08)" stroke-width="0.5"/>
+  <line x1="282" y1="210.0" x2="482" y2="210.0" stroke="rgba(0,0,0,0.08)" stroke-width="0.5"/>
+  <line x1="422.0" y1="90" x2="422.0" y2="290" stroke="rgba(0,0,0,0.08)" stroke-width="0.5"/>
+  <line x1="282" y1="230.0" x2="482" y2="230.0" stroke="rgba(0,0,0,0.08)" stroke-width="0.5"/>
+  <line x1="442.0" y1="90" x2="442.0" y2="290" stroke="rgba(0,0,0,0.08)" stroke-width="0.5"/>
+  <line x1="282" y1="250.0" x2="482" y2="250.0" stroke="rgba(0,0,0,0.08)" stroke-width="0.5"/>
+  <line x1="462.0" y1="90" x2="462.0" y2="290" stroke="rgba(0,0,0,0.08)" stroke-width="0.5"/>
+  <line x1="282" y1="270.0" x2="482" y2="270.0" stroke="rgba(0,0,0,0.08)" stroke-width="0.5"/>
+  <circle cx="346.0" cy="170.0" r="4" fill="#FFFFFF" stroke="#1F2933" stroke-width="1.0"/>
+  <text x="338.0" y="162.0" class="mathsm" text-anchor="end">u</text>
+  <line x1="350.0" y1="174.0" x2="394.0" y2="196.0" stroke="#1F2933" stroke-width="1.2" stroke-dasharray="3 2" marker-end="url(#arDark)"/>
+  <circle cx="398.0" cy="200.0" r="5" fill="#C0392B" stroke="#FFFFFF" stroke-width="1.2"/>
+  <text x="406.0" y="192.0" class="mathsm" text-anchor="start" fill="#C0392B" font-weight="700">u<tspan baseline-shift="sub" font-size="8">new</tspan></text>
+  <line x1="398.0" y1="200.0" x2="384.0" y2="186.0" stroke="#FFFFFF" stroke-width="1.2"/>
+  <circle cx="384.0" cy="186.0" r="2.4" fill="#FFFFFF" stroke="#1F2933" stroke-width="0.6"/>
+  <line x1="398.0" y1="200.0" x2="412.0" y2="186.0" stroke="#FFFFFF" stroke-width="1.2"/>
+  <circle cx="412.0" cy="186.0" r="2.4" fill="#FFFFFF" stroke="#1F2933" stroke-width="0.6"/>
+  <line x1="398.0" y1="200.0" x2="384.0" y2="214.0" stroke="#FFFFFF" stroke-width="1.2"/>
+  <circle cx="384.0" cy="214.0" r="2.4" fill="#FFFFFF" stroke="#1F2933" stroke-width="0.6"/>
+  <line x1="398.0" y1="200.0" x2="412.0" y2="214.0" stroke="#FFFFFF" stroke-width="1.2"/>
+  <circle cx="412.0" cy="214.0" r="2.4" fill="#FFFFFF" stroke="#1F2933" stroke-width="0.6"/>
+  <text x="382.0" y="284" class="badgeR">▲ TRAINABLE</text>
+  <text x="290" y="316" class="small" text-anchor="start" font-weight="600">interpolated:</text>
+  <rect x="362" y="306" width="8" height="14" fill="#F6B89F" stroke="#E27D60" stroke-width="0.3"/>
+  <rect x="371" y="306" width="8" height="14" fill="#F4A98E" stroke="#E27D60" stroke-width="0.3"/>
+  <rect x="380" y="306" width="8" height="14" fill="#EE9077" stroke="#E27D60" stroke-width="0.3"/>
+  <rect x="389" y="306" width="8" height="14" fill="#E27D60" stroke="#E27D60" stroke-width="0.3"/>
+  <rect x="398" y="306" width="8" height="14" fill="#F4A98E" stroke="#E27D60" stroke-width="0.3"/>
+  <text x="412" y="316" class="small" fill="#9AA5B1">…</text>
+  <rect x="420" y="306" width="7" height="14" fill="#9DC3E6" stroke="#5B9BD5" stroke-width="0.3"/>
+  <rect x="428" y="306" width="7" height="14" fill="#5B9BD5" stroke="#5B9BD5" stroke-width="0.3"/>
+  <rect x="436" y="306" width="7" height="14" fill="#9DC3E6" stroke="#5B9BD5" stroke-width="0.3"/>
+  <rect x="452" y="306" width="7" height="14" fill="#9DDFA0" stroke="#70AD47" stroke-width="0.3"/>
+  <rect x="460" y="306" width="7" height="14" fill="#70AD47" stroke="#70AD47" stroke-width="0.3"/>
+  <rect x="468" y="306" width="7" height="14" fill="#9DDFA0" stroke="#70AD47" stroke-width="0.3"/>
+  <text x="376" y="300" class="small" font-weight="700" fill="#E27D60" text-anchor="middle">z</text>
+  <text x="428" y="300" class="small" font-weight="700" fill="#5B9BD5" text-anchor="middle">n</text>
+  <text x="460" y="300" class="small" font-weight="700" fill="#70AD47" text-anchor="middle">t</text>
+  <text x="382.0" y="340" class="kbatch">× K  batch</text>
+  <text x="555" y="200" class="lbl" font-weight="700" fill="#1F2933">Gram–Schmidt</text>
+  <g transform="translate(555,234)">
+    <line x1="0" y1="0" x2="0"  y2="-26" stroke="#C0392B" stroke-width="2.0" marker-end="url(#arRed)"/>
+    <line x1="0" y1="0" x2="22" y2="0"   stroke="#70AD47" stroke-width="2.0" marker-end="url(#arGreen)"/>
+    <line x1="0" y1="0" x2="-14" y2="14" stroke="#3672B0" stroke-width="2.0" marker-end="url(#arBlue)"/>
+    <text x="3"   y="-22" class="mathsm" text-anchor="start" fill="#C0392B">ñ</text>
+    <text x="24"  y="-2"  class="mathsm" text-anchor="start" fill="#70AD47">t̃</text>
+    <text x="-22" y="16"  class="mathsm" text-anchor="end" fill="#3672B0">b̃</text>
+  </g>
+  <text x="555" y="330" class="small" font-weight="600">local frame</text>
+  <line x1="499" y1="404" x2="611" y2="404" stroke="#9AA5B1" stroke-width="1.2"/>
+  <line x1="555" y1="400" x2="581" y2="400" stroke="#70AD47" stroke-width="1.2" marker-end="url(#arGreen)"/>
+  <line x1="555" y1="400" x2="541" y2="414" stroke="#3672B0" stroke-width="1.2" marker-end="url(#arBlue)"/>
+  <line x1="555" y1="400" x2="555" y2="350" stroke="#C0392B" stroke-width="2.2" marker-end="url(#arRed)"/>
+  <text x="561" y="356" class="mathsm" text-anchor="start" fill="#C0392B" font-weight="700">ñ</text>
+  <line x1="555" y1="400" x2="591" y2="374" stroke="#D89B00" stroke-width="1.6" marker-end="url(#arYel)"/>
+  <text x="595" y="378" class="mathsm" text-anchor="start" fill="#A38400">ω<tspan baseline-shift="sub" font-size="9">i</tspan></text>
+  <line x1="555" y1="400" x2="519" y2="368" stroke="#2F3640" stroke-width="1.6" marker-end="url(#arDark)"/>
+  <text x="515" y="372" class="mathsm" text-anchor="end">ω<tspan baseline-shift="sub" font-size="9">o</tspan></text>
+  <rect x="670" y="290" width="175" height="200" rx="10" fill="#F4F6F8" stroke="#9AA5B1" stroke-width="1.1" opacity="0.85"/>
+    <rect x="665" y="295" width="175" height="200" rx="10" fill="#F4F6F8" stroke="#9AA5B1" stroke-width="1.1" opacity="0.85"/>
+  <rect x="660" y="300" width="175" height="200" rx="10" fill="#FAFBFC" stroke="#52606D" stroke-width="1.1"/>
+  <text x="747.5" y="322" class="lbl" font-weight="600">SH encoding</text>
+  <circle cx="747.5" cy="356" r="13" fill="url(#shRed)"/>
+  <circle cx="715.5" cy="400" r="13" fill="url(#shVCR)"/>
+  <circle cx="747.5" cy="400" r="13" fill="url(#shRed)"/>
+  <circle cx="779.5" cy="400" r="13" fill="url(#shHCR)"/>
+  <circle cx="683.5" cy="444" r="13" fill="url(#shBandsV)"/>
+  <circle cx="715.5" cy="444" r="13" fill="url(#shVCR)"/>
+  <circle cx="747.5" cy="444" r="13" fill="url(#shConc)"/>
+  <circle cx="779.5" cy="444" r="13" fill="url(#shHCR)"/>
+  <circle cx="811.5" cy="444" r="13" fill="url(#shBands)"/>
+  <text x="747.5" y="522" class="kbatch">× K  batch</text>
+  <rect x="880" y="215" width="105" height="230" rx="8" fill="#FFFFFF" stroke="#9AA5B1" stroke-width="1.0" opacity="0.85"/>
+    <rect x="875" y="220" width="105" height="230" rx="8" fill="#FFFFFF" stroke="#9AA5B1" stroke-width="1.0" opacity="0.85"/>
+  <rect x="870" y="225" width="105" height="230" rx="8" fill="#FFFFFF" stroke="#52606D" stroke-width="1.0"/>
+  <text x="922.5" y="241" class="small" font-weight="600">concat</text>
+  <rect x="882" y="255" width="7" height="14" fill="#F6B89F" stroke="#E27D60" stroke-width="0.4"/>
+  <rect x="890" y="255" width="7" height="14" fill="#F4A98E" stroke="#E27D60" stroke-width="0.4"/>
+  <rect x="898" y="255" width="7" height="14" fill="#EE9077" stroke="#E27D60" stroke-width="0.4"/>
+  <rect x="906" y="255" width="7" height="14" fill="#E27D60" stroke="#E27D60" stroke-width="0.4"/>
+  <rect x="914" y="255" width="7" height="14" fill="#F4A98E" stroke="#E27D60" stroke-width="0.4"/>
+  <rect x="922" y="255" width="7" height="14" fill="#F6B89F" stroke="#E27D60" stroke-width="0.4"/>
+  <text x="934" y="266" class="mathsm" text-anchor="start" fill="#C0392B" font-weight="700">z</text>
+  <rect x="882" y="283" width="7" height="14" fill="#D4B3D6" stroke="#9C7BB2" stroke-width="0.4"/>
+  <rect x="890" y="283" width="7" height="14" fill="#C9A8CC" stroke="#9C7BB2" stroke-width="0.4"/>
+  <rect x="898" y="283" width="7" height="14" fill="#D4B3D6" stroke="#9C7BB2" stroke-width="0.4"/>
+  <rect x="906" y="283" width="7" height="14" fill="#BC95C0" stroke="#9C7BB2" stroke-width="0.4"/>
+  <rect x="914" y="283" width="7" height="14" fill="#D4B3D6" stroke="#9C7BB2" stroke-width="0.4"/>
+  <rect x="922" y="283" width="7" height="14" fill="#BC95C0" stroke="#9C7BB2" stroke-width="0.4"/>
+  <text x="934" y="294" class="mathsm" text-anchor="start">γ(ω<tspan baseline-shift="sub" font-size="8">i</tspan>)</text>
+  <rect x="882" y="303" width="7" height="14" fill="#D4B3D6" stroke="#9C7BB2" stroke-width="0.4"/>
+  <rect x="890" y="303" width="7" height="14" fill="#C9A8CC" stroke="#9C7BB2" stroke-width="0.4"/>
+  <rect x="898" y="303" width="7" height="14" fill="#D4B3D6" stroke="#9C7BB2" stroke-width="0.4"/>
+  <rect x="906" y="303" width="7" height="14" fill="#BC95C0" stroke="#9C7BB2" stroke-width="0.4"/>
+  <rect x="914" y="303" width="7" height="14" fill="#D4B3D6" stroke="#9C7BB2" stroke-width="0.4"/>
+  <rect x="922" y="303" width="7" height="14" fill="#BC95C0" stroke="#9C7BB2" stroke-width="0.4"/>
+  <text x="934" y="314" class="mathsm" text-anchor="start">γ(ω<tspan baseline-shift="sub" font-size="8">o</tspan>)</text>
+  <rect x="882" y="323" width="7" height="14" fill="#D4B3D6" stroke="#9C7BB2" stroke-width="0.4"/>
+  <rect x="890" y="323" width="7" height="14" fill="#C9A8CC" stroke="#9C7BB2" stroke-width="0.4"/>
+  <rect x="898" y="323" width="7" height="14" fill="#D4B3D6" stroke="#9C7BB2" stroke-width="0.4"/>
+  <rect x="906" y="323" width="7" height="14" fill="#BC95C0" stroke="#9C7BB2" stroke-width="0.4"/>
+  <rect x="914" y="323" width="7" height="14" fill="#D4B3D6" stroke="#9C7BB2" stroke-width="0.4"/>
+  <rect x="922" y="323" width="7" height="14" fill="#BC95C0" stroke="#9C7BB2" stroke-width="0.4"/>
+  <text x="934" y="334" class="mathsm" text-anchor="start">γ(ñ)</text>
+  <text x="922.5" y="477" class="kbatch">× K  batch</text>
+  <rect x="1010" y="180" width="450" height="300" rx="12" fill="white" stroke="#7C8087" stroke-width="1.8" stroke-dasharray="6 3"/>
+  <text x="1235.0" y="208" class="lbl" font-weight="700" font-size="17" fill="#3D4852">MLP decoder  D<tspan class="math" baseline-shift="sub" font-size="11">θ</tspan>   <tspan class="badgeG">❄ FROZEN</tspan></text>
+  <rect x="1121" y="280" width="36" height="150" rx="18" fill="#DDE0E4" stroke="#5C636A" stroke-width="0.8"/>
+  <text x="1139.0" y="446" class="small" fill="#52606D">256</text>
+  <rect x="1185" y="280" width="36" height="150" rx="18" fill="#B7BBC1" stroke="#5C636A" stroke-width="0.8"/>
+  <text x="1203.0" y="446" class="small" fill="#52606D">256</text>
+  <rect x="1249" y="280" width="36" height="150" rx="18" fill="#7C8087" stroke="#5C636A" stroke-width="0.8"/>
+  <text x="1267.0" y="446" class="small" fill="#52606D">256</text>
+  <rect x="1313" y="280" width="36" height="150" rx="18" fill="#A7ABB1" stroke="#5C636A" stroke-width="0.8"/>
+  <text x="1331.0" y="446" class="small" fill="#52606D">256</text>
+  <line x1="1099" y1="355.0" x2="1099" y2="250" stroke="#1F2933" stroke-width="1.6"/>
+  <line x1="1099" y1="250" x2="1235.0" y2="250" stroke="#1F2933" stroke-width="1.6"/>
+  <line x1="1235.0" y1="250" x2="1235.0" y2="347.0" stroke="#1F2933" stroke-width="1.6" marker-end="url(#arDark)"/>
+  <text x="1167.0" y="244" class="small" fill="#1F2933">skip</text>
+  <text x="1235.0" y="359.0" class="lbl" font-weight="700" fill="#1F2933" text-anchor="middle">+</text>
+  <line x1="990" y1="355.0" x2="1099" y2="355.0" stroke="#52606D" stroke-width="1.8" marker-end="url(#arL)"/>
+  <line x1="1099" y1="355.0" x2="1121" y2="355.0" stroke="#52606D" stroke-width="1.4"/>
+  <line x1="1157" y1="355.0" x2="1185" y2="355.0" stroke="#52606D" stroke-width="1.4"/>
+  <line x1="1221" y1="355.0" x2="1249" y2="355.0" stroke="#52606D" stroke-width="1.4"/>
+  <line x1="1285" y1="355.0" x2="1313" y2="355.0" stroke="#52606D" stroke-width="1.4"/>
+  <line x1="1355" y1="355.0" x2="1405" y2="355.0" stroke="#52606D" stroke-width="1.8" marker-end="url(#arL)"/>
+  <text x="1411" y="360.0" class="mathL" font-weight="700" font-size="16">f<tspan baseline-shift="sub" font-size="11">r</tspan></text>
+  <text x="1387" y="379.0" class="small">BRDF</text>
+  <line x1="266" y1="170.0" x2="276" y2="170.0" stroke="#52606D" stroke-width="1.6" marker-end="url(#arL)"/>
+  <text x="271.0" y="164.0" class="mathsm">u</text>
+  <path d="M 266 265.0 C 340 265.0, 455 390, 491 392" fill="none" stroke="#52606D" stroke-width="1.6" marker-end="url(#arL)"/>
+  <text x="320" y="259.0" class="mathsm">ω<tspan baseline-shift="sub" font-size="8">i</tspan>, ω<tspan baseline-shift="sub" font-size="8">o</tspan></text>
+  <path d="M 432 320 L 494 320 L 494 192 L 507 192" fill="none" stroke="#5B9BD5" stroke-width="1.6" marker-end="url(#arBlue)"/>
+  <text x="500" y="251.0" class="mathsm" text-anchor="start" fill="#5B9BD5" font-weight="700">n, t</text>
+  <path d="M 382 316 C 382 52, 810 52, 866 262.0" fill="none" stroke="#E27D60" stroke-width="2.0" stroke-dasharray="6 4" marker-end="url(#arOrange)"/>
+  <text x="626.0" y="46" class="small" fill="#C0392B" font-weight="700">z (latent)</text>
+  <line x1="555" y1="260" x2="555" y2="312" stroke="#52606D" stroke-width="1.4" stroke-dasharray="3 3" marker-end="url(#arL)"/>
+  <path d="M 605 370 C 635 356, 614 356, 650 356" fill="none" stroke="#C0392B" stroke-width="1.4" marker-end="url(#arL)"/>
+  <text x="646" y="360" class="mathsm" text-anchor="end" fill="#C0392B" font-weight="700">ñ</text>
+  <path d="M 605 370 C 635 400, 614 400, 650 400" fill="none" stroke="#A38400" stroke-width="1.4" marker-end="url(#arL)"/>
+  <text x="646" y="404" class="mathsm" text-anchor="end" fill="#A38400" font-weight="700">ω<tspan baseline-shift="sub" font-size="8">i</tspan></text>
+  <path d="M 605 370 C 635 444, 614 444, 650 444" fill="none" stroke="#2F3640" stroke-width="1.4" marker-end="url(#arL)"/>
+  <text x="646" y="448" class="mathsm" text-anchor="end" fill="#2F3640" font-weight="700">ω<tspan baseline-shift="sub" font-size="8">o</tspan></text>
+  <path d="M 839 356 C 869 290.0, 840 290.0, 866 290.0" fill="none" stroke="#A38400" stroke-width="1.4" marker-end="url(#arL)"/>
+  <path d="M 839 400 C 869 310.0, 840 310.0, 866 310.0" fill="none" stroke="#2F3640" stroke-width="1.4" marker-end="url(#arL)"/>
+  <path d="M 839 444 C 869 330.0, 840 330.0, 866 330.0" fill="none" stroke="#C0392B" stroke-width="1.4" marker-end="url(#arL)"/>
+  <line x1="977" y1="286.0" x2="1109" y2="355.0" stroke="#52606D" stroke-width="1.8" marker-end="url(#arL)"/>
+  <rect x="200" y="580" width="1100" height="200" rx="12" fill="#FBFBFD" stroke="#9AA5B1" stroke-dasharray="3 3" stroke-width="1.2"/>
+  <text x="218" y="604" class="callouttitle">Neural Offset Module  ·  view-dependent UV displacement</text>
+  <text x="218" y="620" class="small" text-anchor="start" fill="#9AA5B1">zoom-in: how  u → u<tspan baseline-shift="sub" font-size="8">new</tspan>  is computed</text>
+  <g transform="translate(270,690)">
+    <text x="0" y="-14" class="small" font-weight="600">inputs</text>
+    <line x1="-12" y1="-2" x2="20" y2="-2" stroke="#D89B00" stroke-width="1.6" marker-end="url(#arYel)"/>
+    <text x="26" y="2" class="mathsm" text-anchor="start" fill="#A38400">ω<tspan baseline-shift="sub" font-size="8">i</tspan></text>
+    <line x1="-12" y1="16" x2="20" y2="16" stroke="#2F3640" stroke-width="1.6" marker-end="url(#arDark)"/>
+    <text x="26" y="20" class="mathsm" text-anchor="start">ω<tspan baseline-shift="sub" font-size="8">o</tspan></text>
+  </g>
+  <text x="430" y="676" class="small" font-weight="600">SH</text>
+  <g transform="translate(400,690)">
+    <circle cx="0"  cy="6" r="10" fill="url(#shRed)"/>
+    <circle cx="22" cy="6" r="10" fill="url(#shVCR)"/>
+    <circle cx="44" cy="6" r="10" fill="url(#shHCR)"/>
+  </g>
+  <line x1="460" y1="696" x2="488" y2="696" stroke="#9AA5B1" stroke-width="1.2" marker-end="url(#arL)"/>
+  <rect x="554" y="654" width="212" height="122" rx="10" fill="#FFFFFF" stroke="#6B5B95" stroke-width="1.4"/>
+  <text x="660.0" y="674" class="small" font-weight="700" fill="#1F2933">Neural Geometry Decoder</text>
+  <rect x="591" y="690" width="30" height="70" rx="14" fill="#C7BAE0" stroke="#4F3F76" stroke-width="0.8"/>
+  <line x1="621" y1="725.0" x2="645" y2="725.0" stroke="#52606D" stroke-width="1.2"/>
+  <rect x="645" y="690" width="30" height="70" rx="14" fill="#9E89C4" stroke="#4F3F76" stroke-width="0.8"/>
+  <line x1="675" y1="725.0" x2="699" y2="725.0" stroke="#52606D" stroke-width="1.2"/>
+  <rect x="699" y="690" width="30" height="70" rx="14" fill="#A892C8" stroke="#4F3F76" stroke-width="0.8"/>
+  <line x1="558" y1="725.0" x2="591" y2="725.0" stroke="#52606D" stroke-width="1.4"/>
+  <line x1="729" y1="725.0" x2="764" y2="725.0" stroke="#52606D" stroke-width="1.4"/>
+  <text x="660.0" y="778" class="badgeR">▲ TRAINABLE</text>
+  <text x="800" y="676" class="small" font-weight="600">offset</text>
+  <rect x="800"   y="688" width="20" height="20" fill="#F6B89F" stroke="#E27D60" stroke-width="0.6"/>
+  <rect x="822" y="688" width="20" height="20" fill="#E27D60" stroke="#E27D60" stroke-width="0.6"/>
+  <text x="850" y="702" class="mathL" font-weight="700">Δu</text>
+  <text x="970" y="676" class="small" font-weight="600">applied</text>
+  <text x="970" y="700" class="mathL" font-weight="700">u<tspan baseline-shift="sub" font-size="9">new</tspan>  =  u  +  Δu</text>
+  <text x="1284" y="768" class="small" text-anchor="end" fill="#9AA5B1">F<tspan baseline-shift="sub" font-size="8">off</tspan>(γ(ω<tspan baseline-shift="sub" font-size="8">i</tspan>), γ(ω<tspan baseline-shift="sub" font-size="8">o</tspan>))  →  Δu(u, ω<tspan baseline-shift="sub" font-size="8">o</tspan>)</text>
+  <rect x="378.0" y="180.0" width="40" height="40" fill="none" stroke="#1F2933" stroke-dasharray="3 2" stroke-width="0.8"/>
+  <line x1="378.0" y1="220.0" x2="230" y2="580" stroke="#1F2933" stroke-dasharray="3 2" stroke-width="0.8"/>
+  <line x1="418.0" y1="220.0" x2="1270" y2="580" stroke="#1F2933" stroke-dasharray="3 2" stroke-width="0.8"/>
+</svg>

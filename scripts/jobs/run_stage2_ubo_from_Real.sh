@@ -35,7 +35,7 @@ python main.py \
     model.continue_training=False \
     model.freeze_decoder=True \
     model.apply_cosine_weight=True \
-    model.trainer.max_epochs=100 \
+    model.trainer.max_epochs=60 \
     model.trainer.check_val_every_n_epoch=2 \
     model.trainer.limit_train_batches=5838 \
     model.ckpt_path='/media/raid/cloth/output/BRDF/Stage-1-Finals/Ours.ckpt'
