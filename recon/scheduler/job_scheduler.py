@@ -40,8 +40,8 @@ from quality_check import detect_quality_warnings  # noqa: E402
 
 class Config:
     """Scheduler configuration"""
-    GPU_IDS = [2, 3]
-    MAX_COLMAP_PER_GPU = 3  # Maximum COLMAP jobs per GPU
+    GPU_IDS = [0, 1, 2, 3]
+    MAX_COLMAP_PER_GPU = 1  # Maximum COLMAP jobs per GPU
     TOTAL_CPU_CORES = 128
     CPU_CORES_PER_COLMAP = 8  # CPU threads allocated per COLMAP job
     MIN_SHAPE_MATCHING_WORKERS = 8  # Minimum workers for shape matching

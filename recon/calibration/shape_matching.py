@@ -2,6 +2,7 @@
 import os
 import re
 import json
+import shutil
 import numpy as np
 from pathlib import Path
 import hydra
@@ -1223,18 +1224,16 @@ def main_process(cfg, cameras, images, points3D=None, scan_log_path=None, mesh_p
     if mesh_path is not None:
         transform_mesh_to_base(mesh_path, T_BW, output_path=str(Path(mesh_path).with_name(Path(mesh_path).stem + "_transformed.ply")))
 
-    # Skip debayering only if hdr/ already has the same file count as
-    # hdr_raw/ — prior code only checked existence, which let an incomplete
-    # hdr/ from a crashed earlier run get reused (downstream then failed on
-    # the missing scans). Comparing counts is a cheap completeness gate.
+    # Always re-debayer from hdr_raw/. The previous count-based skip let a
+    # stale hdr/ from a pre-recapture run survive when hdr_raw/ was
+    # re-captured, silently feeding wrong RGBs into observations_structured.npz
+    # (see Dataset_Nov11 mats 243-246, 336-339, 343-346, 349-351 corruption,
+    # 2026-05-22). Force-remove any existing hdr/ first so the debayer step
+    # always runs from the current hdr_raw/.
     if mosaic_hdr_path is not None and Path(mosaic_hdr_path).is_dir():
-        mosaic_count = sum(1 for _ in Path(mosaic_hdr_path).glob("*.png"))
-        hdr_complete = (
-            Path(hdr_path).is_dir()
-            and sum(1 for _ in Path(hdr_path).glob("*.png")) == mosaic_count
-        )
-        if not hdr_complete:
-            debayer_mosaic_hdr(mosaic_hdr_path, hdr_path, num_workers=num_workers)
+        if Path(hdr_path).is_dir():
+            shutil.rmtree(hdr_path)
+        debayer_mosaic_hdr(mosaic_hdr_path, hdr_path, num_workers=num_workers)
     # Process pointcloud if path provided
     if pointcloud_path is not None:
         output_pcd_path = str(Path(pointcloud_path).with_name(Path(pointcloud_path).stem + "_transformed_filtered.ply"))

@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Cloth-BRDF — Real Multi-View Multi-Light HDR Cloth Dataset</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@4.4.1/dist/css/bootstrap.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<!-- ============================  HERO  ============================ -->
+<section>
+    <div class="jumbotron text-center mt-0">
+        <div class="container">
+            <h2><b>Cloth-BRDF</b><br>A Real Multi-View Multi-Light HDR Cloth Dataset</h2>
+            <p class="subtitle">500+ cloth materials &middot; 580 capture configurations each &middot; 16-bit HDR PNG</p>
+
+            <p class="author-list">
+                Anonymous Authors<sup>1</sup>
+                <br>
+                <span class="affiliations"><sup>1</sup> Affiliations omitted for review</span>
+            </p>
+
+            <div class="btn-group-row">
+                <a class="btn-pill" href="#abstract"><i class="fa-solid fa-file"></i> Paper</a>
+                <a class="btn-pill" href="https://huggingface.co/datasets/koalapenguin/cloth-brdf" target="_blank" rel="noopener">
+                    <i class="fa-solid fa-database"></i> Data (HuggingFace)
+                </a>
+                <a class="btn-pill" href="#preview"><i class="fa-solid fa-images"></i> Dataset Preview</a>
+                <a class="btn-pill" href="#citation"><i class="fa-solid fa-quote-right"></i> Citation</a>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ============================  TEASER + ABSTRACT  ============================ -->
+<section id="abstract" class="page-section">
+    <h3>Overview</h3>
+    <div class="section-rule"></div>
+
+    <!-- Teaser figure — shows images/teaser.png when present. If the file
+         is missing the <img>'s onerror swaps in the placeholder text so
+         the page still looks intentional. -->
+    <div class="teaser-box" id="teaser" style="padding:0; border:none; background:transparent;">
+        <img src="images/teaser.png" alt="Cloth-BRDF teaser figure"
+             style="max-width:100%; display:block; margin:0 auto; border-radius:8px;"
+             onerror="this.parentNode.innerHTML='&lt;div style=&quot;padding:2rem;border:1px dashed var(--border);border-radius:8px;color:var(--muted);text-align:center&quot;&gt;&lt;strong&gt;Teaser placeholder&lt;/strong&gt;&lt;br&gt;&lt;span style=&quot;font-size:0.88rem&quot;&gt;Drop a figure at &lt;code&gt;webpage/images/teaser.png&lt;/code&gt; to enable.&lt;/span&gt;&lt;/div&gt;';">
+    </div>
+
+    <p class="lead-text">
+        <b>Cloth-BRDF</b> is a real-captured dataset of cloth materials
+        designed for inverse-rendering, SVBRDF estimation, and material
+        learning. Each material is captured under
+        <b>588 (camera, light) configurations</b> using a robot arm carrying
+        an HDR camera that traces an arc above a rotating turntable while
+        a second arm sweeps a calibrated area light over a plane covering
+        the upper hemisphere. We release accurate hand-eye and turntable
+        calibration, sample-size metadata, and a Croissant manifest at
+        <a href="https://huggingface.co/datasets/koalapenguin/cloth-brdf" target="_blank">HuggingFace</a>.
+    </p>
+</section>
+
+<!-- ============================  MAIN VISUALIZATION SLOT  ============================ -->
+<section id="main-viz" class="page-section">
+    <h3>Inverse-Rendering Results</h3>
+    <div class="section-rule"></div>
+    <div class="placeholder-slot">
+        <strong>Stage-2 rendering / re-lighting demo (TBD)</strong><br>
+        <span style="font-size:0.88rem">
+            This section is reserved for the trained model's rendering
+            and re-lighting results. We will plug in interactive comparisons
+            (real photo vs. predicted) once the final figures are ready.
+        </span>
+    </div>
+</section>
+
+<!-- ============================  DATASET PREVIEW  ============================ -->
+<section id="preview" class="page-section">
+    <h3>Dataset Preview</h3>
+    <div class="section-rule"></div>
+    <p class="lead-text" style="text-align:center;color:var(--muted);">
+        The dataset is split into a <b>train</b> set and a <b>test</b> set
+        following the official lists in
+        <code>globals/training_list_500.txt</code> /
+        <code>globals/test_list_500.txt</code>.
+        20 train and 5 test materials are shown as thumbnails below;
+        every one of the remaining materials is linked further down so
+        you can browse all <b id="train-total">…</b>&nbsp;+&nbsp;<b id="test-total">…</b>
+        without leaving this page.
+    </p>
+
+    <!-- Train preview -->
+    <h4 class="split-heading">
+        <span class="split-chip train">Train</span>
+        <span class="split-heading-tail">20 of <b id="train-count">…</b> shown</span>
+    </h4>
+    <div id="train-preview-grid" class="preview-grid">
+        <div class="status-line"><span class="spinner"></span> Loading preview manifest…</div>
+    </div>
+
+    <!-- Test preview -->
+    <h4 class="split-heading" style="margin-top:2.5rem">
+        <span class="split-chip test">Test</span>
+        <span class="split-heading-tail">5 of <b id="test-count">…</b> shown</span>
+    </h4>
+    <div id="test-preview-grid" class="preview-grid"></div>
+
+    <!-- Full ID lists -->
+    <h4 class="split-heading" style="margin-top:3rem">
+        <span class="split-chip train">Train</span>
+        <span class="split-heading-tail">all material IDs</span>
+    </h4>
+    <div id="train-all-list" class="id-pill-list"></div>
+
+    <h4 class="split-heading" style="margin-top:2rem">
+        <span class="split-chip test">Test</span>
+        <span class="split-heading-tail">all material IDs</span>
+    </h4>
+    <div id="test-all-list" class="id-pill-list"></div>
+</section>
+
+<script>
+    // Mirror the counts header (the bigger top numbers) into the inline
+    // heading suffixes so they stay in sync with the manifest.
+    document.addEventListener("DOMContentLoaded", () => {
+        const sync = (from, to) => {
+            const obs = new MutationObserver(() => {
+                const t = document.getElementById(to);
+                if (t) t.textContent = document.getElementById(from).textContent;
+            });
+            const src = document.getElementById(from);
+            if (src) obs.observe(src, { childList: true, characterData: true, subtree: true });
+        };
+        sync("train-total", "train-count");
+        sync("test-total",  "test-count");
+    });
+</script>
+
+<!-- ============================  TRAINING PIPELINE  ============================ -->
+<section class="page-section">
+    <h3>Neural Decoder Training Pipeline</h3>
+    <div class="section-rule"></div>
+    <div class="placeholder-slot">
+        <strong>Two-stage training overview (TBD)</strong><br>
+        <span style="font-size:0.88rem">
+            A diagram of our neural BRDF decoder will go here: latent codes
+            per material, the rendering loss against the captured HDR
+            observations (Stage 1), and the physically-based re-rendering
+            stage with the trained area-light model (Stage 2). Drop the
+            asset into <code>webpage/images/training_pipeline.png</code> to
+            replace this placeholder.
+        </span>
+    </div>
+</section>
+
+<!-- ============================  CITATION  ============================ -->
+<section id="citation" class="page-section">
+    <h3>Citation</h3>
+    <div class="section-rule"></div>
+    <pre class="citation-block">@inproceedings{anonymous2026clothbrdf,
+  title  = {Cloth-BRDF: A Real Multi-View Multi-Light HDR Cloth Dataset},
+  author = {Anonymous},
+  booktitle = {NeurIPS Datasets and Benchmarks Track},
+  year   = {2026}
+}</pre>
+</section>
+
+<footer>
+    Page template loosely inspired by
+    <a href="https://oppo-us-research.github.io/OpenIllumination/" target="_blank">OpenIllumination</a>.
+    All assets stream directly from the public
+    <a href="https://huggingface.co/datasets/koalapenguin/cloth-brdf" target="_blank">HuggingFace dataset repository</a>.
+</footer>
+
+<!-- Cache-bust JS files (bump ?v= when any of them changes). -->
+<script src="js/config.js?v=26"></script>
+<script src="js/transforms.js?v=26"></script>
+<script src="js/tar_reader.js?v=26"></script>
+<script src="js/hdr_display.js?v=26"></script>
+<script src="js/main.js?v=26"></script>
+
+</body>
+</html>
