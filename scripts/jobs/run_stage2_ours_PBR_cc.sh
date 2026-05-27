@@ -4,14 +4,14 @@
 # (RealImageDenseDataset). Drops chunk_size / switch_iters / random_chunks
 # overrides — all images are preloaded into RAM once.
 
-export CUDA_VISIBLE_DEVICES=0
 
-DATASET_FOLDER=/home/zla247/scratch/data/capture_data/227
+DATASET_FOLDER=/home/zla247/scratch/data/capture_data/190
 MAT_ID=${DATASET_FOLDER##*/}
 
 python main.py \
     output_folder=/home/zla247/scratch/output/BRDF \
     dataset_folder=${DATASET_FOLDER} \
+    renderer.emitter.direction_json=/home/zla247/scratch/data/capture_data/emitter_calibration.json \
     data=real_dense \
     data.rays_num=400000 \
     data.use_fixed_val=False \
@@ -38,6 +38,6 @@ python main.py \
     model.optimizer.lr=0.002 \
     model.loss.recon_loss.name=logrel \
     model.loss.reg_loss.weight=0.0 \
-    model.trainer.max_epochs=100 \
+    model.trainer.max_epochs=80 \
     model.trainer.check_val_every_n_epoch=2 \
     model.trainer.limit_train_batches=8000

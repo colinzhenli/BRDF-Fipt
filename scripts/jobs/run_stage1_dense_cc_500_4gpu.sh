@@ -5,13 +5,13 @@ python main.py \
     output_folder=/home/zla247/scratch/output/BRDF \
     data=points_dense \
     data.legacy_swap_indexing=False \
-    data.rays_num=500000 \
+    data.rays_num=125000 \
     data.point_subsample_ratio=0.1 \
     renderer=multiarea_emitter \
     material=multi_material_latent \
-    experiment_name=Continue_Stage1_Fir_Our-Updated-500_Grazing-ratio-0.05_ContributionDecay_Log-ref-15000_run_1 \
+    experiment_name=Stage1_Nibi_Ours-500-new-25-all_Subsample-0.1_Batch-500K_4GPU_run_1 \
     model.optimizer.name=Adam8bit \
-    model.continue_training=True \
+    model.continue_training=False \
     model.optimizer.reset_latent_momentum_on_chunk_switch=False \
     model.optimizer.lr=2e-3 \
     model.optimizer.decoder_lr=2e-4 \
@@ -20,10 +20,10 @@ python main.py \
     model.stage=1 \
     model.test=False \
     model.trainer.max_epochs=100 \
-    model.trainer.check_val_every_n_epoch=5 \
-    model.trainer.limit_train_batches=8000 \
-    model.grazing_ratio=0.05 \
-    model.grazing_mode=contribution_decay \
+    model.trainer.devices=4 \
+    model.trainer.strategy=ddp_find_unused_parameters_true \
+    model.trainer.check_val_every_n_epoch=2 \
+    model.trainer.limit_train_batches=12576 \
     material.decoder.use_skip_connection=True \
     material.latent_dim=24 \
     material.decoder.degree=3 \
@@ -33,5 +33,5 @@ python main.py \
     data.switch_iters=100 \
     data.chunk_size=2 \
     renderer.spp.train=4 \
-    model.ckpt_path=/home/zla247/scratch/output/BRDF/Bonn-Theia2/Stage1_Fir_Our-Updated-500_Grazing-ratio-0.05_ContributionDecay_Log-ref-15000_run_1/training/model_0.20_0.20/last.ckpt
+    # model.ckpt_path=/home/zla247/scratch/output/BRDF/Bonn-Theia2/Stage1_Nibi_Ours-500-all_Subsample-0.1_Batch-500K_run_1/training/model_0.20_0.20/last.ckpt
 

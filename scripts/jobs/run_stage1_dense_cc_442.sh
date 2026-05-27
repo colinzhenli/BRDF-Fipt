@@ -1,15 +1,16 @@
 #!/bin/bash
+
 python main.py \
     dataset_folder=/home/zla247/scratch/data/capture_data \
-    data.training_list_path=/home/zla247/scratch/data/capture_data/training_list_500.txt \
+    data.training_list_path=/home/zla247/scratch/data/capture_data/training_list_442.txt \
     output_folder=/home/zla247/scratch/output/BRDF \
     data=points_dense \
-    data.legacy_swap_indexing=False \
+    data.legacy_swap_indexing=True \
     data.rays_num=500000 \
     data.point_subsample_ratio=0.1 \
     renderer=multiarea_emitter \
     material=multi_material_latent \
-    experiment_name=Continue_Stage1_Fir_Our-Updated-500_Grazing-ratio-0.05_ContributionDecay_Log-ref-15000_run_1 \
+    experiment_name=Stage1_Nibi_Already-20_Ours-442-all_Subsample-0.1_Batch-500K_run_1 \
     model.optimizer.name=Adam8bit \
     model.continue_training=True \
     model.optimizer.reset_latent_momentum_on_chunk_switch=False \
@@ -20,10 +21,8 @@ python main.py \
     model.stage=1 \
     model.test=False \
     model.trainer.max_epochs=100 \
-    model.trainer.check_val_every_n_epoch=5 \
+    model.trainer.check_val_every_n_epoch=1 \
     model.trainer.limit_train_batches=8000 \
-    model.grazing_ratio=0.05 \
-    model.grazing_mode=contribution_decay \
     material.decoder.use_skip_connection=True \
     material.latent_dim=24 \
     material.decoder.degree=3 \
@@ -33,5 +32,5 @@ python main.py \
     data.switch_iters=100 \
     data.chunk_size=2 \
     renderer.spp.train=4 \
-    model.ckpt_path=/home/zla247/scratch/output/BRDF/Bonn-Theia2/Stage1_Fir_Our-Updated-500_Grazing-ratio-0.05_ContributionDecay_Log-ref-15000_run_1/training/model_0.20_0.20/last.ckpt
+    model.ckpt_path=/home/zla247/scratch/output/BRDF/Stage1_Fir_Ours-442-all_Subsample-0.1_Batch-500K_run_1/training/model_0.20_0.20/last.ckpt
 

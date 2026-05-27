@@ -6,7 +6,7 @@
 
 export CUDA_VISIBLE_DEVICES=0
 
-DATASET_FOLDER=/media/raid/cloth/HDD/Dataset_submission/227
+DATASET_FOLDER=/media/raid/cloth/HDD/Dataset_submission/226
 MAT_ID=${DATASET_FOLDER##*/}
 
 python main.py \
