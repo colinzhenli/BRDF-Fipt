@@ -14,7 +14,25 @@ import math
 from model.emitter import DynamicPointEmitter, PresetPointEmitter, RealAreaEmitter, ConstantEmitter, MultiAreaEmitter
 from model.brdf import GreyPatchBRDF
 import os
+import glob
 from utils.pose_refiner import GlobalHandEyeRefiner
+
+
+def _keep_only_latest_result(output_dir, base):
+    """Delete this view's result images from previous validation steps.
+
+    The result filename carries the PSNR (e.g. ``<base>_psnr25.30.png``), so a
+    plain overwrite never happens — every step would otherwise leave its own
+    file behind. Removing the prior ``<base>_psnr*`` matches keeps only the most
+    recent step. GT images use a fixed, PSNR-free name and overwrite on their
+    own, so they are left untouched.
+    """
+    for path in glob.glob(os.path.join(output_dir, base + '_psnr*')):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
 
 class Stage2Trainer_MERL(pl.LightningModule):
     def __init__(self, cfg, material, gt_material, roughness, metallic):
@@ -416,12 +434,14 @@ class Stage2Trainer_MERL(pl.LightningModule):
             sample_rgbs_16bit = np.clip(sample_rgbs.cpu().numpy(), 0, 65535).astype(np.uint16)
 
             # Save as 16-bit PNG (OpenCV expects BGR)
+            psnr_str = f'{psnr.item():.2f}'
+            _keep_only_latest_result(output_dir, f'result_view_{batch_idx}_{b}')
             cv2.imwrite(
                 os.path.join(output_dir, f'gt_view_{batch_idx}_{b}.png'),
                 cv2.cvtColor(sample_rgbs_gt_16bit, cv2.COLOR_RGB2BGR)
             )
             cv2.imwrite(
-                os.path.join(output_dir, f'result_view_{batch_idx}_{b}.png'),
+                os.path.join(output_dir, f'result_view_{batch_idx}_{b}_psnr{psnr_str}.png'),
                 cv2.cvtColor(sample_rgbs_16bit, cv2.COLOR_RGB2BGR)
             )
             

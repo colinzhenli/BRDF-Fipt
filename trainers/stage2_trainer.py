@@ -14,7 +14,26 @@ import math
 from model.emitter import DynamicPointEmitter, PresetPointEmitter, RealAreaEmitter, ConstantEmitter, MultiAreaEmitter, RotateAreaEmitter
 from model.brdf import GreyPatchBRDF
 import os
+import glob
 from utils.pose_refiner import GlobalHandEyeRefiner
+
+
+def _keep_only_latest_result(output_dir, base):
+    """Delete this view's result images from previous validation steps.
+
+    The result filename carries the PSNR (and optionally dE/cd) tag, e.g.
+    ``<base>_psnr25.30.png``/``.exr``, so a plain overwrite never happens —
+    every step would otherwise leave its own file behind. Removing the prior
+    ``<base>_psnr*`` matches (png and exr) keeps only the most recent step. GT
+    and error images use a fixed, PSNR-free name and overwrite on their own, so
+    they are left untouched.
+    """
+    for path in glob.glob(os.path.join(output_dir, base + '_psnr*')):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
 
 # bitsandbytes compat: unwrap newer __bnb_optimizer_quant_state__ format so
 # checkpoints saved with bnb >= 0.49 can be loaded by older bnb (e.g. 0.41.3).
@@ -973,6 +992,11 @@ class Stage2Trainer(pl.LightningModule):
 
             if not save_visuals:
                 continue
+
+            # Drop this view's result file(s) from previous validation steps so
+            # the PSNR-tagged result keeps only the latest step (GT/error use
+            # fixed names and overwrite themselves).
+            _keep_only_latest_result(output_dir, f'result_view_{batch_idx}_{b}')
 
             if self.more_visualization:
                 # Save original images as 32-bit EXR without clipping
