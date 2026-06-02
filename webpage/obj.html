@@ -95,7 +95,7 @@
                     <input type="range" id="slider-turn" min="0" max="0" step="1" value="0">
                 </div>
 
-                <div class="controls-row">
+                <div class="controls-row" style="align-items:center">
                     <button class="btn-mini" id="btn-rand">
                         <i class="fa-solid fa-shuffle"></i> Random
                     </button>
@@ -108,6 +108,9 @@
                     <button class="btn-mini" id="btn-expless" title="Dimmer">
                         <i class="fa-regular fa-lightbulb"></i> −
                     </button>
+                    <span style="color:var(--muted);font-size:0.82rem;line-height:1">
+                        Adjust display exposure
+                    </span>
                 </div>
             </div>
         </div>
@@ -121,12 +124,16 @@
              calibrated turntable centre+axis to produce the world0
              frame that the trained model actually uses. -->
         <div class="right-column">
+            <div style="color:var(--muted);font-size:0.82rem;line-height:1.4;padding:0 0.2rem 0.6rem">
+                Drag to orbit, scroll to zoom.
+                Camera (<span style="color:#3367d6">blue</span>) and
+                light (<span style="color:#eab308">yellow</span>)
+                markers follow the slider selection.
+            </div>
+
             <div class="viz-panel">
                 <div class="viz-title">
                     <b>Original capture positions</b>
-                    <span style="color:var(--muted);font-size:0.78rem">
-                        robot-base frame, snapshot of one frame
-                    </span>
                 </div>
                 <canvas id="viz-base1"></canvas>
             </div>
@@ -134,9 +141,6 @@
             <div class="viz-panel">
                 <div class="viz-title">
                     <b>Material local frame</b>
-                    <span style="color:var(--muted);font-size:0.78rem">
-                        turntable rotation undone
-                    </span>
                 </div>
                 <canvas id="viz-world0"></canvas>
             </div>
@@ -216,12 +220,12 @@
 
 <!-- Cache-busting query suffixes: bump this number whenever a .js file
      changes so browsers don't serve a stale copy. -->
-<script src="js/config.js?v=26"></script>
-<script src="js/transforms.js?v=26"></script>
-<script src="js/tar_reader.js?v=26"></script>
-<script src="js/hdr_display.js?v=26"></script>
-<script src="js/viz.js?v=26"></script>
-<script src="js/obj.js?v=26"></script>
+<script src="js/config.js?v=31"></script>
+<script src="js/transforms.js?v=31"></script>
+<script src="js/tar_reader.js?v=31"></script>
+<script src="js/hdr_display.js?v=31"></script>
+<script src="js/viz.js?v=31"></script>
+<script src="js/obj.js?v=31"></script>
 
 </body>
 </html>
