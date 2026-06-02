@@ -21,8 +21,25 @@ import pl_bolts
 import cv2
 import numpy as np
 import os
+import glob
 import math
 import json
+
+
+def _keep_only_latest_result(output_dir, base):
+    """Delete this view's result images from previous validation steps.
+
+    The result filename carries the PSNR (e.g. ``<base>_psnr25.30.png``), so a
+    plain overwrite never happens — every step would otherwise leave its own
+    file behind. Removing the prior ``<base>_psnr*`` matches keeps only the most
+    recent step. GT images use a fixed, PSNR-free name and overwrite on their
+    own, so they are left untouched.
+    """
+    for path in glob.glob(os.path.join(output_dir, base + '_psnr*')):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
 
 
 class Stage2Trainer_UBO(pl.LightningModule):
@@ -253,16 +270,16 @@ class Stage2Trainer_UBO(pl.LightningModule):
             os.makedirs(output_dir, exist_ok=True)
 
             psnr_str = f'{psnr.item():.2f}'
-            suffix   = f'epoch{self.current_epoch:04d}_step{self.global_step:08d}'
 
             gt_png   = (gt_img.clamp(0.0, 1.0) * 255).byte().cpu().numpy()
             pred_png = (pred_img.clamp(0.0, 1.0) * 255).byte().cpu().numpy()
+            _keep_only_latest_result(output_dir, f'pred_view{batch_idx}')
             cv2.imwrite(
-                os.path.join(output_dir, f'gt_view{batch_idx}_{suffix}.png'),
+                os.path.join(output_dir, f'gt_view{batch_idx}.png'),
                 cv2.cvtColor(gt_png, cv2.COLOR_RGB2BGR))
             cv2.imwrite(
                 os.path.join(output_dir,
-                             f'pred_view{batch_idx}_{suffix}_psnr{psnr_str}.png'),
+                             f'pred_view{batch_idx}_psnr{psnr_str}.png'),
                 cv2.cvtColor(pred_png, cv2.COLOR_RGB2BGR))
 
             # ---- save per-view metrics JSON ----
@@ -284,7 +301,7 @@ class Stage2Trainer_UBO(pl.LightningModule):
             }
             metrics_dir = os.path.join(output_dir, 'metrics')
             os.makedirs(metrics_dir, exist_ok=True)
-            metrics_filename = f'view{batch_idx}_epoch{self.current_epoch:04d}_step{self.global_step:08d}.json'
+            metrics_filename = f'view{batch_idx}.json'
             with open(os.path.join(metrics_dir, metrics_filename), 'w') as f:
                 json.dump(metrics, f, indent=2)
 
@@ -300,10 +317,10 @@ class Stage2Trainer_UBO(pl.LightningModule):
                     normal_png  = ((normal_img.clamp(-1.0, 1.0) * 0.5 + 0.5) * 255).byte().cpu().numpy()
                     tangent_png = ((tangent_img.clamp(-1.0, 1.0) * 0.5 + 0.5) * 255).byte().cpu().numpy()
                     cv2.imwrite(
-                        os.path.join(output_dir, f'normal_{suffix}.png'),
+                        os.path.join(output_dir, f'normal.png'),
                         cv2.cvtColor(normal_png, cv2.COLOR_RGB2BGR))
                     cv2.imwrite(
-                        os.path.join(output_dir, f'tangent_{suffix}.png'),
+                        os.path.join(output_dir, f'tangent.png'),
                         cv2.cvtColor(tangent_png, cv2.COLOR_RGB2BGR))
 
                 if self.more_visualizations:

@@ -5,8 +5,25 @@ import pl_bolts
 import cv2
 import numpy as np
 import os
+import glob
 import math
 from utils.dataset.bonn import DTYPE_POLY, DTYPE_PAN, DTYPE_LLS
+
+
+def _keep_only_latest_result(output_dir, base):
+    """Delete this view's result images from previous validation steps.
+
+    The result filename carries the PSNR (e.g. ``<base>_psnr25.30.png``), so a
+    plain overwrite never happens — every step would otherwise leave its own
+    file behind. Removing the prior ``<base>_psnr*`` matches keeps only the most
+    recent step. GT images use a fixed, PSNR-free name and overwrite on their
+    own, so they are left untouched.
+    """
+    for path in glob.glob(os.path.join(output_dir, base + '_psnr*')):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -378,12 +395,14 @@ class Stage2Trainer_Bonn(pl.LightningModule):
 
             gt_png   = self._tonemap_for_display(gt_img)
             pred_png = self._tonemap_for_display(pred_img)
+            psnr_str = f'{psnr.item():.2f}'
+            _keep_only_latest_result(output_dir, f'pred_mat{mat_id:04d}_view{batch_idx}')
             cv2.imwrite(
                 os.path.join(output_dir, f'gt_mat{mat_id:04d}_view{batch_idx}.png'),
                 cv2.cvtColor(gt_png, cv2.COLOR_RGB2BGR))
             cv2.imwrite(
                 os.path.join(output_dir,
-                             f'pred_mat{mat_id:04d}_view{batch_idx}.png'),
+                             f'pred_mat{mat_id:04d}_view{batch_idx}_psnr{psnr_str}.png'),
                 cv2.cvtColor(pred_png, cv2.COLOR_RGB2BGR))
 
         return loss
