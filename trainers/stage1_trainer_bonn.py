@@ -5,8 +5,26 @@ import pl_bolts
 import cv2
 import numpy as np
 import os
+import glob
 import math
 from utils.dataset.bonn import DTYPE_POLY, DTYPE_PAN, DTYPE_LLS
+
+
+def _keep_only_latest_result(output_dir, base):
+    """Delete this view's pred images from previous validation steps.
+
+    The pred filename carries the PSNR (e.g. ``<base>_psnr25.30.png``), so a
+    plain overwrite never happens — every step would otherwise leave its own
+    file behind. Removing the prior ``<base>_psnr*`` matches keeps only the most
+    recent step. ``base`` includes the data-type ``tag`` (poly/gray), so the
+    different tags for one view coexist; only across-step duplicates are pruned.
+    GT images use a fixed, PSNR-free name and overwrite on their own.
+    """
+    for path in glob.glob(os.path.join(output_dir, base + '_psnr*')):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -1007,6 +1025,7 @@ class Stage1Trainer_Bonn(pl.LightningModule):
             gt_png   = self._tonemap_for_display(gt_img.detach())
             pred_png = self._tonemap_for_display(pred_img.detach())
 
+            _keep_only_latest_result(output_dir, f'pred_mat{mat_id:04d}_view{batch_idx}_{tag}')
             cv2.imwrite(
                 os.path.join(output_dir, f'gt_mat{mat_id:04d}_view{batch_idx}_{tag}.png'),
                 cv2.cvtColor(gt_png, cv2.COLOR_RGB2BGR))

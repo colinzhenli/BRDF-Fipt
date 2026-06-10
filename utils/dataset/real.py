@@ -875,7 +875,7 @@ class RealValDataset(Dataset):
             img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
             img = img.astype(np.float64)
             img = img @ self.ccm
-            # img = img.clip(0, None)
+            img = img.clip(0, None)  # match training loader: CCM on clipped sensor data yields unphysical negatives that NaN logrel's log_mapping
             img = torch.from_numpy(img).float()
         elif img_path.endswith('.exr'):
             # Load EXR image (already linear)

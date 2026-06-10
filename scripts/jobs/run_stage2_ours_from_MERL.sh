@@ -11,6 +11,7 @@ MAT_ID=${DATASET_FOLDER##*/}
 
 python main.py \
     dataset_folder=${DATASET_FOLDER} \
+    output_folder=/media/raid/cloth/output/BRDF \
     data=real_dense \
     data.rays_num=400000 \
     data.use_fixed_val=False \

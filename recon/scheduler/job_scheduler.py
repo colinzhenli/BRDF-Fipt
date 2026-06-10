@@ -538,7 +538,7 @@ def fix_material_status_by_timestamps(info: Dict, material: str, verbose: bool =
     
     return False
 
-def verify_completed_materials(state: Dict, verbose: bool = True) -> Tuple[int, int]:
+def verify_completed_materials(state: Dict, verbose: bool = True, skip_list: Optional[set] = None) -> Tuple[int, int]:
     """
     Sanity-check every COMPLETED material on scheduler restart and reset the
     bad ones so they get reprocessed automatically.
@@ -561,8 +561,11 @@ def verify_completed_materials(state: Dict, verbose: bool = True) -> Tuple[int, 
     """
     n_colmap_reset = 0
     n_shape_reset = 0
+    skip_list = skip_list or set()
 
     for material, info in state["materials"].items():
+        if material in skip_list:
+            continue
         if info["status"] != JobStatus.COMPLETED:
             continue
 
@@ -643,7 +646,7 @@ def verify_completed_materials(state: Dict, verbose: bool = True) -> Tuple[int, 
     return n_colmap_reset, n_shape_reset
 
 
-def reset_failed_jobs(state: Dict, verbose: bool = True, force_restart_colmap: bool = True) -> int:
+def reset_failed_jobs(state: Dict, verbose: bool = True, force_restart_colmap: bool = True, skip_list: Optional[set] = None) -> int:
     """
     Reset failed jobs (and COLMAP_DONE jobs if force_restart_colmap=True) to retry.
     - If force_restart_colmap=True (default): Reset FAILED and COLMAP_DONE to NOT_STARTED to retry COLMAP
@@ -659,7 +662,10 @@ def reset_failed_jobs(state: Dict, verbose: bool = True, force_restart_colmap: b
     Returns: Number of jobs reset
     """
     reset_count = 0
+    skip_list = skip_list or set()
     for material, info in state["materials"].items():
+        if material in skip_list:
+            continue
         # Determine which statuses to reset
         should_reset = info["status"] == JobStatus.FAILED
         
@@ -791,11 +797,11 @@ def load_skip_list(dataset_root: str) -> set:
     
     return skip_list
 
-def initialize_materials(dataset_root: str, state: Dict, verbose: bool = True, reset_failed: bool = False, fix_existing: bool = True, force_restart_colmap: bool = True) -> Tuple[List[str], int]:
+def initialize_materials(dataset_root: str, state: Dict, verbose: bool = True, reset_failed: bool = False, fix_existing: bool = True, force_restart_colmap: bool = True, only: Optional[List[str]] = None) -> Tuple[List[str], int]:
     """
     Scan dataset folder for material subfolders (0, 1, 2, ..., 10, ..., 100, ...).
     Initialize state for new materials.
-    
+
     Args:
         dataset_root: Path to dataset root folder
         state: Current scheduler state
@@ -803,29 +809,44 @@ def initialize_materials(dataset_root: str, state: Dict, verbose: bool = True, r
         reset_failed: Whether to reset failed jobs to NOT_STARTED
         fix_existing: Whether to fix inconsistent states for existing materials (should only be done once on startup)
         force_restart_colmap: If True, always restart failed jobs from COLMAP (default True)
-    
-    Returns: 
+        only: If set, restrict ALL operations (discovery, verify, reset, dispatch) to
+              this whitelist of material IDs. Overrides skip.txt for whitelisted IDs.
+              Other materials' state is left completely untouched.
+
+    Returns:
         Tuple of (sorted list of material folder names, count of new materials found)
     """
     dataset_path = Path(dataset_root)
     if not dataset_path.exists():
         raise ValueError(f"Dataset root does not exist: {dataset_root}")
-    
+
     # Load skip list
     skip_list = load_skip_list(dataset_root)
-    
+
+    # If --only is set, treat all non-whitelisted materials (in state OR on disk)
+    # as if they were in skip.txt. Whitelisted IDs override any skip.txt entry.
+    only_set = set(str(m) for m in only) if only else None
+    if only_set is not None:
+        skip_list = (skip_list - only_set) | (set(state["materials"].keys()) - only_set)
+        if verbose:
+            print(f"--only restricting to {sorted(only_set, key=lambda x: int(x) if x.isdigit() else 0)} "
+                  f"(other materials' state untouched)")
+
     # Find all numeric subfolders
     material_folders = []
     skipped_folders = []
     for item in dataset_path.iterdir():
         if item.is_dir() and item.name.isdigit():
-            if item.name in skip_list:
+            if item.name in skip_list or (only_set is not None and item.name not in only_set):
                 skipped_folders.append(item.name)
             else:
                 material_folders.append(item.name)
     
     if skipped_folders and verbose:
-        print(f"Skipping {len(skipped_folders)} material(s) from skip.txt: {sorted(skipped_folders, key=int)}")
+        if len(skipped_folders) > 30:
+            print(f"Skipping {len(skipped_folders)} material(s) (skip.txt + --only filter)")
+        else:
+            print(f"Skipping {len(skipped_folders)} material(s) from skip.txt: {sorted(skipped_folders, key=int)}")
     
     # Sort numerically
     material_folders.sort(key=int)
@@ -891,11 +912,11 @@ def initialize_materials(dataset_root: str, state: Dict, verbose: bool = True, r
     n_colmap_reset = 0
     n_shape_reset = 0
     if fix_existing:
-        n_colmap_reset, n_shape_reset = verify_completed_materials(state, verbose=verbose)
+        n_colmap_reset, n_shape_reset = verify_completed_materials(state, verbose=verbose, skip_list=skip_list)
 
     # Reset failed jobs if requested (after fixing timestamps and verifying)
     if reset_failed:
-        reset_count = reset_failed_jobs(state, verbose, force_restart_colmap=force_restart_colmap)
+        reset_count = reset_failed_jobs(state, verbose, force_restart_colmap=force_restart_colmap, skip_list=skip_list)
         if reset_count > 0 and verbose:
             print(f"Reset {reset_count} failed job(s) to retry\n")
 
@@ -1246,7 +1267,7 @@ def try_launch_shape_matching_jobs(state: Dict, config: Config):
 
 # ==================== Scheduler Modes ====================
 
-def streaming_mode(dataset_root: str, config: Config, auto_detect: bool = False, retry_failed: bool = True, force_restart_colmap: bool = True, force_redo_ids: Optional[List[str]] = None):
+def streaming_mode(dataset_root: str, config: Config, auto_detect: bool = False, retry_failed: bool = True, force_restart_colmap: bool = True, force_redo_ids: Optional[List[str]] = None, only: Optional[List[str]] = None):
     """
     Streaming mode: Continuously schedule jobs as capacity becomes available.
     Runs until all materials are completed.
@@ -1275,7 +1296,7 @@ def streaming_mode(dataset_root: str, config: Config, auto_detect: bool = False,
     state["mode"] = "streaming_auto" if auto_detect else "streaming"
     
     # Initialize materials (with failed job reset if requested)
-    materials, new_count = initialize_materials(dataset_root, state, reset_failed=retry_failed, force_restart_colmap=force_restart_colmap)
+    materials, new_count = initialize_materials(dataset_root, state, reset_failed=retry_failed, force_restart_colmap=force_restart_colmap, only=only)
 
     # Force-redo specific materials if requested
     if force_redo_ids:
@@ -1311,7 +1332,7 @@ def streaming_mode(dataset_root: str, config: Config, auto_detect: bool = False,
             # Periodic material scanning in auto-detect mode
             if auto_detect and (time.time() - last_scan_time) >= config.MATERIAL_SCAN_INTERVAL_SEC:
                 print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Scanning for new materials...")
-                materials, new_count = initialize_materials(dataset_root, state, verbose=True, fix_existing=False)
+                materials, new_count = initialize_materials(dataset_root, state, verbose=True, fix_existing=False, only=only)
                 if new_count > 0:
                     save_state(state, config.STATE_FILE)
                 last_scan_time = time.time()
@@ -1423,7 +1444,7 @@ def streaming_mode(dataset_root: str, config: Config, auto_detect: bool = False,
         print("State saved. Exiting.")
         sys.exit(0)
 
-def manual_mode(dataset_root: str, n_folders: int, config: Config, retry_failed: bool = True, force_restart_colmap: bool = True, force_redo_ids: Optional[List[str]] = None):
+def manual_mode(dataset_root: str, n_folders: int, config: Config, retry_failed: bool = True, force_restart_colmap: bool = True, force_redo_ids: Optional[List[str]] = None, only: Optional[List[str]] = None):
     """
     Manual mode: Schedule first N folders and wait for all to complete.
     Balances jobs across GPUs and CPUs upfront.
@@ -1450,7 +1471,7 @@ def manual_mode(dataset_root: str, n_folders: int, config: Config, retry_failed:
     state["mode"] = "manual"
 
     # Initialize materials (with failed job reset if requested)
-    materials, new_count = initialize_materials(dataset_root, state, reset_failed=retry_failed, force_restart_colmap=force_restart_colmap)
+    materials, new_count = initialize_materials(dataset_root, state, reset_failed=retry_failed, force_restart_colmap=force_restart_colmap, only=only)
 
     # Force-redo specific materials if requested
     if force_redo_ids:
@@ -1459,7 +1480,7 @@ def manual_mode(dataset_root: str, n_folders: int, config: Config, retry_failed:
         print(f"Force-reset {n_redo} material(s)\n")
 
     save_state(state, config.STATE_FILE)
-    
+
     if not materials:
         print("No material folders found!")
         return
@@ -1693,6 +1714,10 @@ Examples:
                        help="Path to JSON file with materials to force-redo. Accepts either "
                             "a flat list [1,2,3] or an object with a 'materials' key "
                             "(e.g. recon/scheduler/redo_list.json). Merged with --force_redo.")
+    parser.add_argument("--only", type=str, nargs="+", default=None,
+                       help="Restrict scheduler to ONLY these material IDs. All other materials "
+                            "are left completely untouched (no verify, no failed-retry, no launch). "
+                            "Overrides skip.txt for the listed IDs. Example: --only 13 42")
     
     # Optional configuration overrides
     parser.add_argument("--max_colmap_per_gpu", type=int, help=f"Max COLMAP jobs per GPU (default: {Config.MAX_COLMAP_PER_GPU})")
@@ -1770,11 +1795,14 @@ Examples:
     else:
         force_redo_ids = None
 
+    # Normalize --only IDs to strings
+    only_ids = [str(m) for m in args.only] if args.only else None
+
     # Run scheduler
     if args.mode == "streaming":
-        streaming_mode(args.dataset, config, auto_detect=args.auto_detect, retry_failed=retry_failed, force_restart_colmap=force_restart_colmap, force_redo_ids=force_redo_ids)
+        streaming_mode(args.dataset, config, auto_detect=args.auto_detect, retry_failed=retry_failed, force_restart_colmap=force_restart_colmap, force_redo_ids=force_redo_ids, only=only_ids)
     elif args.mode == "manual":
-        manual_mode(args.dataset, args.n_folders, config, retry_failed=retry_failed, force_restart_colmap=force_restart_colmap, force_redo_ids=force_redo_ids)
+        manual_mode(args.dataset, args.n_folders, config, retry_failed=retry_failed, force_restart_colmap=force_restart_colmap, force_redo_ids=force_redo_ids, only=only_ids)
 
 if __name__ == "__main__":
     main()
