@@ -66,13 +66,25 @@
 <section id="main-viz" class="page-section">
     <h3>Inverse-Rendering Results</h3>
     <div class="section-rule"></div>
-    <div class="placeholder-slot">
-        <strong>Stage-2 rendering / re-lighting demo (TBD)</strong><br>
-        <span style="font-size:0.88rem">
-            This section is reserved for the trained model's rendering
-            and re-lighting results. We will plug in interactive comparisons
-            (real photo vs. predicted) once the final figures are ready.
-        </span>
+    <!-- TODO(viewer): This is a stop-gap rendering VIDEO. Replace it with an
+         INTERACTIVE viewer once final results are ready — e.g. a real-photo vs.
+         predicted comparison slider with draggable re-lighting, rendered live
+         in-browser, instead of a pre-baked mp4. -->
+    <!-- NOTE(hosting): cloth_with_sphere_final.mp4 (~160 MB) is hosted on Hugging Face
+         (koalapenguin/cloth-brdf, web/) and streamed from its CDN below. It is NOT in git
+         (GitHub rejects files >100 MB; GitHub Pages won't serve Git LFS). A gitignored
+         local copy lives at docs/videos/ for offline preview — to use it, swap the src
+         back to "videos/cloth_with_sphere_final.mp4". -->
+    <div style="text-align:center">
+        <video controls playsinline preload="none"
+               style="max-width:100%; height:auto; display:block; margin:0 auto; border-radius:8px;">
+            <source src="https://huggingface.co/datasets/koalapenguin/cloth-brdf/resolve/main/web/cloth_with_sphere_final.mp4" type="video/mp4">
+            Your browser does not support the video tag.
+        </video>
+        <p style="font-size:0.88rem; color:var(--muted); margin-top:0.6rem;">
+            Stage-2 neural-BRDF rendering &amp; re-lighting demo &mdash; a cloth material
+            relit on a sphere alongside the captured scene <em>(preview)</em>.
+        </p>
     </div>
 </section>
 

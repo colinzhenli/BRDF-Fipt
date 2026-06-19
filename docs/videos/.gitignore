@@ -1,0 +1,6 @@
+# The Stage-2 demo video (~160 MB) is hosted EXTERNALLY and embedded in index.html.
+# It is deliberately NOT committed:
+#   - GitHub rejects any file >100 MB on push.
+#   - GitHub Pages does not serve Git LFS objects (it would serve the pointer file).
+# Keep this file under docs/videos/ only for LOCAL preview.
+*.mp4
