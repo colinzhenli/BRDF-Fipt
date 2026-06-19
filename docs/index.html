@@ -76,7 +76,7 @@
          local copy lives at docs/videos/ for offline preview — to use it, swap the src
          back to "videos/cloth_with_sphere_final.mp4". -->
     <div style="text-align:center">
-        <video controls playsinline preload="none"
+        <video id="stage2-demo" autoplay loop muted playsinline controls preload="auto"
                style="max-width:100%; height:auto; display:block; margin:0 auto; border-radius:8px;">
             <source src="https://huggingface.co/datasets/koalapenguin/cloth-brdf/resolve/main/web/cloth_with_sphere_final.mp4" type="video/mp4">
             Your browser does not support the video tag.
@@ -86,6 +86,25 @@
             relit on a sphere alongside the captured scene <em>(preview)</em>.
         </p>
     </div>
+    <script>
+      // Autoplay the Stage-2 demo muted + looping; retry when it scrolls into
+      // view (some browsers defer autoplay for off-screen / low-power cases).
+      (function () {
+        var v = document.getElementById('stage2-demo');
+        if (!v) return;
+        v.muted = true;              // required: browsers block autoplay with sound
+        var play = function () {
+          var p = v.play();
+          if (p && p.catch) p.catch(function () { /* blocked — controls remain */ });
+        };
+        play();
+        if ('IntersectionObserver' in window) {
+          new IntersectionObserver(function (es) {
+            es.forEach(function (e) { if (e.isIntersecting) play(); });
+          }, { threshold: 0.25 }).observe(v);
+        }
+      })();
+    </script>
 </section>
 
 <!-- ============================  DATASET PREVIEW  ============================ -->
