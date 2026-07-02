@@ -1,20 +1,51 @@
 {
     "workbench.colorCustomizations": {
-        "activityBar.background": "#0D2F4C",
-        "titleBar.activeBackground": "#12426B",
-        "titleBar.activeForeground": "#F9FCFE",
-        "titleBar.inactiveBackground": "#0D2F4C",
-        "titleBar.inactiveForeground": "#081B2B",
-        "statusBar.background": "#103A5D",
-        "statusBar.foreground": "#F6FAFD",
-        "statusBar.debuggingBackground": "#103A5D",
-        "statusBar.debuggingForeground": "#F6FAFD",
-        "statusBar.noFolderBackground": "#103A5D",
-        "statusBar.noFolderForeground": "#F6FAFD"
+        "activityBar.background": "#3E253D",
+        "titleBar.activeBackground": "#CDAACB",
+        "titleBar.activeForeground": "#231522",
+        "titleBar.inactiveBackground": "#3E253D",
+        "titleBar.inactiveForeground": "#231522",
+        "statusBar.background": "#4B2C4A",
+        "statusBar.foreground": "#FDFBFD",
+        "statusBar.debuggingBackground": "#4B2C4A",
+        "statusBar.debuggingForeground": "#FDFBFD",
+        "statusBar.noFolderBackground": "#4B2C4A",
+        "statusBar.noFolderForeground": "#FDFBFD"
     },
     "workbench.colorTheme": "Solarized Light",
     "workbench.preferredHighContrastColorTheme": "Visual Studio 2017 Dark - C++",
     "workbench.preferredHighContrastLightColorTheme": "Visual Studio Light - C++",
     "workbench.preferredDarkColorTheme": "Dark 2026",
-    "editor.tabCompletion": "on"
+    "editor.tabCompletion": "on",
+
+    "//": "--- LaTeX Workshop: local TeX Live in ~/texlive (replaces Overleaf) ---",
+    "latex-workshop.latex.tools": [
+        {
+            "name": "latexmk",
+            "command": "/home/zla247/texlive/2026/bin/x86_64-linux/latexmk",
+            "args": [
+                "-pdf",
+                "-interaction=nonstopmode",
+                "-synctex=1",
+                "-file-line-error",
+                "-outdir=%OUTDIR%",
+                "%DOC%"
+            ],
+            "env": {
+                "PATH": "/home/zla247/texlive/2026/bin/x86_64-linux:/usr/bin:/bin"
+            }
+        }
+    ],
+    "latex-workshop.latex.recipes": [
+        {
+            "name": "latexmk",
+            "tools": ["latexmk"]
+        }
+    ],
+    "latex-workshop.latex.recipe.default": "latexmk",
+    "latex-workshop.latex.outDir": "%DIR%/build",
+    "latex-workshop.latex.autoBuild.run": "onSave",
+    "latex-workshop.view.pdf.viewer": "tab",
+    "latex-workshop.message.badbox.show": false,
+    "latex-workshop.message.update.show": false
 }

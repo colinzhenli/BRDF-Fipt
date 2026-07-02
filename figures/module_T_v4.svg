@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"
+     viewBox="0 0 1300 520" font-family="Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="ab" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#000000"/></marker>
+    <marker id="ag" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#C8930A"/></marker>
+    <marker id="ad" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#3A3F45"/></marker>
+    <marker id="an" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#312C7C"/></marker>
+    <marker id="ar" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#D62518"/></marker>
+    <marker id="agr" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#4FAE4E"/></marker>
+    <marker id="abl" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#3672B0"/></marker>
+    <marker id="arx" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#D03A2B"/></marker>
+    <radialGradient id="shRed" cx="50%" cy="35%" r="70%">
+      <stop offset="0%" stop-color="#FF9886"/><stop offset="100%" stop-color="#B02B1A"/></radialGradient>
+    <linearGradient id="shV" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#3FB8D4"/><stop offset="40%" stop-color="#BEE8EF"/>
+      <stop offset="60%" stop-color="#F2A48E"/><stop offset="100%" stop-color="#A82B1A"/></linearGradient>
+    <linearGradient id="shH" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#3FB8D4"/><stop offset="40%" stop-color="#BEE8EF"/>
+      <stop offset="60%" stop-color="#F2A48E"/><stop offset="100%" stop-color="#A82B1A"/></linearGradient>
+    <linearGradient id="shB" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#3FB8D4"/><stop offset="25%" stop-color="#BEE8EF"/>
+      <stop offset="45%" stop-color="#E58671"/><stop offset="55%" stop-color="#A82B1A"/>
+      <stop offset="65%" stop-color="#E58671"/><stop offset="80%" stop-color="#BEE8EF"/>
+      <stop offset="100%" stop-color="#3FB8D4"/></linearGradient>
+    <linearGradient id="shBV" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#3FB8D4"/><stop offset="25%" stop-color="#BEE8EF"/>
+      <stop offset="45%" stop-color="#E58671"/><stop offset="55%" stop-color="#A82B1A"/>
+      <stop offset="65%" stop-color="#E58671"/><stop offset="80%" stop-color="#BEE8EF"/>
+      <stop offset="100%" stop-color="#3FB8D4"/></linearGradient>
+    <radialGradient id="shC" cx="50%" cy="50%" r="60%">
+      <stop offset="0%" stop-color="#A82B1A"/><stop offset="55%" stop-color="#F2A48E"/>
+      <stop offset="100%" stop-color="#3FB8D4"/></radialGradient>
+  </defs>
+<rect x="50.0" y="280" width="88.0" height="22" fill="#312C7C"/>
+<rect x="142.8" y="280" width="22.0" height="22" fill="#312C7C"/>
+<rect x="169.7" y="280" width="22.0" height="22" fill="#312C7C"/>
+<text x="116" y="264" font-size="22" text-anchor="middle">Latent  <tspan font-style="italic" font-family="Georgia, serif">n</tspan>  <tspan font-style="italic" font-family="Georgia, serif">t</tspan></text>
+<path d="M 175 276 C 220 190, 290 210, 362 190" fill="none" stroke="#000000" stroke-width="3" marker-end="url(#ab)"/>
+<text x="410" y="114" font-size="23" text-anchor="middle">Gram–Schmidt</text>
+<line x1="420" y1="190" x2="420" y2="150" stroke="#D03A2B" stroke-width="3.4" marker-end="url(#arx)"/>
+<line x1="420" y1="190" x2="458" y2="190" stroke="#4FAE4E" stroke-width="3.4" marker-end="url(#agr)"/>
+<line x1="420" y1="190" x2="394" y2="212" stroke="#3672B0" stroke-width="3.4" marker-end="url(#abl)"/>
+<text x="428" y="154" font-size="19" font-style="italic" font-family="Georgia, serif" fill="#D03A2B">ñ</text>
+<text x="464" y="196" font-size="19" font-style="italic" font-family="Georgia, serif" fill="#4FAE4E">t̃</text>
+<text x="372" y="222" font-size="19" font-style="italic" font-family="Georgia, serif" fill="#3672B0">b̃</text>
+<line x1="420" y1="228" x2="420" y2="322" stroke="#000000" stroke-width="2.6" stroke-dasharray="3 6" marker-end="url(#ab)"/>
+<text x="58" y="396" font-size="21" font-style="italic" font-family="Georgia, serif" fill="#C8930A">ω<tspan font-size="14" baseline-shift="sub">i</tspan></text>
+<text x="102" y="396" font-size="21" font-style="italic" font-family="Georgia, serif" fill="#3A3F45">ω<tspan font-size="14" baseline-shift="sub">o</tspan></text>
+<text x="90" y="424" font-size="17" text-anchor="middle" fill="#555">(world)</text>
+<line x1="150" y1="390" x2="348" y2="390" stroke="#000000" stroke-width="3" marker-end="url(#ab)"/>
+<line x1="420" y1="400" x2="420" y2="348" stroke="#D03A2B" stroke-width="3.4" marker-end="url(#arx)"/>
+<line x1="420" y1="400" x2="460" y2="404" stroke="#4FAE4E" stroke-width="3" marker-end="url(#agr)"/>
+<line x1="420" y1="400" x2="398" y2="422" stroke="#3672B0" stroke-width="3" marker-end="url(#abl)"/>
+<line x1="420" y1="400" x2="460" y2="362" stroke="#C8930A" stroke-width="3.4" marker-end="url(#ag)"/>
+<line x1="420" y1="400" x2="378" y2="366" stroke="#3A3F45" stroke-width="3.4" marker-end="url(#ad)"/>
+<text x="426" y="342" font-size="19" font-style="italic" font-family="Georgia, serif" fill="#D03A2B">ñ</text>
+<text x="466" y="360" font-size="19" font-style="italic" font-family="Georgia, serif" fill="#C8930A">ω<tspan font-size="13" baseline-shift="sub">i</tspan></text>
+<text x="348" y="364" font-size="19" font-style="italic" font-family="Georgia, serif" fill="#3A3F45">ω<tspan font-size="13" baseline-shift="sub">o</tspan></text>
+<text x="390" y="462" font-size="19" text-anchor="middle">local frame</text>
+<line x1="476" y1="374" x2="590" y2="264" stroke="#D03A2B" stroke-width="3" marker-end="url(#arx)"/>
+<line x1="476" y1="374" x2="590" y2="330" stroke="#C8930A" stroke-width="3" marker-end="url(#ag)"/>
+<line x1="476" y1="374" x2="590" y2="396" stroke="#3A3F45" stroke-width="3" marker-end="url(#ad)"/>
+<rect x="600" y="180" width="280" height="280" rx="16" fill="white" stroke="#9AA5B1" stroke-width="1.6"/>
+<text x="740.0" y="214" font-size="23" text-anchor="middle">SH encoding</text>
+<text x="630" y="271" font-size="20" font-style="italic" font-family="Georgia, serif" fill="#D03A2B">ñ</text>
+<circle cx="760.0" cy="264" r="16" fill="url(#shRed)"/>
+<text x="630" y="337" font-size="20" font-style="italic" font-family="Georgia, serif" fill="#C8930A">ω<tspan font-size="13" baseline-shift="sub">i</tspan></text>
+<circle cx="720.0" cy="330" r="16" fill="url(#shV)"/>
+<circle cx="760.0" cy="330" r="16" fill="url(#shRed)"/>
+<circle cx="800.0" cy="330" r="16" fill="url(#shH)"/>
+<text x="630" y="403" font-size="20" font-style="italic" font-family="Georgia, serif" fill="#3A3F45">ω<tspan font-size="13" baseline-shift="sub">o</tspan></text>
+<circle cx="680.0" cy="396" r="16" fill="url(#shBV)"/>
+<circle cx="720.0" cy="396" r="16" fill="url(#shV)"/>
+<circle cx="760.0" cy="396" r="16" fill="url(#shC)"/>
+<circle cx="800.0" cy="396" r="16" fill="url(#shH)"/>
+<circle cx="840.0" cy="396" r="16" fill="url(#shB)"/>
+<rect x="985" y="290" width="27" height="22" fill="#312C7C"/>
+<rect x="1016" y="290" width="27" height="22" fill="#312C7C"/>
+<rect x="1047" y="290" width="27" height="22" fill="#312C7C"/>
+<text x="1029.5" y="342" font-size="17" text-anchor="middle" fill="#555">concat</text>
+<line x1="888" y1="264" x2="975" y2="294" stroke="#000000" stroke-width="2.6" marker-end="url(#ab)"/>
+<line x1="888" y1="330" x2="975" y2="301" stroke="#000000" stroke-width="2.6" marker-end="url(#ab)"/>
+<line x1="888" y1="396" x2="975" y2="308" stroke="#000000" stroke-width="2.6" marker-end="url(#ab)"/>
+<rect x="1130" y="280" width="88" height="22" fill="#312C7C"/>
+<rect x="1223" y="280" width="57.2" height="22" fill="#312C7C"/>
+<path d="M 1082 306 C 1125 334, 1211.6 338, 1247.6 310" fill="none" stroke="#000000" stroke-width="3" marker-end="url(#ab)"/>
+<path d="M 94 274 C 200 15, 990 15, 1174 270" fill="none" stroke="#D03A2B" stroke-width="3" marker-end="url(#arx)"/>
+<text x="870" y="62" font-size="20" font-style="italic" font-family="Georgia, serif" fill="#D03A2B" text-anchor="middle">z (latent)</text>
+</svg>

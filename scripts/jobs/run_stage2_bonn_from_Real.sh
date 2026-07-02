@@ -3,7 +3,7 @@
 export CUDA_VISIBLE_DEVICES=2
 
 DATASET_FOLDER=/media/raid/cloth/Bonn_val
-MAT_ID=37
+MAT_ID=318
 
 python main.py \
     dataset_folder=${DATASET_FOLDER} \

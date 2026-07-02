@@ -1,8 +1,8 @@
 #!/bin/bash
 
-export CUDA_VISIBLE_DEVICES=0
+export CUDA_VISIBLE_DEVICES=3
 
-BTF_FILE=felt01_W400xH400_L151xV151.btf
+BTF_FILE=fabric09_W400xH400_L151xV151.btf
 BTF_NAME=${BTF_FILE%%_*}
 
 python main.py \
@@ -23,7 +23,7 @@ python main.py \
     material.decoder.use_color_decomp=False \
     material.decoder.degree=3 \
     material.decoder.smooth_reg=False \
-    experiment_name=Stage-2_UBO_${BTF_NAME}_from-Real-New-500_Grazing-angle_run_1 \
+    experiment_name=Ablation-100_epoch15_Stage-2_UBO_${BTF_NAME}_from-Real_Grazing-angle_run_1 \
     model.optimizer.name=Adam \
     model.optimizer.lr=0.002 \
     model.optimizer.decoder_lr=2e-4 \
@@ -38,4 +38,4 @@ python main.py \
     model.trainer.max_epochs=60 \
     model.trainer.check_val_every_n_epoch=2 \
     model.trainer.limit_train_batches=5838 \
-    model.ckpt_path='/media/raid/cloth/output/BRDF/Stage-1-Finals/Ours.ckpt'
+    model.ckpt_path='/media/raid/cloth/output/BRDF/Stage-1-Finals/Ablations/Ours-100_epoch15.ckpt'
