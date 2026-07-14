@@ -1,0 +1,4 @@
+[submodule "SGHyperMaterials"]
+	path = SGHyperMaterials
+	url = https://github.com/colinzhenli/SGHyperMaterials.git
+	branch = gt_render
