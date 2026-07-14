@@ -7,7 +7,14 @@ How to reproduce the paper's main results from scratch:
 3. **Evaluation** — evaluate the released stage-2 checkpoints and reproduce the per-material PSNR table on our held-out test set (§7).
 4. **Qualitative rendering** — relight trained materials on a cloth mesh under an environment map with Mitsuba 3, and render a custom scene like the paper teaser (§8–10).
 
-Steps 1–3 use this repository; step 4 uses the companion rendering repository (`SGHyperMaterials`).
+Steps 1–3 use this repository; step 4 uses the companion rendering repository (`SGHyperMaterials`), included here as a git submodule. Clone with:
+
+```bash
+git clone -b milestone3 --recurse-submodules https://github.com/colinzhenli/BRDF-Fipt.git
+```
+
+(If you already cloned without `--recurse-submodules`, run
+`git submodule update --init SGHyperMaterials`.)
 
 The **baseline comparison experiments** (decoders pretrained on Bonn/MERL; stage-2 transfer to the Bonn and UBO2014 test sets) are documented in [full_experiments.md](full_experiments.md), with scripts under `scripts/full_experiments/`.
 
