@@ -4,3 +4,6 @@
 #   - GitHub Pages does not serve Git LFS objects (it would serve the pointer file).
 # Keep this file under docs/videos/ only for LOCAL preview.
 *.mp4
+# Exception: the capture-system video is 88 MB (< 100 MB limit), so it IS
+# committed and served directly from the repo / GitHub Pages.
+!capture_314_5x.mp4
