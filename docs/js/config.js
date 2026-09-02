@@ -1,5 +1,5 @@
 /**
- * Global configuration for the cloth-brdf dataset webpage.
+ * Global configuration for the RoboCloth dataset webpage.
  *
  * The webpage loads everything directly from the public HuggingFace dataset.
  * No private data is stored locally except small precomputed lookup files.

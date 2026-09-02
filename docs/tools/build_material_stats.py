@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Precompute per-material BRDF stats (per-channel min/max + mean colour)
-for the cloth-brdf preview materials.
+for the RoboCloth preview materials.
 
 Why
 ---
