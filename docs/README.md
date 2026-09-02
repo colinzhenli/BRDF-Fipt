@@ -1,7 +1,7 @@
 # Cloth-BRDF dataset webpage
 
 Static HTML/CSS/JS site that previews the
-[koalapenguin/cloth-brdf](https://huggingface.co/datasets/koalapenguin/cloth-brdf)
+[koalapenguin/RoboCloth](https://huggingface.co/datasets/koalapenguin/RoboCloth)
 dataset directly from HuggingFace — no server-side code, no rebuilt assets.
 
 ## Quick start

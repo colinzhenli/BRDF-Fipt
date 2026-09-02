@@ -6,7 +6,7 @@
  */
 
 window.CONFIG = (() => {
-    const HF_REPO = "koalapenguin/cloth-brdf";
+    const HF_REPO = "koalapenguin/RoboCloth";
 
     // resolve URL for a file in the HF dataset (Range-friendly through redirects)
     const hfResolve = (path) =>

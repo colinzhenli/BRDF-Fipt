@@ -25,7 +25,7 @@
 
             <div class="btn-group-row">
                 <a class="btn-pill" href="#abstract"><i class="fa-solid fa-file"></i> Paper</a>
-                <a class="btn-pill" href="https://huggingface.co/datasets/koalapenguin/cloth-brdf" target="_blank" rel="noopener">
+                <a class="btn-pill" href="https://huggingface.co/datasets/koalapenguin/RoboCloth" target="_blank" rel="noopener">
                     <i class="fa-solid fa-database"></i> Data (HuggingFace)
                 </a>
                 <a class="btn-pill" href="#preview"><i class="fa-solid fa-images"></i> Dataset Preview</a>
@@ -94,7 +94,7 @@
         a second arm sweeps a calibrated area light over a plane covering
         the upper hemisphere. We release accurate hand-eye and turntable
         calibration, sample-size metadata, and a Croissant manifest at
-        <a href="https://huggingface.co/datasets/koalapenguin/cloth-brdf" target="_blank">HuggingFace</a>.
+        <a href="https://huggingface.co/datasets/koalapenguin/RoboCloth" target="_blank">HuggingFace</a>.
     </p>
 </section>
 
@@ -107,14 +107,14 @@
          predicted comparison slider with draggable re-lighting, rendered live
          in-browser, instead of a pre-baked mp4. -->
     <!-- NOTE(hosting): cloth_with_sphere_final.mp4 (~160 MB) is hosted on Hugging Face
-         (koalapenguin/cloth-brdf, web/) and streamed from its CDN below. It is NOT in git
+         (koalapenguin/RoboCloth, web/) and streamed from its CDN below. It is NOT in git
          (GitHub rejects files >100 MB; GitHub Pages won't serve Git LFS). A gitignored
          local copy lives at docs/videos/ for offline preview — to use it, swap the src
          back to "videos/cloth_with_sphere_final.mp4". -->
     <div style="text-align:center">
         <video id="stage2-demo" autoplay loop muted playsinline controls preload="auto"
                style="max-width:100%; height:auto; display:block; margin:0 auto; border-radius:8px;">
-            <source src="https://huggingface.co/datasets/koalapenguin/cloth-brdf/resolve/main/web/cloth_with_sphere_final.mp4" type="video/mp4">
+            <source src="https://huggingface.co/datasets/koalapenguin/RoboCloth-assets/resolve/main/media/web/cloth_with_sphere_final.mp4" type="video/mp4">
             Your browser does not support the video tag.
         </video>
         <p style="font-size:0.88rem; color:var(--muted); margin-top:0.6rem;">
@@ -231,7 +231,7 @@
     Page template loosely inspired by
     <a href="https://oppo-us-research.github.io/OpenIllumination/" target="_blank">OpenIllumination</a>.
     All assets stream directly from the public
-    <a href="https://huggingface.co/datasets/koalapenguin/cloth-brdf" target="_blank">HuggingFace dataset repository</a>.
+    <a href="https://huggingface.co/datasets/koalapenguin/RoboCloth" target="_blank">HuggingFace dataset repository</a>.
 </footer>
 
 <!-- Cache-bust JS files (bump ?v= when any of them changes). -->
